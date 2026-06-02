@@ -1,15 +1,15 @@
 ---
 name: work-log
-description: "実装・改良・バグ修正・テスト通過など、作業の区切りで進捗を claude_log/YYYY-MM-DD.md に追記記録するスキル。"
+description: "実装・改良・バグ修正・テスト通過など、作業の区切りで進捗を agents-work-log/YYYY-MM-DD.md に追記記録するスキル。"
 ---
 
 # work-log スキル
 
 ## 概要
 
-実装、改良、バグ修正、テスト通過、リファクタリング完了など、作業の区切りごとに `claude_log` ディレクトリへ日次の作業ログを追記する。
+実装、改良、バグ修正、テスト通過、リファクタリング完了など、作業の区切りごとに `agents-work-log` ディレクトリへ日次の作業ログを追記する。
 
-ログは常に `claude_log/YYYY-MM-DD.md` に記録する。
+ログは常に `agents-work-log/YYYY-MM-DD.md` に記録する。
 
 ## 使用タイミング
 
@@ -24,9 +24,9 @@ description: "実装・改良・バグ修正・テスト通過など、作業の
 
 ## 実行手順
 
-1. `claude_log` ディレクトリが存在するか確認する。
+1. `agents-work-log` ディレクトリが存在するか確認する。
 2. 存在しない場合は作成する。
-3. 今日の日付に対応する `claude_log/YYYY-MM-DD.md` を確認する。
+3. 今日の日付に対応する `agents-work-log/YYYY-MM-DD.md` を確認する。
 4. ファイルが存在しない場合は新規作成する。
 5. ファイルが存在する場合は、既存内容を変更せず、末尾にのみ追記する。
 6. 作業内容、遭遇した問題、解決策、テスト結果を簡潔に記録する。
@@ -36,13 +36,13 @@ description: "実装・改良・バグ修正・テスト通過など、作業の
 **ファイル名：**
 
 ```text
-claude_log/YYYY-MM-DD.md
+agents-work-log/YYYY-MM-DD.md
 ````
 
 例：
 
 ```text
-claude_log/2026-06-02.md
+agents-work-log/2026-06-02.md
 ```
 
 ## 追記形式
