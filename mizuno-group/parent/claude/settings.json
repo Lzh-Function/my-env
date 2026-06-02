@@ -1,0 +1,51 @@
+{
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70"
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git branch *)",
+      "Bash(cd *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(echo *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(date *)",
+      "Bash(sbatch *)",
+      "Bash(srun *)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(./secrets/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Bash(ssh *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(rm *)",
+      "Bash(sudo *)"
+    ]
+  },
+  "spinnerTipsEnabled": false,
+  "effortLevel": "high",
+  "theme": "dark",
+  "showTurnDuration": true,
+  "langage": "japanese"
+}
