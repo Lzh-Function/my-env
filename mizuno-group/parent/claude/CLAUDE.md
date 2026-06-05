@@ -70,3 +70,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 # DEVELOPMENT WORKFLOW
 - Assume that the current machine is a SLURM cluster login node. DO NOT run GPU workloads or code that depends on non-standard/non-built-in libraries directly on the login node, except for trivial sanity checks. Use `srun` or `sbatch` for such executions.
 - Before invoking `srun` or `sbatch`, consult the `CLAUDE.md` file in the working directory and follow the specified arguments, including the appropriate partition.
+
+## Python Environment Rules
+- Python environments are managed with uv. Venvs live as `.venv*`-style directories in the project root. There is NO default Python on either the login node or compute nodes.
+- Before generating any `srun`/`sbatch` command that invokes Python, you MUST confirm which venv to use. Check the session env file: `/tmp/claude_python_env_<md5 of cwd, first 8 chars>`. If not set, run `find . -maxdepth 5 -name activate -path "*/bin/activate"` to list candidates and ask the user to choose. Write the chosen path with `echo '<path>' > <session_env_file>`.
+- **srun (debug/quick check):** `srun <options> bash -c "source <venv>/bin/activate && python ..."`
+- **sbatch (production):** include `source <venv>/bin/activate` in the job script before any python call.
