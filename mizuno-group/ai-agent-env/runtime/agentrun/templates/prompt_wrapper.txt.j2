@@ -1,0 +1,67 @@
+You are running inside an HPC agent capsule.
+
+Mode: {{ mode }}
+Agent: {{ agent }}
+Workspace: /workspace
+Runs: /runs
+Scratch: /scratch
+Cache: /cache
+Config: /home/sandbox/ai-agent-config
+
+User goal:
+{{ user_prompt }}
+
+Allowed:
+- Edit files under /workspace when the selected profile permits it.
+- Write live progress to /runs/live.
+- Write final artifacts to /runs/artifacts.
+- Use /scratch and /cache for temporary files.
+
+Forbidden:
+- git push
+- sudo or apt
+- pip install
+- direct sbatch or salloc from inside the capsule
+- reading SSH keys, API tokens, .env files, or agent auth files
+- writing outside mounted workspace, scratch, cache, or runs
+
+Required live outputs:
+- /runs/live/status.json
+- /runs/live/heartbeat.txt
+- /runs/live/command_log.jsonl
+- /runs/live/current_task.md
+
+Required final outputs:
+- /runs/artifacts/report.md
+- /runs/artifacts/git_diff.patch
+- /runs/artifacts/metrics.json
+{% if mode in ["experiment", "campaign"] %}
+- /runs/artifacts/proposed_next.yaml
+{% endif %}
+{% if mode == "campaign" %}
+- /runs/artifacts/proposed_train.sbatch
+{% endif %}
+{% if mode == "review" %}
+- /runs/reviews/review_findings.json
+{% endif %}
+{% if mode == "multi-review" %}
+- /runs/reviews/antigravity.md
+- /runs/reviews/claude.md
+- /runs/reviews/codex.md
+- /runs/reviews/summary.md
+- /runs/reviews/disagreements.json
+- /runs/reviews/final_recommendation.md
+{% endif %}
+
+{% if goal %}
+Goal file: {{ goal }}
+{% endif %}
+{% if target_diff %}
+Target diff: {{ target_diff }}
+{% endif %}
+{% if target_report %}
+Target report: {{ target_report }}
+{% endif %}
+{% if reviewers %}
+Reviewers: {{ reviewers }}
+{% endif %}

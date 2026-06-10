@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=agentrun-{{ mode }}-{{ agent }}
+#SBATCH --partition={{ partition }}
+#SBATCH --time={{ time }}
+#SBATCH --mem={{ memory }}
+#SBATCH --cpus-per-task={{ cpus }}
+{% if gpus | int > 0 -%}
+#SBATCH --gres=gpu:{{ gpus }}
+{% endif -%}
+#SBATCH --output={{ run_dir }}/live/slurm.out
+#SBATCH --error={{ run_dir }}/live/slurm.err
+
+set -euo pipefail
+
+cd {{ submit_dir }}
+printf '%s\n' "${SLURM_JOB_ID:-}" > {{ run_dir }}/live/slurm_job_id.txt
+env | sort > {{ run_dir }}/artifacts/environment.txt
+apptainer --version > {{ run_dir }}/artifacts/container.txt 2>/dev/null || true
+set +e
+bash {{ run_dir }}/apptainer_exec.sh
+rc=$?
+set -e
+printf '%s\n' "$rc" > {{ run_dir }}/live/exit_code.txt
+exit "$rc"

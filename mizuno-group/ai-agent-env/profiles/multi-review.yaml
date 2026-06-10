@@ -1,0 +1,22 @@
+name: multi-review
+description: Multi-agent review collection and summary.
+resources:
+  gpus: 0
+  cpus: 4
+  memory: 32G
+  time: "02:00:00"
+outputs:
+  required:
+    - live/status.json
+    - reviews/antigravity.md
+    - reviews/claude.md
+    - reviews/codex.md
+    - reviews/summary.md
+    - reviews/disagreements.json
+    - reviews/final_recommendation.md
+policy:
+  read_only_workspace: true
+  forbid:
+    - git_push
+    - secret_read
+

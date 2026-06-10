@@ -1,0 +1,19 @@
+[runtime]
+profile = "assist"
+run_directory = ".agent-runs"
+
+[safety]
+allow_git_push = false
+allow_direct_sbatch_from_capsule = false
+allow_pip = false
+read_only_workspace = false
+
+[outputs]
+required = [
+  "live/status.json",
+  "live/heartbeat.txt",
+  "live/command_log.jsonl",
+  "artifacts/report.md",
+  "artifacts/git_diff.patch",
+  "artifacts/metrics.json",
+]

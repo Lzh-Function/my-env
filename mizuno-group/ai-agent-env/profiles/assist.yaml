@@ -1,0 +1,26 @@
+name: assist
+description: Coding assistance inside a short CPU capsule.
+resources:
+  gpus: 0
+  cpus: 4
+  memory: 32G
+  time: "01:00:00"
+outputs:
+  required:
+    - live/status.json
+    - live/heartbeat.txt
+    - live/stdout.log
+    - live/stderr.log
+    - live/command_log.jsonl
+    - artifacts/report.md
+    - artifacts/git_diff.patch
+    - artifacts/metrics.json
+policy:
+  forbid:
+    - git_push
+    - pip_install
+    - sudo
+    - apt
+    - secret_read
+    - direct_sbatch_from_capsule
+

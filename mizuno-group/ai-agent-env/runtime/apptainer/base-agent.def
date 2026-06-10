@@ -1,0 +1,48 @@
+Bootstrap: localimage
+From: ./base-system.sif
+
+%labels
+    Author mizuno-group
+    Version 0.1.0
+    Description Agent layer with uv, Claude Code, Codex, and Antigravity
+
+%post
+    set -eux
+
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    mv /root/.local/bin/uv /usr/local/bin/uv
+    chmod +x /usr/local/bin/uv
+    if [ -f /root/.local/bin/uvx ]; then
+        mv /root/.local/bin/uvx /usr/local/bin/uvx
+        chmod +x /usr/local/bin/uvx
+    fi
+
+    curl -fsSL https://claude.ai/install.sh | bash
+    curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
+    curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+    mkdir -p /home/sandbox/.local/bin
+
+    cat > /etc/profile.d/sandbox-env.sh << 'ENVEOF'
+#!/bin/bash
+export PYTHONUSERBASE=/output/.local
+export PATH=/output/.local/bin:/usr/local/bin:/usr/bin:/opt/conda/bin:$PATH
+export PYTHONUNBUFFERED=1
+
+if command -v python3 &>/dev/null; then
+    PYVER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    export PYTHONPATH=/output/.local/lib/python${PYVER}/site-packages:${PYTHONPATH:-}
+fi
+
+mkdir -p "$HOME/.local/bin"
+for cmd in claude codex antigravity agy gemini uv uvx; do
+    if command -v "$cmd" &>/dev/null && [ ! -e "$HOME/.local/bin/$cmd" ]; then
+        ln -sf "$(command -v "$cmd")" "$HOME/.local/bin/$cmd"
+    fi
+done
+ENVEOF
+    chmod +x /etc/profile.d/sandbox-env.sh
+
+%environment
+    export PATH=/usr/local/bin:/usr/bin:/opt/conda/bin:$PATH
+    export PYTHONUNBUFFERED=1

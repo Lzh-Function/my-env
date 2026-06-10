@@ -1,0 +1,160 @@
+{
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70"
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git branch *)",
+      "Bash(git worktree *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(echo *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(date *)",
+      "Bash(wc *)",
+      "Bash(which *)",
+      "Bash(type *)",
+      "Bash(sbatch *)",
+      "Bash(srun *)",
+      "Bash(squeue *)",
+      "Bash(scancel *)",
+      "Bash(sinfo *)",
+      "Bash(sacct *)",
+      "Bash(scontrol *)",
+      "Bash(touch /tmp/claude_allow_main_edit)",
+      "Bash(rm -f /tmp/claude_allow_main_edit)"
+    ],
+    "deny": [
+      "Read(.git/**)",
+      "Edit(.git/**)",
+      "Write(.git/**)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(./secrets/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.bashrc)",
+      "Read(.workspace_rc)",
+      "Bash(ssh *)",
+      "Bash(sudo *)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/*)",
+      "Bash(rm -rf /*)",
+      "Bash(git config *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip *)",
+      "Bash(conda *)",
+      "Bash(jupyter *)",
+      "Bash(ipython *)",
+      "Bash(pytest *)",
+      "Bash(torchrun *)",
+      "Bash(deepspeed *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(rm *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(chmod *)",
+      "Bash(ln *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/git-worktree-auto-create.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py"
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/check_login_node.py"
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/check_pip_forbidden.py"
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/check_sbatch_forbidden.py"
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/check_secret_read.py"
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/git-branch-guard.sh",
+            "if": "Bash(git *)"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/git-main-edit-guard.sh"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/permission-request-notify.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/stop-notify.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "language": "japanese",
+  "spinnerTipsEnabled": false,
+  "effortLevel": "high",
+  "theme": "dark",
+  "showTurnDuration": true,
+  "skipDangerousModePermissionPrompt": true
+}

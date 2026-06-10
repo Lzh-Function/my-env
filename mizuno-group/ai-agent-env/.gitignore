@@ -1,0 +1,13 @@
+.agent-runs/
+*.local.json
+*.local.toml
+*.secret.*
+secrets/
+tokens/
+auth.json
+.claude.json
+.env
+.env.*
+base-system.sif
+base-agent.sif
+

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+apptainer exec{% if gpus | int > 0 %} --nv{% endif %} \
+  --containall \
+  --cleanenv \
+  --home {{ run_dir }}/home:/home/sandbox \
+  --bind {{ run_dir }}/workspace:/workspace:rw \
+  --bind {{ run_dir }}:/runs:rw \
+  --bind {{ run_dir }}/scratch:/scratch:rw \
+  --bind {{ run_dir }}/cache:/cache:rw \
+  --bind {{ config_dir }}:/home/sandbox/ai-agent-config:ro \
+{% for mount in auth_mounts -%}
+  --bind {{ mount }} \
+{% endfor -%}
+  {{ image }} \
+  bash -l -c {{ agent_command | tojson }}
