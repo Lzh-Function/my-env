@@ -34,5 +34,15 @@ class AgentAdapter:
         if self.name == "claude":
             return [command, "--print", "--dangerously-skip-permissions", prompt_path]
         if self.name == "codex":
-            return [command, "exec", "--config", "/home/sandbox/ai-agent-config/agents/codex/config.toml", prompt_path]
+            return [
+                command,
+                "exec",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--skip-git-repo-check",
+                "--cd",
+                "/workspace",
+                prompt_path,
+            ]
+        if self.name == "antigravity" and command in {"agy", "antigravity"}:
+            return [command, "--print", prompt_path]
         return [command, prompt_path]

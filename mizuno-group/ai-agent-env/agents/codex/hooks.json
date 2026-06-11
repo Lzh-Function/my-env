@@ -1,12 +1,1 @@
-{
-  "pre_command": [
-    "../../common/hooks/block_dangerous_command.py",
-    "../../common/hooks/check_login_node.py",
-    "../../common/hooks/check_pip_forbidden.py",
-    "../../common/hooks/check_sbatch_forbidden.py",
-    "../../common/hooks/check_secret_read.py"
-  ],
-  "post_command": [
-    "../../common/hooks/update_run_status.py"
-  ]
-}
+../../common/codex/hooks.json

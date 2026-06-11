@@ -35,6 +35,7 @@ These rules apply to Antigravity, Claude Code, Codex, and any future agent launc
 - Write final outputs under `/runs/artifacts`.
 - Required live outputs are `status.json`, `heartbeat.txt`, `stdout.log`, `stderr.log`, and `command_log.jsonl`.
 - Required final outputs are `report.md`, `git_diff.patch`, and `metrics.json`.
+- The `status` field in `status.json` must be one of: `"success"`, `"failed"`, `"cancelled"`, `"timeout"`. Use `"success"` when all required outputs are written without error.
 
 ## Testing
 

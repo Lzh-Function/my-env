@@ -1,0 +1,11 @@
+{
+  "pre_command": [
+    "/home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py",
+    "/home/sandbox/ai-agent-config/common/hooks/check_login_node.py",
+    "/home/sandbox/ai-agent-config/common/hooks/check_pip_forbidden.py",
+    "/home/sandbox/ai-agent-config/common/hooks/check_sbatch_forbidden.py"
+  ],
+  "post_command": [
+    "/home/sandbox/ai-agent-config/common/hooks/update_run_status.py"
+  ]
+}

@@ -56,15 +56,8 @@
       "Bash(rm -rf ~/*)",
       "Bash(rm -rf /*)",
       "Bash(git config *)",
-      "Bash(python *)",
-      "Bash(python3 *)",
       "Bash(pip *)",
-      "Bash(conda *)",
-      "Bash(jupyter *)",
-      "Bash(ipython *)",
-      "Bash(pytest *)",
-      "Bash(torchrun *)",
-      "Bash(deepspeed *)"
+      "Bash(conda *)"
     ],
     "ask": [
       "Bash(git push *)",
@@ -76,45 +69,43 @@
     ]
   },
   "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/git-worktree-auto-create.sh"
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py"
+            "command": "~/.claude/hooks/block_dangerous_command.py"
           },
           {
             "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/check_login_node.py"
+            "command": "~/.claude/hooks/check_login_node.py"
           },
           {
             "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/check_pip_forbidden.py"
+            "command": "~/.claude/hooks/python_env_guard.py"
           },
           {
             "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/check_sbatch_forbidden.py"
+            "command": "~/.claude/hooks/check_pip_forbidden.py"
           },
           {
             "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/check_secret_read.py"
+            "command": "~/.claude/hooks/check_sbatch_forbidden.py"
           },
           {
             "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/git-branch-guard.sh",
+            "command": "~/.claude/hooks/git_branch_guard.py",
             "if": "Bash(git *)"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/check_secret_read.py"
           }
         ]
       },
@@ -123,7 +114,31 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/git-main-edit-guard.sh"
+            "command": "~/.claude/hooks/git_main_edit_guard.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/git_worktree_auto_create.py"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/update_run_status.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/post_edit_format.py"
           }
         ]
       }
@@ -134,7 +149,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/permission-request-notify.sh"
+            "command": "~/.claude/hooks/permission_request_notify.py"
           }
         ]
       }
@@ -145,7 +160,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/sandbox/ai-agent-config/common/hooks/stop-notify.sh"
+            "command": "~/.claude/hooks/stop_notify.py"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/summarize_session.py"
           }
         ]
       }

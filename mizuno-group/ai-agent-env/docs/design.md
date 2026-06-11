@@ -676,7 +676,12 @@ mkdir -p ~/.codex ~/.agents
 ln -sfn ~/ai-agent-config/agents/codex/config.toml ~/.codex/config.toml
 ln -sfn ~/ai-agent-config/agents/codex/hooks.json ~/.codex/hooks.json
 ln -sfn ~/ai-agent-config/agents/codex/AGENTS.md ~/.codex/AGENTS.md
-ln -sfn ~/ai-agent-config/agents/codex/skills ~/.agents/skills
+mkdir -p ~/.codex/skills
+for skill in ~/ai-agent-config/common/skills/*; do
+  [ -d "$skill" ] || continue
+  ln -sfn "$skill" ~/.codex/skills/"$(basename "$skill")"
+done
+ln -sfn ~/ai-agent-config/agents/codex/rules ~/.codex/rules
 
 # Antigravity / Gemini
 mkdir -p ~/.gemini

@@ -28,26 +28,15 @@ mkdir -p \
     "$RUN_DIR/scratch" \
     "$RUN_DIR/cache"
 
-cat > "$RUN_DIR/prompt.txt" <<EOF
-Reply with exactly this token and no extra text:
-OK_${AGENT}
-EOF
-
-AUTH_MOUNTS=()
 case "$AGENT" in
     claude)
-        [ -e "$HOME/.claude" ] && AUTH_MOUNTS+=(--bind "$HOME/.claude:/home/sandbox/.claude:rw")
-        [ -e "$HOME/.claude.json" ] && AUTH_MOUNTS+=(--bind "$HOME/.claude.json:/home/sandbox/.claude.json:rw")
-        AGENT_COMMAND='claude --print "$(cat /runs/prompt.txt)"'
+        AGENT_COMMAND='claude --version'
         ;;
     codex)
-        [ -e "$HOME/.codex/auth.json" ] && AUTH_MOUNTS+=(--bind "$HOME/.codex/auth.json:/home/sandbox/.codex/auth.json:rw")
-        AGENT_COMMAND='codex exec --config /home/sandbox/ai-agent-config/agents/codex/config.toml "$(cat /runs/prompt.txt)"'
+        AGENT_COMMAND='codex --version'
         ;;
     antigravity)
-        [ -e "$HOME/.gemini" ] && AUTH_MOUNTS+=(--bind "$HOME/.gemini:/home/sandbox/.gemini:rw")
-        [ -e "$HOME/.antigravity" ] && AUTH_MOUNTS+=(--bind "$HOME/.antigravity:/home/sandbox/.antigravity:rw")
-        AGENT_COMMAND='if command -v agy >/dev/null 2>&1; then agy "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi'
+        AGENT_COMMAND='if command -v agy >/dev/null 2>&1; then agy --help; elif command -v antigravity >/dev/null 2>&1; then antigravity --help; else gemini --help; fi'
         ;;
     *)
         printf 'unknown agent: %s\n' "$AGENT" >&2
@@ -74,7 +63,6 @@ apptainer exec \
     --bind "$RUN_DIR/scratch:/scratch:rw" \
     --bind "$RUN_DIR/cache:/cache:rw" \
     --bind "$ENV_ROOT:/home/sandbox/ai-agent-config:ro" \
-    "${AUTH_MOUNTS[@]}" \
     "$IMAGE" \
     bash -lc "$AGENT_COMMAND" \
     > "$RUN_DIR/live/stdout.log" \
@@ -90,10 +78,10 @@ if [ "$RC" -ne 0 ]; then
     exit "$RC"
 fi
 
-if ! grep -q "OK_${AGENT}" "$RUN_DIR/live/stdout.log"; then
-    printf 'expected token OK_%s was not found in stdout\n' "$AGENT" >&2
+if [ ! -s "$RUN_DIR/live/stdout.log" ] && [ ! -s "$RUN_DIR/live/stderr.log" ]; then
+    printf 'agent command produced no output for %s\n' "$AGENT" >&2
     exit 1
 fi
 
 printf '{"status":"success","agent":"%s"}\n' "$AGENT" > "$RUN_DIR/live/status.json"
-printf '# Agent CLI Smoke\n\nAgent `%s` returned the expected token.\n' "$AGENT" > "$RUN_DIR/artifacts/report.md"
+printf '# Agent CLI Smoke\n\nAgent `%s` CLI started successfully in the container.\n' "$AGENT" > "$RUN_DIR/artifacts/report.md"

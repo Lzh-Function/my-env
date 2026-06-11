@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
 DEFAULT_AGENT="antigravity"
 PROFILES="assist experiment campaign review multi-review"
 
@@ -12,7 +12,9 @@ Usage:
   agentrun validate
   agentrun doctor [--agent NAME|--all]
   agentrun dry-run MODE [options] PROMPT
-  agentrun assist|experiment|campaign|review|multi-review [options] PROMPT
+  agentrun assist [options] PROMPT          # interactive PTY session via srun --pty
+  agentrun assist --submit [options] PROMPT # batch via sbatch (non-interactive)
+  agentrun experiment|campaign|review|multi-review [options] PROMPT  # batch via sbatch
   agentrun smoke-test [--agent NAME]
   agentrun status
   agentrun logs [--follow]
@@ -27,6 +29,7 @@ Options:
   --goal PATH        goal.yaml path
   --gpus N           GPU count, default: 0
   --time HH:MM:SS    walltime, default comes from the selected profile
+  --partition NAME   Slurm partition, default: AGENTRUN_SLURM_PARTITION or cluster default
   --reviewers LIST   reviewer agents
   --target-diff PATH review target diff
   --target-report PATH review target report
@@ -45,7 +48,7 @@ is_profile() {
 
 agent_candidates() {
     case "$1" in
-        antigravity) printf 'antigravity agy gemini\n' ;;
+        antigravity) printf 'agy antigravity gemini\n' ;;
         claude) printf 'claude\n' ;;
         codex) printf 'codex\n' ;;
         *) return 1 ;;
@@ -71,12 +74,28 @@ first_available() {
 }
 
 agent_command() {
-    local agent="$1"
+    local agent="$1" mode="${2:-}" launch="${3:-batch}"
     case "$agent" in
-        claude) printf 'claude --print --dangerously-skip-permissions /runs/prompt.txt\n' ;;
-        codex) printf 'codex exec --config /home/sandbox/ai-agent-config/agents/codex/config.toml /runs/prompt.txt\n' ;;
+        claude)
+            if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
+                printf 'claude --dangerously-skip-permissions "$(cat /runs/prompt.txt)"\n'
+            else
+                printf 'claude --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"\n'
+            fi
+            ;;
+        codex)
+            if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
+                printf 'codex --dangerously-bypass-approvals-and-sandbox --cd /workspace "$(cat /runs/prompt.txt)"\n'
+            else
+                printf 'codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd /workspace "$(cat /runs/prompt.txt)"\n'
+            fi
+            ;;
         antigravity)
-            printf 'if command -v antigravity >/dev/null 2>&1; then antigravity /runs/prompt.txt; elif command -v agy >/dev/null 2>&1; then agy /runs/prompt.txt; else gemini /runs/prompt.txt; fi\n'
+            if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
+                printf 'if command -v agy >/dev/null 2>&1; then agy --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi\n'
+            else
+                printf 'if command -v agy >/dev/null 2>&1; then agy --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi\n'
+            fi
             ;;
         *) printf 'unknown agent: %s\n' "$agent" >&2; return 2 ;;
     esac
@@ -172,8 +191,16 @@ profile_required_outputs() {
     esac
 }
 
-partition_for() {
-    [ "${1:-0}" -gt 0 ] && printf 'large-david02\n' || printf 'small-david02\n'
+slurm_partition_args() {
+    local partition="${1:-${AGENTRUN_SLURM_PARTITION:-}}"
+    [ -n "$partition" ] || return 0
+    printf '#SBATCH --partition=%s\n' "$partition"
+}
+
+srun_partition_args() {
+    local partition="${1:-${AGENTRUN_SLURM_PARTITION:-}}"
+    [ -n "$partition" ] || return 0
+    printf ' --partition=%s' "$partition"
 }
 
 run_id() {
@@ -191,8 +218,9 @@ make_layout() {
         "$run_dir/cache" \
         "$run_dir/home/.claude" \
         "$run_dir/home/.codex" \
+        "$run_dir/home/.codex/skills" \
         "$run_dir/home/.agents" \
-        "$run_dir/home/.gemini" \
+        "$run_dir/home/.gemini/antigravity-cli" \
         "$run_dir/home/.antigravity"
     : > "$run_dir/live/stdout.log"
     : > "$run_dir/live/stderr.log"
@@ -226,38 +254,116 @@ auth_mounts() {
     local agent="$1"
     case "$agent" in
         claude)
-            [ -e "$HOME/.claude" ] && printf ' --bind %q:%q:rw' "$HOME/.claude" "/home/sandbox/.claude"
-            [ -e "$HOME/.claude.json" ] && printf ' --bind %q:%q:rw' "$HOME/.claude.json" "/home/sandbox/.claude.json"
+            # credentials are copied to run_dir/home at submit time; --home mount delivers them
             ;;
         codex)
-            [ -e "$HOME/.codex/auth.json" ] && printf ' --bind %q:%q:rw' "$HOME/.codex/auth.json" "/home/sandbox/.codex/auth.json"
+            # credentials are copied to run_dir/home at submit time; --home mount delivers them
             ;;
         antigravity)
-            [ -e "$HOME/.gemini" ] && printf ' --bind %q:%q:rw' "$HOME/.gemini" "/home/sandbox/.gemini"
-            [ -e "$HOME/.antigravity" ] && printf ' --bind %q:%q:rw' "$HOME/.antigravity" "/home/sandbox/.antigravity"
+            # credentials are copied to run_dir/home at submit time; --home mount delivers them
             ;;
     esac
+    return 0
+}
+
+copy_auth_credentials() {
+    local run_dir="$1" agent="$2"
+    if [ "$agent" = "claude" ]; then
+        [ -f "$HOME/.claude/.credentials.json" ] && \
+            cp "$HOME/.claude/.credentials.json" "$run_dir/home/.claude/.credentials.json"
+        [ -f "$HOME/.claude.json" ] && \
+            cp "$HOME/.claude.json" "$run_dir/home/.claude.json"
+    elif [ "$agent" = "codex" ]; then
+        [ -f "$HOME/.codex/auth.json" ] && \
+            cp "$HOME/.codex/auth.json" "$run_dir/home/.codex/auth.json"
+    elif [ "$agent" = "antigravity" ]; then
+        [ -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ] && \
+            cp "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" "$run_dir/home/.gemini/antigravity-cli/antigravity-oauth-token"
+        [ -f "$HOME/.gemini/antigravity-cli/installation_id" ] && \
+            cp "$HOME/.gemini/antigravity-cli/installation_id" "$run_dir/home/.gemini/antigravity-cli/installation_id"
+    fi
+}
+
+generate_container_config() {
+    local run_dir="$1" agent="$2" mode="$3"
+    local config_dir="$run_dir/container_config"
+    mkdir -p "$config_dir"
+    if [ "$agent" = "claude" ]; then
+        local base="$ROOT_DIR/agents/claude/settings.json"
+        local overlay=""
+        if [ "$mode" = "assist" ] && [ -f "$ROOT_DIR/agents/claude/settings.assist.json" ]; then
+            overlay="$ROOT_DIR/agents/claude/settings.assist.json"
+        elif [ "$mode" = "experiment" ] && [ -f "$ROOT_DIR/agents/claude/settings.experiment.json" ]; then
+            overlay="$ROOT_DIR/agents/claude/settings.experiment.json"
+        fi
+        if [ -n "$overlay" ] && command -v jq >/dev/null 2>&1; then
+            # Deep-merge base + overlay; concatenate permission arrays so hooks are preserved.
+            jq -s '
+              .[0] as $b | .[1] as $o |
+              $b + $o + {
+                permissions: {
+                  allow: (($b.permissions.allow // []) + ($o.permissions.allow // [])),
+                  deny:  (($b.permissions.deny  // []) + ($o.permissions.deny  // [])),
+                  ask:   (($b.permissions.ask   // []) + ($o.permissions.ask   // []))
+                }
+              }
+            ' "$base" "$overlay" > "$config_dir/settings.json"
+        else
+            cp "$base" "$config_dir/settings.json"
+        fi
+    elif [ "$agent" = "codex" ]; then
+        cp "$(codex_config_source "$mode")" "$config_dir/config.toml"
+    fi
+}
+
+codex_config_source() {
+    local mode="${1:-}"
+    if [ "$mode" = "assist" ] && [ -f "$ROOT_DIR/agents/codex/config.assist.toml" ]; then
+        printf '%s\n' "$ROOT_DIR/agents/codex/config.assist.toml"
+    elif [ "$mode" = "experiment" ] && [ -f "$ROOT_DIR/agents/codex/config.experiment.toml" ]; then
+        printf '%s\n' "$ROOT_DIR/agents/codex/config.experiment.toml"
+    else
+        printf '%s\n' "$ROOT_DIR/agents/codex/config.toml"
+    fi
+}
+
+link_codex_shared_assets() {
+    local run_dir="$1"
+    local skill skill_name
+    mkdir -p "$run_dir/home/.codex/skills"
+    cp "$run_dir/container_config/config.toml" "$run_dir/home/.codex/config.toml"
+    for skill in "$ROOT_DIR"/common/skills/*; do
+        [ -d "$skill" ] || continue
+        skill_name="$(basename "$skill")"
+        ln -sfn "/home/sandbox/ai-agent-config/common/skills/$skill_name" \
+            "$run_dir/home/.codex/skills/$skill_name"
+    done
 }
 
 home_config_mounts() {
-    local agent="$1"
+    local agent="$1" run_dir="${2:-}" mode="${3:-}"
     case "$agent" in
         claude)
+            local settings="$ROOT_DIR/agents/claude/settings.json"
+            if [ -n "$run_dir" ] && [ -f "$run_dir/container_config/settings.json" ]; then
+                settings="$run_dir/container_config/settings.json"
+            fi
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/CLAUDE.md" "/home/sandbox/.claude/CLAUDE.md"
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/settings.json" "/home/sandbox/.claude/settings.json"
+            printf ' --bind %q:%q:ro' "$settings" "/home/sandbox/.claude/settings.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.claude/hooks"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/skills" "/home/sandbox/.claude/skills"
             ;;
         codex)
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/config.toml" "/home/sandbox/.codex/config.toml"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/hooks.json" "/home/sandbox/.codex/hooks.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/AGENTS.md" "/home/sandbox/.codex/AGENTS.md"
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/skills" "/home/sandbox/.agents/skills"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/rules" "/home/sandbox/.codex/rules"
             ;;
         antigravity)
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/settings.json" "/home/sandbox/.gemini/settings.json"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/settings.json" "/home/sandbox/.gemini/antigravity-cli/settings.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/GEMINI.md" "/home/sandbox/.gemini/GEMINI.md"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/AGENTS.md" "/home/sandbox/.gemini/AGENTS.md"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/antigravity-cli/hooks.json"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/skills" "/home/sandbox/.gemini/antigravity-cli/skills"
             ;;
     esac
 }
@@ -308,31 +414,35 @@ EOF
 }
 
 apptainer_command() {
-    local mode="$1" agent="$2" run_dir="$3" gpus="$4"
+    local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
     [ "$gpus" -gt 0 ] && nv=" --nv"
     local cmd
-    cmd="$(agent_command "$agent")"
+    cmd="$(agent_command "$agent" "$mode" "$launch")"
     printf 'apptainer exec%s --containall --cleanenv --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q:ro' \
         "$nv" \
         "$run_dir/home" "/home/sandbox" \
-        "$run_dir/workspace" "/workspace:rw" \
+        "$repo" "/workspace:rw" \
         "$run_dir" "/runs:rw" \
         "$run_dir/scratch" "/scratch:rw" \
         "$run_dir/cache" "/cache:rw" \
         "$ROOT_DIR" "/home/sandbox/ai-agent-config"
     auth_mounts "$agent"
-    home_config_mounts "$agent"
+    home_config_mounts "$agent" "$run_dir" "$mode"
     printf ' %q bash -l -c %q\n' "$image" "$cmd"
 }
 
 write_plan() {
-    local mode="$1" agent="$2" repo="$3" goal="$4" gpus="$5" time_limit="$6" prompt="$7" run_dir="$8"
-    local cpus mem partition
+    local mode="$1" agent="$2" repo="$3" goal="$4" gpus="$5" time_limit="$6" prompt="$7" run_dir="$8" partition="${9:-}" launch="${10:-batch}"
+    local cpus mem
     cpus="$(profile_cpus "$mode")"
     mem="$(profile_mem "$mode")"
-    partition="$(partition_for "$gpus")"
+    repo="$(cd "$repo" && pwd)"
     make_layout "$run_dir"
+    generate_container_config "$run_dir" "$agent" "$mode"
+    if [ "$agent" = "codex" ]; then
+        link_codex_shared_assets "$run_dir"
+    fi
     write_prompt "$run_dir/prompt.txt" "$mode" "$agent" "$repo" "$prompt"
     if [ -n "$goal" ]; then
         cp "$goal" "$run_dir/goal.yaml"
@@ -346,12 +456,14 @@ agent: $agent
 repo: $repo
 goal: $goal
 EOF
-    apptainer_command "$mode" "$agent" "$run_dir" "$gpus" > "$run_dir/apptainer_exec.sh"
+    apptainer_command "$mode" "$agent" "$run_dir" "$gpus" "$repo" "$launch" > "$run_dir/apptainer_exec.sh"
     sed -i '1i#!/usr/bin/env bash\nset -euo pipefail' "$run_dir/apptainer_exec.sh"
     cat > "$run_dir/submit.sbatch" <<EOF
 #!/usr/bin/env bash
 #SBATCH --job-name=agentrun-$mode-$agent
-#SBATCH --partition=$partition
+EOF
+    slurm_partition_args "$partition" >> "$run_dir/submit.sbatch"
+    cat >> "$run_dir/submit.sbatch" <<EOF
 #SBATCH --time=$time_limit
 #SBATCH --mem=$mem
 #SBATCH --cpus-per-task=$cpus
@@ -364,15 +476,22 @@ EOF
 #SBATCH --error=$run_dir/live/slurm.err
 
 set -euo pipefail
+_cleanup_home() { rm -rf $run_dir/home; }
+trap _cleanup_home EXIT
 printf '%s\n' "\${SLURM_JOB_ID:-}" > $run_dir/live/slurm_job_id.txt
 env | sort > $run_dir/artifacts/environment.txt
 apptainer --version > $run_dir/artifacts/container.txt 2>/dev/null || true
 set +e
-bash $run_dir/apptainer_exec.sh
-rc=$?
+bash $run_dir/apptainer_exec.sh 2>>"$run_dir/live/stderr.log"
+rc=\$?
 set -e
-printf '%s\n' "$rc" > $run_dir/live/exit_code.txt
-exit "$rc"
+printf '%s\n' "\$rc" > $run_dir/live/exit_code.txt
+if [ "\$rc" -eq 0 ]; then
+    printf '{"status":"success","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\${SLURM_JOB_ID:-}" > $run_dir/live/status.json
+else
+    printf '{"status":"failed","exit_code":"%s","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\$rc" "\${SLURM_JOB_ID:-}" > $run_dir/live/status.json
+fi
+exit "\$rc"
 EOF
     chmod +x "$run_dir/apptainer_exec.sh" "$run_dir/submit.sbatch"
 }
@@ -406,6 +525,10 @@ command_validate() {
         agents/claude/settings.json \
         agents/codex/AGENTS.md \
         agents/codex/config.toml \
+        agents/codex/config.assist.toml \
+        agents/codex/config.experiment.toml \
+        agents/codex/hooks.json \
+        common/codex/hooks.json \
         agents/antigravity/AGENTS.md \
         agents/antigravity/GEMINI.md \
         runtime/apptainer/base-system.def \
@@ -435,7 +558,7 @@ command_validate() {
             missing=1
         fi
     done
-    for hook in "$ROOT_DIR"/common/hooks/* "$ROOT_DIR"/claude/hooks/*; do
+    for hook in "$ROOT_DIR"/common/hooks/*; do
         [ -e "$hook" ] || continue
         if [ -x "$hook" ]; then
             printf '[OK] executable:%s\n' "${hook#$ROOT_DIR/}"
@@ -452,7 +575,7 @@ command_validate() {
                 printf '[FAIL] json:%s\n' "${json_file#$ROOT_DIR/}"
                 missing=1
             fi
-        done < <(find "$ROOT_DIR/agents" "$ROOT_DIR/claude" -name '*.json' -type f)
+        done < <(find "$ROOT_DIR/agents" "$ROOT_DIR/common/codex" -name '*.json' -type f)
     else
         printf '[FAIL] jq:not-found - JSON validation unavailable\n'
         missing=1
@@ -472,7 +595,10 @@ command_validate() {
             printf '[FAIL] symlink:%s\n' "${link#$ROOT_DIR/}"
             missing=1
         fi
-    done < <(find "$ROOT_DIR" -type l)
+    done < <(find "$ROOT_DIR" \
+        -path "$ROOT_DIR/.git" -prune -o \
+        -path "$ROOT_DIR/.agent-runs" -prune -o \
+        -type l -print)
     return "$missing"
 }
 
@@ -486,12 +612,19 @@ command_doctor() {
             *) shift ;;
         esac
     done
-    for cmd in sinfo squeue srun sbatch apptainer uv jq; do
+    for cmd in sinfo squeue srun sbatch jq; do
         if command -v "$cmd" >/dev/null 2>&1; then
             printf '[OK] command:%s - %s\n' "$cmd" "$(command -v "$cmd")"
         else
             printf '[FAIL] command:%s - not found\n' "$cmd"
             failed=1
+        fi
+    done
+    for cmd in apptainer uv; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            printf '[OK] command:%s - %s\n' "$cmd" "$(command -v "$cmd")"
+        else
+            printf '[WARN] command:%s - not found on this host; may be provided on compute nodes or inside the image\n' "$cmd"
         fi
     done
     if [ "$all" -eq 1 ]; then
@@ -540,6 +673,7 @@ parse_run_args() {
     GOAL=""
     GPUS=0
     TIME_LIMIT=""
+    PARTITION="${AGENTRUN_SLURM_PARTITION:-}"
     SHOW_MOUNTS=0
     SUBMIT=0
     REVIEWERS=""
@@ -554,6 +688,7 @@ parse_run_args() {
             --goal) GOAL="$2"; shift 2 ;;
             --gpus) GPUS="$2"; shift 2 ;;
             --time) TIME_LIMIT="$2"; shift 2 ;;
+            --partition) PARTITION="$2"; shift 2 ;;
             --show-mounts) SHOW_MOUNTS=1; shift ;;
             --reviewers) REVIEWERS="$2"; shift 2 ;;
             --target-diff) TARGET_DIFF="$2"; shift 2 ;;
@@ -572,19 +707,43 @@ command_dry_run() {
     parse_run_args "$@"
     local id run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
+    REPO="$(cd "$REPO" && pwd)"
     id="$(run_id "$mode" "$AGENT")"
     run_dir="$PWD/.agent-runs/$id"
     printf 'run_id: %s\nselected_profile: %s\nselected_agent: %s\nrepo: %s\nhost_run_directory: %s\n' "$id" "$mode" "$AGENT" "$REPO" "$run_dir"
-    printf 'slurm_command: srun --partition=%s --time=%s --mem=%s --cpus-per-task=%s' "$(partition_for "$GPUS")" "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
-    if [ "$GPUS" -gt 0 ]; then
-        printf ' --gres=gpu:%s' "$GPUS"
+    if [ "$mode" = "assist" ]; then
+        if [ "$SUBMIT" -eq 1 ]; then
+            printf 'launch_method: sbatch\n'
+            printf 'sbatch_args:'
+            slurm_partition_args "$PARTITION"
+            printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
+            [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
+            printf '\n'
+        else
+            printf 'launch_method: srun --pty (interactive)\n'
+            printf 'slurm_command: srun'
+            srun_partition_args "$PARTITION"
+            printf ' --time=%s --mem=%s --cpus-per-task=%s --pty' "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
+            [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
+            printf '\n'
+        fi
+    else
+        printf 'launch_method: sbatch\n'
+        printf 'sbatch_args:'
+        slurm_partition_args "$PARTITION"
+        printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
+        [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
+        printf '\n'
     fi
-    printf ' --pty\n'
+    local launch="batch"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
+        launch="interactive"
+    fi
     printf 'apptainer: '
-    apptainer_command "$mode" "$AGENT" "$run_dir" "$GPUS"
+    apptainer_command "$mode" "$AGENT" "$run_dir" "$GPUS" "$REPO" "$launch"
     printf '\nbind_mounts:\n'
     printf '  %s/home:/home/sandbox\n' "$run_dir"
-    printf '  %s/workspace:/workspace:rw\n' "$run_dir"
+    printf '  %s:/workspace:rw\n' "$REPO"
     printf '  %s:/runs:rw\n' "$run_dir"
     printf '  %s/scratch:/scratch:rw\n' "$run_dir"
     printf '  %s/cache:/cache:rw\n' "$run_dir"
@@ -592,13 +751,17 @@ command_dry_run() {
     if [ "$SHOW_MOUNTS" -eq 1 ]; then
         auth_mounts "$AGENT"
         printf '\n'
-        home_config_mounts "$AGENT"
+        home_config_mounts "$AGENT" "$run_dir" "$mode"
         printf '\n'
     fi
     printf '\n--- capsule.yaml ---\n'
     printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\n' "$id" "$mode" "$AGENT" "$REPO" "$GOAL"
     printf '\n--- prompt.txt ---\n'
-    write_prompt /dev/stdout "$mode" "$AGENT" "$REPO" "$PROMPT"
+    local _ptmp
+    _ptmp="$(mktemp)"
+    write_prompt "$_ptmp" "$mode" "$AGENT" "$REPO" "$PROMPT"
+    cat "$_ptmp"
+    rm -f "$_ptmp"
     printf '\n--- expected artifacts ---\n'
     for path in \
         live/status.json \
@@ -625,19 +788,44 @@ command_prepare() {
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
     id="$(run_id "$mode" "$AGENT")"
     run_dir="$PWD/.agent-runs/$id"
-    write_plan "$mode" "$AGENT" "$REPO" "$GOAL" "$GPUS" "$TIME_LIMIT" "$PROMPT" "$run_dir"
+    local launch="batch"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
+        launch="interactive"
+    fi
+    write_plan "$mode" "$AGENT" "$REPO" "$GOAL" "$GPUS" "$TIME_LIMIT" "$PROMPT" "$run_dir" "$PARTITION" "$launch"
     printf 'prepared run: %s\n' "$run_dir"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
+        copy_auth_credentials "$run_dir" "$AGENT"
+        local cleanup_home
+        cleanup_home="$(printf '%q' "$run_dir/home")"
+        trap "rm -rf $cleanup_home" EXIT INT TERM
+        local srun_args=("--time=$TIME_LIMIT" "--mem=$(profile_mem "$mode")" "--cpus-per-task=$(profile_cpus "$mode")" "--pty")
+        [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
+        [ "$GPUS" -gt 0 ] && srun_args+=("--gres=gpu:$GPUS")
+        printf 'launching interactive session via srun %s\n' "${srun_args[*]}"
+        srun "${srun_args[@]}" "$run_dir/apptainer_exec.sh" || true
+        rm -rf "$run_dir/home"
+        return 0
+    fi
     printf 'submit script: %s\n' "$run_dir/submit.sbatch"
     if [ "$SUBMIT" -eq 1 ]; then
+        copy_auth_credentials "$run_dir" "$AGENT"
         sbatch "$run_dir/submit.sbatch"
+    elif [ "$AGENT" = "claude" ] || [ "$AGENT" = "codex" ]; then
+        printf 'auth credentials were not staged; rerun with --submit to copy them before sbatch\n'
     fi
 }
 
 command_smoke_test() {
     local agent="$DEFAULT_AGENT"
+    local submit=0 partition="${AGENTRUN_SLURM_PARTITION:-}" time_limit="00:10:00" mem="4000M"
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --agent) agent="$2"; shift 2 ;;
+            --partition) partition="$2"; shift 2 ;;
+            --time) time_limit="$2"; shift 2 ;;
+            --mem) mem="$2"; shift 2 ;;
+            --submit) submit=1; shift ;;
             *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
         esac
     done
@@ -646,21 +834,44 @@ command_smoke_test() {
     run_dir="$PWD/.agent-runs/$id"
     make_layout "$run_dir"
     cat > "$run_dir/live/status.json" <<EOF
-{"status":"success","agent":"$agent","mode":"smoke-test","note":"local shell smoke-test; no Slurm, Apptainer, Python, or agent process was started"}
+{"status":"prepared","agent":"$agent","mode":"smoke-test","note":"submit.sbatch must run on a Slurm compute node to complete this smoke test"}
 EOF
-    date -Iseconds > "$run_dir/live/heartbeat.txt"
-    printf 'smoke-test stdout\n' > "$run_dir/live/stdout.log"
-    : > "$run_dir/live/stderr.log"
-    printf '{"event":"smoke-test","agent":"%s","status":"success"}\n' "$agent" > "$run_dir/live/command_log.jsonl"
-    printf 'Smoke test completed.\n' > "$run_dir/live/current_task.md"
-    printf '0\n' > "$run_dir/live/exit_code.txt"
-    printf '# Smoke Test Report\n\nPassed.\n' > "$run_dir/artifacts/report.md"
-    : > "$run_dir/artifacts/git_diff.patch"
-    printf '{"smoke_test":true,"status":"passed","agent":"%s"}\n' "$agent" > "$run_dir/artifacts/metrics.json"
     printf 'run_id: %s\nagent: %s\nmode: smoke-test\n' "$id" "$agent" > "$run_dir/capsule.yaml"
-    printf 'Local shell smoke-test prompt.\n' > "$run_dir/prompt.txt"
+    printf 'Write {"smoke_test": true, "status": "passed"} to /runs/artifacts/metrics.json.\n' > "$run_dir/prompt.txt"
     printf 'mode: smoke-test\nagent: %s\n' "$agent" > "$run_dir/goal.yaml"
-    printf '%s\n' "$run_dir"
+    cat > "$run_dir/submit.sbatch" <<EOF
+#!/usr/bin/env bash
+#SBATCH --job-name=agentrun-smoke-$agent
+EOF
+    slurm_partition_args "$partition" >> "$run_dir/submit.sbatch"
+    cat >> "$run_dir/submit.sbatch" <<EOF
+#SBATCH --time=$time_limit
+#SBATCH --mem=$mem
+#SBATCH --cpus-per-task=1
+#SBATCH --output=$run_dir/live/slurm.out
+#SBATCH --error=$run_dir/live/slurm.err
+
+set -euo pipefail
+printf '%s\n' "\${SLURM_JOB_ID:-}" > "$run_dir/live/slurm_job_id.txt"
+printf '{"status":"running","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/status.json"
+date -Iseconds > "$run_dir/live/heartbeat.txt"
+printf 'Smoke test running on node %s\n' "\${SLURMD_NODENAME:-unknown}" > "$run_dir/live/stdout.log"
+: > "$run_dir/live/stderr.log"
+printf '{"event":"smoke-test","agent":"%s","status":"running","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/command_log.jsonl"
+printf '{"event":"slurm-job","status":"running"}\n' > "$run_dir/live/events.jsonl"
+printf 'Smoke test completed on compute node.\n' > "$run_dir/live/current_task.md"
+: > "$run_dir/artifacts/git_diff.patch"
+printf '# Smoke Test Report\n\nPassed on Slurm job %s.\n' "\${SLURM_JOB_ID:-}" > "$run_dir/artifacts/report.md"
+printf '{"smoke_test":true,"status":"passed","agent":"%s","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/artifacts/metrics.json"
+printf '{"status":"success","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/status.json"
+printf '0\n' > "$run_dir/live/exit_code.txt"
+EOF
+    chmod +x "$run_dir/submit.sbatch"
+    printf 'prepared smoke-test run: %s\n' "$run_dir"
+    printf 'submit script: %s\n' "$run_dir/submit.sbatch"
+    if [ "$submit" -eq 1 ]; then
+        sbatch "$run_dir/submit.sbatch"
+    fi
 }
 
 command_status() {
@@ -669,9 +880,9 @@ command_status() {
 
 command_logs() {
     if [ "${1:-}" = "--follow" ]; then
-        tail -f "$PWD/.agent-runs/latest/live/stdout.log"
+        tail -f "$PWD/.agent-runs/latest/live/slurm.out"
     else
-        cat "$PWD/.agent-runs/latest/live/stdout.log"
+        cat "$PWD/.agent-runs/latest/live/slurm.out"
     fi
 }
 
@@ -816,4 +1027,4 @@ main() {
     esac
 }
 
-main "$@"
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] || main "$@"

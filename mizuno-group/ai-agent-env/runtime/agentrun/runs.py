@@ -16,8 +16,9 @@ RUN_SUBDIRS = (
     "cache",
     "home/.claude",
     "home/.codex",
+    "home/.codex/skills",
     "home/.agents",
-    "home/.gemini",
+    "home/.gemini/antigravity-cli",
     "home/.antigravity",
 )
 

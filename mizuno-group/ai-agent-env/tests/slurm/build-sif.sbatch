@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=ai-agent-build-sif
-#SBATCH --partition=medium-creator
-#SBATCH --time=02:00:00
+#SBATCH --partition=large-creator
+#SBATCH --time=04:00:00
 #SBATCH --mem=120000M
 #SBATCH --cpus-per-task=4
 #SBATCH --output=.agent-runs/creator-build-sif/%j.out

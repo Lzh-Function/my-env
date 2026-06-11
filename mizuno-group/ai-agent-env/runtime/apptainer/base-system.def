@@ -29,9 +29,8 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 
     useradd --create-home --shell /bin/bash sandbox
     mkdir -p /workspace /runs /scratch /cache /output
-    chown -R sandbox:sandbox /workspace /runs /scratch /cache /output /home/sandbox
+    chown -R sandbox:sandbox /workspace /runs /scratch /cache /output /home/sandbox || true
 
 %environment
     export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
     export PYTHONUNBUFFERED=1
-

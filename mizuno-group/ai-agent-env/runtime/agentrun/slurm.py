@@ -13,21 +13,14 @@ class SlurmRequest:
     memory: str
     time: str
     gpus: int = 0
-
-
-def partition_for_gpus(gpus: int) -> str:
-    return "large-david02" if gpus > 0 else "small-david02"
+    partition: str | None = None
 
 
 def build_srun(request: SlurmRequest) -> list[str]:
-    command = [
-        "srun",
-        f"--partition={partition_for_gpus(request.gpus)}",
-        f"--time={request.time}",
-        f"--mem={request.memory}",
-        f"--cpus-per-task={request.cpus}",
-        "--pty",
-    ]
+    command = ["srun"]
+    if request.partition:
+        command.append(f"--partition={request.partition}")
+    command.extend([f"--time={request.time}", f"--mem={request.memory}", f"--cpus-per-task={request.cpus}", "--pty"])
     if request.gpus > 0:
         command.append(f"--gres=gpu:{request.gpus}")
     return command
@@ -37,11 +30,12 @@ def render_sbatch(request: SlurmRequest, run_dir: str) -> str:
     lines = [
         "#!/usr/bin/env bash",
         f"#SBATCH --job-name=agentrun-{request.mode}-{request.agent}",
-        f"#SBATCH --partition={partition_for_gpus(request.gpus)}",
         f"#SBATCH --time={request.time}",
         f"#SBATCH --mem={request.memory}",
         f"#SBATCH --cpus-per-task={request.cpus}",
     ]
+    if request.partition:
+        lines.insert(2, f"#SBATCH --partition={request.partition}")
     if request.gpus > 0:
         lines.append(f"#SBATCH --gres=gpu:{request.gpus}")
     lines.extend(
