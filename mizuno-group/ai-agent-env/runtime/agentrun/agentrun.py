@@ -297,7 +297,7 @@ def build_apptainer_command(args: argparse.Namespace, run_dir: Path) -> list[str
             shell_command = 'codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd /workspace "$(cat /runs/prompt.txt)"'
     elif adapter.name == "antigravity":
         if interactive:
-            shell_command = 'if command -v agy >/dev/null 2>&1; then agy --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi'
+            shell_command = 'if command -v agy >/dev/null 2>&1; then agy --dangerously-skip-permissions -i "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --dangerously-skip-permissions -i "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi'
         else:
             shell_command = 'if command -v agy >/dev/null 2>&1; then agy --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi'
     else:
