@@ -798,9 +798,8 @@ command_prepare() {
     printf 'prepared run: %s\n' "$run_dir"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         copy_auth_credentials "$run_dir" "$AGENT"
-        local cleanup_home
-        cleanup_home="$(printf '%q' "$run_dir/home")"
-        trap "rm -rf $cleanup_home" EXIT INT TERM
+        _cleanup_home_assist() { rm -rf "$run_dir/home"; }
+        trap _cleanup_home_assist EXIT INT TERM
         local srun_args=("--time=$TIME_LIMIT" "--mem=$(profile_mem "$mode")" "--cpus-per-task=$(profile_cpus "$mode")" "--pty")
         [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
         [ "$GPUS" -gt 0 ] && srun_args+=("--gres=gpu:$GPUS")
