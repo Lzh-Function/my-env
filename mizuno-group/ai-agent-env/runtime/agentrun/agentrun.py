@@ -330,6 +330,7 @@ def home_config_mounts(agent: str, run_dir: Path | None = None, mode: str = "") 
         return [
             f"{ROOT / 'agents' / 'antigravity' / 'GEMINI.md'}:/home/sandbox/.gemini/GEMINI.md:ro",
             f"{ROOT / 'agents' / 'antigravity' / 'AGENTS.md'}:/home/sandbox/.gemini/AGENTS.md:ro",
+            f"{ROOT / 'agents' / 'antigravity' / 'hooks.json'}:/home/sandbox/.gemini/antigravity-cli/hooks.json:ro",
             f"{ROOT / 'common' / 'hooks'}:/home/sandbox/.gemini/antigravity-cli/hooks:ro",
             f"{ROOT / 'agents' / 'antigravity' / 'skills'}:/home/sandbox/.gemini/antigravity-cli/skills:ro",
         ]
