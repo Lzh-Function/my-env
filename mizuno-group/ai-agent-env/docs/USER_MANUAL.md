@@ -63,7 +63,7 @@ Claude Code については、追加で以下を確認します。
 ./runtime/agentrun/agentrun doctor --agent claude
 ```
 
-Slurm command、Apptainer、Claude Code CLI、image、auth など、ローカル実行に必要な前提を確認します。
+Slurm command、Apptainer、Claude Code CLI、image など、ローカル実行に必要な前提を確認します。
 
 ### Dry Run
 
@@ -71,7 +71,7 @@ Slurm command、Apptainer、Claude Code CLI、image、auth など、ローカル
 ./runtime/agentrun/agentrun dry-run assist --agent claude --partition small-creator --show-mounts "Hello"
 ```
 
-run directory を作成し、Claude Code は起動せずに、予定される Slurm command と Apptainer command を表示します。
+run directory のパス（host_run_directory）を計算・表示し、Claude Code は起動せずに、予定される Slurm command と Apptainer command を表示します。
 
 本番実行前に以下を確認する用途で使います。
 
@@ -116,7 +116,7 @@ run directory を作成し、Claude Code は起動せずに、予定される Sl
 ### Experiment
 
 ```bash
-./runtime/agentrun/agentrun experiment --agent claude --partition small-creator --goal path/to/goal.yaml --repo . "Run the goal"
+./runtime/agentrun/agentrun experiment --submit --agent claude --partition small-creator --goal path/to/goal.yaml --repo . "Run the goal"
 ```
 
 挙動:
@@ -538,7 +538,7 @@ Codex については、追加で以下を確認します。
 ./runtime/agentrun/agentrun doctor --agent codex
 ```
 
-Slurm command、Apptainer、Codex CLI、image、Codex auth など、ローカル実行に必要な前提を確認します。
+Slurm command、Apptainer、Codex CLI、image など、ローカル実行に必要な前提を確認します。
 
 ### Dry Run
 
@@ -546,7 +546,7 @@ Slurm command、Apptainer、Codex CLI、image、Codex auth など、ローカル
 ./runtime/agentrun/agentrun dry-run assist --agent codex --partition small-creator --show-mounts "Hello"
 ```
 
-run directory を作成し、Codex は起動せずに、予定される Slurm command と Apptainer command を表示します。
+run directory のパス（host_run_directory）を計算・表示し、Codex は起動せずに、予定される Slurm command と Apptainer command を表示します。
 
 本番実行前に以下を確認する用途で使います。
 
@@ -591,7 +591,7 @@ interactive TUI が不要な場合に使います。
 ### Experiment
 
 ```bash
-./runtime/agentrun/agentrun experiment --agent codex --partition small-creator --goal path/to/goal.yaml --repo . "Run the goal"
+./runtime/agentrun/agentrun experiment --submit --agent codex --partition small-creator --goal path/to/goal.yaml --repo . "Run the goal"
 ```
 
 挙動:
@@ -1054,7 +1054,7 @@ Antigravity については、追加で以下を確認します。
 ./runtime/agentrun/agentrun doctor --agent antigravity
 ```
 
-Slurm command、Apptainer、Antigravity CLI、image、auth など、ローカル実行に必要な前提を確認します。
+Slurm command、Apptainer、Antigravity CLI、image など、ローカル実行に必要な前提を確認します。
 
 ### Dry Run
 
@@ -1062,7 +1062,7 @@ Slurm command、Apptainer、Antigravity CLI、image、auth など、ローカル
 ./runtime/agentrun/agentrun dry-run assist --agent antigravity --partition small-creator --show-mounts "Hello"
 ```
 
-run directory を作成し、Antigravity は起動せずに、予定される Slurm command と Apptainer command を表示します。
+run directory のパス（host_run_directory）を計算・表示し、Antigravity は起動せずに、予定される Slurm command と Apptainer command を表示します。
 
 本番実行前に以下を確認する用途で使います。
 
@@ -1100,7 +1100,7 @@ run directory を作成し、Antigravity は起動せずに、予定される Sl
 ### Experiment
 
 ```bash
-./runtime/agentrun/agentrun experiment --agent antigravity --partition small-creator --goal path/to/goal.yaml --repo . "Run the goal"
+./runtime/agentrun/agentrun experiment --submit --agent antigravity --partition small-creator --goal path/to/goal.yaml --repo . "Run the goal"
 ```
 
 挙動:

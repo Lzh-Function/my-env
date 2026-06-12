@@ -376,13 +376,8 @@ home_config_mounts() {
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/rules" "/home/sandbox/.codex/rules"
             ;;
         antigravity)
-            local ag_settings="$ROOT_DIR/agents/antigravity/settings.json"
-            if [ -n "$run_dir" ] && [ -f "$run_dir/container_config/settings.json" ]; then
-                ag_settings="$run_dir/container_config/settings.json"
-            fi
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/GEMINI.md" "/home/sandbox/.gemini/GEMINI.md"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/AGENTS.md" "/home/sandbox/.gemini/AGENTS.md"
-            printf ' --bind %q:%q:ro' "$ag_settings" "/home/sandbox/.gemini/settings.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/antigravity-cli/hooks.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.gemini/antigravity-cli/hooks"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/skills" "/home/sandbox/.gemini/antigravity-cli/skills"
