@@ -15,8 +15,13 @@ def render_prompt(
     target_report: str | None = None,
     agents: str | None = None,
 ) -> str:
-    lines = [
-        "You are running inside an HPC agent capsule.",
+    lines = []
+    if agent == "antigravity" and mode in ["experiment", "campaign"]:
+        lines.append("/goal You are running inside an HPC agent capsule.")
+    else:
+        lines.append("You are running inside an HPC agent capsule.")
+    
+    lines.extend([
         "",
         f"Mode: {mode}",
         f"Agent: {agent}",

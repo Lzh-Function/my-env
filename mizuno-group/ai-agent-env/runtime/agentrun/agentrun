@@ -372,8 +372,14 @@ home_config_mounts() {
 
 write_prompt() {
     local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5"
+    
+    local prefix=""
+    if [ "$agent" = "antigravity" ] && { [ "$mode" = "experiment" ] || [ "$mode" = "campaign" ]; }; then
+        prefix="/goal "
+    fi
+
     cat > "$path" <<EOF
-You are running inside an HPC agent capsule.
+${prefix}You are running inside an HPC agent capsule.
 
 Mode: $mode
 Agent: $agent
