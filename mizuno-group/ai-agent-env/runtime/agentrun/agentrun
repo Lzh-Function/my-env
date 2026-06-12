@@ -281,6 +281,8 @@ copy_auth_credentials() {
             cp "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" "$run_dir/home/.gemini/antigravity-cli/antigravity-oauth-token"
         [ -f "$HOME/.gemini/antigravity-cli/installation_id" ] && \
             cp "$HOME/.gemini/antigravity-cli/installation_id" "$run_dir/home/.gemini/antigravity-cli/installation_id"
+        [ -f "$ROOT_DIR/agents/antigravity/settings.json" ] && \
+            cp "$ROOT_DIR/agents/antigravity/settings.json" "$run_dir/home/.gemini/antigravity-cli/settings.json"
     fi
 }
 
@@ -359,7 +361,6 @@ home_config_mounts() {
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/rules" "/home/sandbox/.codex/rules"
             ;;
         antigravity)
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/settings.json" "/home/sandbox/.gemini/antigravity-cli/settings.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/GEMINI.md" "/home/sandbox/.gemini/GEMINI.md"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/AGENTS.md" "/home/sandbox/.gemini/AGENTS.md"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/antigravity-cli/hooks.json"

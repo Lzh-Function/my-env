@@ -248,6 +248,11 @@ def copy_auth_credentials(run_dir: Path, agent: str) -> None:
         inst = home / ".gemini" / "antigravity-cli" / "installation_id"
         if inst.exists():
             shutil.copy2(inst, run_dir / "home" / ".gemini" / "antigravity-cli" / "installation_id")
+        settings = ROOT / "agents" / "antigravity" / "settings.json"
+        if settings.exists():
+            dest = run_dir / "home" / ".gemini" / "antigravity-cli" / "settings.json"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(settings, dest)
 
 
 def build_apptainer_command(args: argparse.Namespace, run_dir: Path) -> list[str]:
@@ -323,7 +328,6 @@ def home_config_mounts(agent: str, run_dir: Path | None = None, mode: str = "") 
         ]
     if agent == "antigravity":
         return [
-            f"{ROOT / 'agents' / 'antigravity' / 'settings.json'}:/home/sandbox/.gemini/antigravity-cli/settings.json:ro",
             f"{ROOT / 'agents' / 'antigravity' / 'GEMINI.md'}:/home/sandbox/.gemini/GEMINI.md:ro",
             f"{ROOT / 'agents' / 'antigravity' / 'AGENTS.md'}:/home/sandbox/.gemini/AGENTS.md:ro",
             f"{ROOT / 'agents' / 'antigravity' / 'hooks.json'}:/home/sandbox/.gemini/antigravity-cli/hooks.json:ro",
