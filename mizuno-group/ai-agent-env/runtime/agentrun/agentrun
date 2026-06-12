@@ -281,8 +281,8 @@ copy_auth_credentials() {
             cp "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" "$run_dir/home/.gemini/antigravity-cli/antigravity-oauth-token"
         [ -f "$HOME/.gemini/antigravity-cli/installation_id" ] && \
             cp "$HOME/.gemini/antigravity-cli/installation_id" "$run_dir/home/.gemini/antigravity-cli/installation_id"
-        [ -f "$ROOT_DIR/agents/antigravity/settings.json" ] && \
-            cp "$ROOT_DIR/agents/antigravity/settings.json" "$run_dir/home/.gemini/antigravity-cli/settings.json"
+        [ -f "$run_dir/container_config/settings.json" ] && \
+            cp "$run_dir/container_config/settings.json" "$run_dir/home/.gemini/antigravity-cli/settings.json"
     fi
 }
 
@@ -302,14 +302,27 @@ generate_container_config() {
             # Deep-merge base + overlay; concatenate permission arrays so hooks are preserved.
             jq -s '
               .[0] as $b | .[1] as $o |
-              $b + $o + {
+              ($b + $o + {
                 permissions: {
                   allow: (($b.permissions.allow // []) + ($o.permissions.allow // [])),
                   deny:  (($b.permissions.deny  // []) + ($o.permissions.deny  // [])),
                   ask:   (($b.permissions.ask   // []) + ($o.permissions.ask   // []))
                 }
-              }
+              }) | del(.extends)
             ' "$base" "$overlay" > "$config_dir/settings.json"
+        else
+            cp "$base" "$config_dir/settings.json"
+        fi
+    elif [ "$agent" = "antigravity" ]; then
+        local base="$ROOT_DIR/agents/antigravity/settings.json"
+        local overlay=""
+        if [ "$mode" = "assist" ] && [ -f "$ROOT_DIR/agents/antigravity/settings.assist.json" ]; then
+            overlay="$ROOT_DIR/agents/antigravity/settings.assist.json"
+        elif [ "$mode" = "experiment" ] && [ -f "$ROOT_DIR/agents/antigravity/settings.experiment.json" ]; then
+            overlay="$ROOT_DIR/agents/antigravity/settings.experiment.json"
+        fi
+        if [ -n "$overlay" ] && command -v jq >/dev/null 2>&1; then
+            jq -s '.[0] * .[1]' "$base" "$overlay" > "$config_dir/settings.json"
         else
             cp "$base" "$config_dir/settings.json"
         fi
@@ -361,8 +374,13 @@ home_config_mounts() {
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/rules" "/home/sandbox/.codex/rules"
             ;;
         antigravity)
+            local ag_settings="$ROOT_DIR/agents/antigravity/settings.json"
+            if [ -n "$run_dir" ] && [ -f "$run_dir/container_config/settings.json" ]; then
+                ag_settings="$run_dir/container_config/settings.json"
+            fi
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/GEMINI.md" "/home/sandbox/.gemini/GEMINI.md"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/AGENTS.md" "/home/sandbox/.gemini/AGENTS.md"
+            printf ' --bind %q:%q:ro' "$ag_settings" "/home/sandbox/.gemini/settings.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/antigravity-cli/hooks.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.gemini/antigravity-cli/hooks"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/skills" "/home/sandbox/.gemini/antigravity-cli/skills"
@@ -804,8 +822,7 @@ command_prepare() {
     printf 'prepared run: %s\n' "$run_dir"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         copy_auth_credentials "$run_dir" "$AGENT"
-        _cleanup_home_assist() { rm -rf "$run_dir/home"; }
-        trap _cleanup_home_assist EXIT INT TERM
+        trap "rm -rf $(printf '%q' "$run_dir/home")" EXIT INT TERM
         local srun_args=("--time=$TIME_LIMIT" "--mem=$(profile_mem "$mode")" "--cpus-per-task=$(profile_cpus "$mode")" "--pty")
         [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
         [ "$GPUS" -gt 0 ] && srun_args+=("--gres=gpu:$GPUS")

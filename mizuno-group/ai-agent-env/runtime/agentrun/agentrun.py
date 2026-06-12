@@ -218,6 +218,31 @@ def generate_container_config(run_dir: Path, agent: str, mode: str) -> None:
                 break
     elif agent == "codex":
         shutil.copy2(codex_config_source(mode), config_dir / "config.toml")
+    elif agent == "antigravity":
+        base_path = ROOT / "agents" / "antigravity" / "settings.json"
+        overlay_path = None
+        if mode == "assist":
+            overlay_path = ROOT / "agents" / "antigravity" / "settings.assist.json"
+        elif mode == "experiment":
+            overlay_path = ROOT / "agents" / "antigravity" / "settings.experiment.json"
+            
+        import json
+        settings_data = {}
+        if base_path.exists():
+            with open(base_path, "r") as f:
+                settings_data = json.load(f)
+        
+        if overlay_path and overlay_path.exists():
+            with open(overlay_path, "r") as f:
+                overlay_data = json.load(f)
+                if "safety" in overlay_data:
+                    if "safety" not in settings_data:
+                        settings_data["safety"] = {}
+                    settings_data["safety"].update(overlay_data["safety"])
+                settings_data.update({k: v for k, v in overlay_data.items() if k != "safety"})
+                
+        with open(config_dir / "settings.json", "w") as f:
+            json.dump(settings_data, f, indent=2)
 
 
 def codex_config_source(mode: str) -> Path:
@@ -248,7 +273,7 @@ def copy_auth_credentials(run_dir: Path, agent: str) -> None:
         inst = home / ".gemini" / "antigravity-cli" / "installation_id"
         if inst.exists():
             shutil.copy2(inst, run_dir / "home" / ".gemini" / "antigravity-cli" / "installation_id")
-        settings = ROOT / "agents" / "antigravity" / "settings.json"
+        settings = run_dir / "container_config" / "settings.json"
         if settings.exists():
             dest = run_dir / "home" / ".gemini" / "antigravity-cli" / "settings.json"
             dest.parent.mkdir(parents=True, exist_ok=True)
