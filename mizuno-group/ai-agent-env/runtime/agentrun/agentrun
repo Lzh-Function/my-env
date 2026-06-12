@@ -91,7 +91,7 @@ agent_command() {
             fi
             ;;
         antigravity)
-            if [ "$mode" = "assist" ]; then
+            if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
                 printf 'if command -v agy >/dev/null 2>&1; then agy --dangerously-skip-permissions -i "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --dangerously-skip-permissions -i "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi\n'
             else
                 printf 'if command -v agy >/dev/null 2>&1; then agy --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi\n'
