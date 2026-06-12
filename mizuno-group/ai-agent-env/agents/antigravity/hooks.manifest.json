@@ -1,0 +1,61 @@
+{
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "matcher": "Bash",
+      "entries": [
+        {"script": "block_dangerous_command.py"},
+        {"script": "check_login_node.py"},
+        {"script": "python_env_guard.py"},
+        {"script": "check_pip_forbidden.py"},
+        {"script": "check_sbatch_forbidden.py"},
+        {"script": "git_branch_guard.py", "if": "Bash(git *)"}
+      ]
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Read",
+      "entries": [
+        {"script": "check_secret_read.py"}
+      ]
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Edit|Write|NotebookEdit",
+      "entries": [
+        {"script": "git_main_edit_guard.py"}
+      ]
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Bash",
+      "entries": [
+        {"script": "git_worktree_auto_create.py"},
+        {"script": "update_run_status.py"}
+      ]
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Edit|Write|NotebookEdit",
+      "entries": [
+        {"script": "post_edit_format.py"}
+      ]
+    },
+    {
+      "event": "PermissionRequest",
+      "matcher": "",
+      "entries": [
+        {"script": "permission_request_notify.py"}
+      ]
+    },
+    {
+      "event": "Stop",
+      "matcher": "",
+      "entries": [
+        {"script": "stop_notify.py"},
+        {"script": "summarize_session.py"}
+      ]
+    }
+  ],
+  "ignored": []
+}

@@ -1,4 +1,39 @@
 {
+  "PermissionRequest": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "~/.gemini/antigravity-cli/hooks/permission_request_notify.py"
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "~/.gemini/antigravity-cli/hooks/git_worktree_auto_create.py"
+        },
+        {
+          "type": "command",
+          "command": "~/.gemini/antigravity-cli/hooks/update_run_status.py"
+        }
+      ]
+    },
+    {
+      "matcher": "Edit|Write|NotebookEdit",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "~/.gemini/antigravity-cli/hooks/post_edit_format.py"
+        }
+      ]
+    }
+  ],
   "PreToolUse": [
     {
       "matcher": "Bash",
@@ -45,41 +80,6 @@
         {
           "type": "command",
           "command": "~/.gemini/antigravity-cli/hooks/git_main_edit_guard.py"
-        }
-      ]
-    }
-  ],
-  "PostToolUse": [
-    {
-      "matcher": "Bash",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "~/.gemini/antigravity-cli/hooks/git_worktree_auto_create.py"
-        },
-        {
-          "type": "command",
-          "command": "~/.gemini/antigravity-cli/hooks/update_run_status.py"
-        }
-      ]
-    },
-    {
-      "matcher": "Edit|Write|NotebookEdit",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "~/.gemini/antigravity-cli/hooks/post_edit_format.py"
-        }
-      ]
-    }
-  ],
-  "PermissionRequest": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "~/.gemini/antigravity-cli/hooks/permission_request_notify.py"
         }
       ]
     }
