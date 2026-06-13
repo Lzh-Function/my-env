@@ -33,7 +33,7 @@ fi
 
 NORMALIZED_EXEC="$(tr -d '\\' < "$EXEC_SCRIPT")"
 
-if ! printf '%s\n' "$NORMALIZED_EXEC" | grep -q 'codex --dangerously-bypass-approvals-and-sandbox --cd /workspace'; then
+if ! printf '%s\n' "$NORMALIZED_EXEC" | grep -q 'codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --cd /workspace'; then
     printf '[FAIL] Codex assist command is not interactive top-level codex\n' >&2
     cat "$EXEC_SCRIPT" >&2
     exit 1
@@ -57,7 +57,7 @@ if ! cmp -s "$ENV_ROOT/agents/codex/config.assist.toml" "$RUN_DIR/home/.codex/co
 fi
 
 for path in \
-    "$ENV_ROOT/agents/codex/hooks.json:/home/sandbox/.codex/hooks.json:ro" \
+    "$ENV_ROOT/agents/codex/requirements.toml:/etc/codex/requirements.toml:ro" \
     "$ENV_ROOT/agents/codex/AGENTS.md:/home/sandbox/.codex/AGENTS.md:ro" \
     "$ENV_ROOT/agents/codex/rules:/home/sandbox/.codex/rules:ro"
 do
@@ -85,7 +85,7 @@ apptainer exec \
     --bind "$RUN_DIR/scratch:/scratch:rw" \
     --bind "$RUN_DIR/cache:/cache:rw" \
     --bind "$ENV_ROOT:/home/sandbox/ai-agent-config:ro" \
-    --bind "$ENV_ROOT/agents/codex/hooks.json:/home/sandbox/.codex/hooks.json:ro" \
+    --bind "$ENV_ROOT/agents/codex/requirements.toml:/etc/codex/requirements.toml:ro" \
     --bind "$ENV_ROOT/agents/codex/AGENTS.md:/home/sandbox/.codex/AGENTS.md:ro" \
     --bind "$ENV_ROOT/agents/codex/rules:/home/sandbox/.codex/rules:ro" \
     "$IMAGE" \
@@ -94,12 +94,15 @@ apptainer exec \
         test -f /home/sandbox/.codex/config.toml
         test -w /home/sandbox/.codex/config.toml
         printf "\n# trust smoke write\n" >> /home/sandbox/.codex/config.toml
-        test -f /home/sandbox/.codex/hooks.json
+        test -f /etc/codex/requirements.toml
         test -f /home/sandbox/.codex/AGENTS.md
         test -d /home/sandbox/.codex/rules
         test -L /home/sandbox/.codex/skills/work-log
         test -e /home/sandbox/.codex/skills/work-log/SKILL.md
-        grep -q "/home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py" /home/sandbox/.codex/hooks.json
+        grep -q "managed_dir" /etc/codex/requirements.toml
+        grep -q "hooks.PreToolUse" /etc/codex/requirements.toml
+        grep -q "hooks.PostToolUse" /etc/codex/requirements.toml
+        grep -q "/home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py" /etc/codex/requirements.toml
         grep -q "BASE GUIDELINES" /home/sandbox/.codex/AGENTS.md
     ' \
     > "$RUN_DIR/live/container-config-check.out" \
@@ -119,7 +122,7 @@ write_plan "assist" "codex" "." "" "0" "01:00:00" "Say hello from submitted Code
 BATCH_EXEC_SCRIPT="$BATCH_RUN_DIR/apptainer_exec.sh"
 BATCH_NORMALIZED_EXEC="$(tr -d '\\' < "$BATCH_EXEC_SCRIPT")"
 
-if ! printf '%s\n' "$BATCH_NORMALIZED_EXEC" | grep -q 'codex exec --dangerously-bypass-approvals-and-sandbox'; then
+if ! printf '%s\n' "$BATCH_NORMALIZED_EXEC" | grep -q 'codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust'; then
     printf '[FAIL] Codex assist --submit plan does not use non-interactive codex exec\n' >&2
     cat "$BATCH_EXEC_SCRIPT" >&2
     exit 1

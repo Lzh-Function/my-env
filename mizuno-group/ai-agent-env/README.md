@@ -1,101 +1,77 @@
 # AI Agent Environment
 
-This directory is the configuration source of truth for the mizuno-group AI agent runtime.
+Claude Code / Codex / Antigravity を Slurm compute node 上の Apptainer sandbox 内で実行するための設定・ランタイムリポジトリです。
 
-It keeps shared agent rules, tool-specific shims, runtime profiles, hook sources, and a small `agentrun` launcher scaffold. Authentication state is intentionally not stored here.
+詳細な利用手順は **[docs/USER_MANUAL.md](docs/USER_MANUAL.md)** を参照してください。
 
-For the current Japanese operations guide, including verified status, mount
-layout, workspace visibility, and authentication binding, see
-[`docs/operations-ja.md`](docs/operations-ja.md).
+## ディレクトリ構成
 
-## Layout
-
-- `common/AGENTS.md`: shared rules for all agents.
-- `claude/`: existing Claude Code configuration and hooks.
-- `agents/`: tool-specific shims for Claude, Codex, and Antigravity.
-- `profiles/`: runtime profiles for assist, experiment, campaign, review, and multi-review.
-- `runtime/agentrun/`: login-node-safe shell launcher plus split Python runtime modules for later container-side validation.
-- `runtime/apptainer/`: Apptainer definition templates.
-- `tests/fixtures/`: smoke-test goal files and dummy repository fixtures.
-
-## Config Injection: Container vs Host
-
-**Container use (primary)** — `install.sh --apply` is NOT required.
-When `agentrun` prepares a run, it generates container-specific config under
-`.agent-runs/<run_id>/container_config/` and bind-mounts those files directly
-into the container. Claude and Codex authentication files are staged into the
-run home only when `--submit` is used, so compute nodes do not need to see the login-node
-`$HOME`; staged secrets are removed by the generated Slurm cleanup trap. The
-host `$HOME` is never modified.
-
-**Host direct use (optional)** — run `install.sh --apply` once to place
-config symlinks and a generated `$HOME/.claude/CLAUDE.md` (with host-absolute
-`@`-import paths). Use this only when you need `claude` / `agy` / `codex`
-directly on the login node outside a container.
-
-## Safe Host Setup Preview
-
-Symlink installation is dry-run by default:
-
-```bash
-./install.sh
-./install.sh --apply
+```text
+common/AGENTS.md          全 agent 共通ルール
+agents/                   Claude, Codex, Antigravity 固有の設定・shim
+profiles/                 assist / experiment / campaign / review / multi-review の runtime profile
+runtime/agentrun/         login-node-safe agentrun shell launcher
+runtime/apptainer/        Apptainer definition templates
+tests/fixtures/           smoke-test goal ファイルおよびダミー repository
 ```
 
-`install.sh` only creates symlinks (and a generated CLAUDE.md) under `$HOME`
-when `--apply` is passed.
+## Quick Start
 
-Image build commands are also dry-run by default:
+### インストール
+
+```bash
+./install.sh          # dry-run（確認のみ）
+./install.sh --apply  # $HOME/.local/bin/agentrun に symlink を作成
+```
+
+### 認証情報のセットアップ（初回必須）
+
+host 側の認証情報を agentrun の auth store にインポートします。
+
+```bash
+agentrun auth import --all
+agentrun auth status
+```
+
+### 動作確認
+
+```bash
+agentrun validate
+agentrun doctor --all
+```
+
+### 実行例
+
+```bash
+# 対話式 assist（TTY が必要）
+agentrun assist --agent codex --partition <partition> "Hello"
+
+# batch 投入（TTY 不要）
+agentrun assist --submit --agent codex --partition <partition> "Hello"
+
+# dry-run（副作用なし、plan 表示のみ）
+agentrun dry-run assist --agent codex --partition <partition> --show-mounts "Hello"
+```
+
+`--partition` は環境変数 `AGENTRUN_SLURM_PARTITION` でも指定できます。
+
+## コンテナ設定の仕組み
+
+`agentrun` は run ごとに `.agent-runs/<run_id>/` を作成し、container 固有の config を生成してから bind-mount します。host `$HOME` は書き換えません。
+
+login node 上で `claude` / `codex` / `agy` を直接使いたい場合のみ `./install.sh --apply` が必要です（container 経由の通常運用では不要）。
+
+## Image ビルド
 
 ```bash
 cd runtime/apptainer
-./build-images.sh
+./build-images.sh           # dry-run
+./build-images.sh --run     # Slurm allocation 内で実際にビルド
 ```
 
-Actual image builds must run inside a Slurm allocation:
+## ドキュメント
 
-```bash
-./build-images.sh --run
-```
-
-The image build uses `apptainer build --disable-cache` and does not set
-`APPTAINER_CACHEDIR` or `APPTAINER_TMPDIR` under the repository. Existing SIF
-files are reused when they are newer than their definition files.
-
-## Login-Node-Safe Runtime Checks
-
-Use the shell entrypoint on login nodes. It does not require Python:
-
-```bash
-./runtime/agentrun/agentrun validate
-./runtime/agentrun/agentrun doctor --all
-./runtime/agentrun/agentrun dry-run assist --agent claude --repo . "Summarize this repository."
-./runtime/agentrun/agentrun assist --agent claude --repo . "Prepare a run"
-./runtime/agentrun/agentrun smoke-test --agent claude --partition small-creator
-./runtime/agentrun/agentrun verify-run .agent-runs/latest
-```
-
-Direct runtime modes prepare `.agent-runs/<run_id>/` and write `submit.sbatch`; they only submit when `--submit` is passed. Product runtime scripts do not embed a cluster partition. Pass `--partition` for tests or set `AGENTRUN_SLURM_PARTITION` when the site requires one.
-
-## Deferred Python Runtime Checks
-
-The Python implementation is retained for later validation inside an approved runtime environment. Do not run it directly on login nodes where Python execution is forbidden:
-
-```bash
-./runtime/agentrun/agentrun.py validate
-./runtime/agentrun/agentrun.py doctor --all
-./runtime/agentrun/agentrun.py dry-run assist --agent claude --repo . "Summarize this repository."
-```
-
-The Python runtime is redundant with the shell entrypoint for login-node-safe use and should be deferred when Python is forbidden:
-
-```bash
-./runtime/agentrun/agentrun.py smoke-test --agent claude
-./runtime/agentrun/agentrun.py verify-run .agent-runs/latest
-```
-
-Use this before wiring real Slurm and Apptainer execution.
-
-## Building Images
-
-`base-system.def` uses `nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04` as the Docker base image.
+| ドキュメント | 内容 |
+|---|---|
+| [docs/USER_MANUAL.md](docs/USER_MANUAL.md) | コマンドリファレンス、run directory 構造、agent 差分、トラブルシューティング |
+| [docs/operations-ja.md](docs/operations-ja.md) | 検証済みステータス、mount レイアウト、認証バインディング詳細 |

@@ -1,0 +1,22 @@
+{
+  "pre_command": [
+    "block_dangerous_command.py",
+    "check_login_node.py",
+    "python_env_guard.py",
+    "check_pip_forbidden.py",
+    "check_sbatch_forbidden.py",
+    "check_secret_read.py",
+    "git_branch_guard.py"
+  ],
+  "post_command": [
+    "git_worktree_auto_create.py",
+    "update_run_status.py"
+  ],
+  "ignored": [
+    "git_main_edit_guard.py",
+    "permission_request_notify.py",
+    "post_edit_format.py",
+    "stop_notify.py",
+    "summarize_session.py"
+  ]
+}

@@ -1,875 +1,821 @@
-# [claude code]
+# USER_MANUAL
 
-この章では `agentrun` の Claude Code 側だけを説明します。
+このマニュアルは、`agentrun` を使って Claude Code / Codex / Antigravity を Slurm compute node 上の Apptainer sandbox 内で実行するための利用手順です。
 
-## スコープ
+このリポジトリの主目的は **Slurm compute node + Apptainer sandbox で agent を安全に動かすこと** です。login node や host 上で agent CLI を直接使う運用は主経路ではありません。
 
-このリポジトリは、Slurm の compute node 上で Apptainer sandbox 内に Claude Code を起動するためのものです。host 上で Claude Code を直接使う運用は主経路ではありません。
+## Quick Start
 
-Claude Code run では以下のパスを使います。
-
-- host 側 config root: `mizuno-group/ai-agent-env`
-- container 側 config root: `/home/sandbox/ai-agent-config`
-- container home: `/home/sandbox`
-- workspace: `/workspace`
-- run ledger: `/runs`
-- Claude Code config: `/home/sandbox/.claude/settings.json`
-- Claude Code hooks: `/home/sandbox/.claude/hooks/`
-- Claude Code skills: `/home/sandbox/.claude/skills/`
-
-## クイックスタート
-
-`mizuno-group/ai-agent-env` から実行します。
+まず `mizuno-group/ai-agent-env` で `agentrun` を install します。
 
 ```bash
-./runtime/agentrun/agentrun validate
-./runtime/agentrun/agentrun doctor --agent claude
-./runtime/agentrun/agentrun dry-run assist --agent claude --partition small-creator --show-mounts "Hello"
-./runtime/agentrun/agentrun assist --agent claude --partition small-creator "Hello"
+./install.sh
+./install.sh --apply
 ```
 
-`--partition small-creator` は test site 用の例です。product script に partition 名を hard-code しないでください。
-
-## 基本コマンド
-
-### Agent 一覧
+`install.sh` は `$HOME/.local/bin/agentrun` に symlink を作ります。`$HOME/.local/bin` が `PATH` に入っていれば、以後はパスなしで `agentrun` を実行できます。
 
 ```bash
-./runtime/agentrun/agentrun agents
+agentrun agents
+agentrun validate
+agentrun doctor --all
 ```
 
-現在の環境で `claude` が利用可能か確認します。
+### 認証情報のセットアップ（初回必須）
 
-### 設定検証
+`agentrun` は各 agent の認証情報を `$HOME/.agentrun/auth/<agent>/` に管理します。初回セットアップ時に、host 側の認証情報を store にインポートしてください。
 
 ```bash
-./runtime/agentrun/agentrun validate
+agentrun auth import --all
+agentrun auth status
 ```
 
-必須ファイル、JSON の形、hook の executable bit、symlink の整合性を検証します。
+`auth import --all` は以下のファイルを `$HOME/.agentrun/auth/` に copy します。
 
-Claude Code については、追加で以下を確認します。
-
-- `agents/claude/hooks.manifest.json` が存在し、形式が正しいこと。
-- active hook がすべて `common/hooks/` に存在し、実行可能であること。
-- すべての `common/hooks/*.py` が manifest に分類されていること。
-- `settings.json` の `.hooks` セクションが manifest から生成した内容と一致すること。
-- `agents/claude/CLAUDE.md -> ../../common/AGENTS.md` であること。
-- `agents/claude/skills -> ../../common/skills` であること。
-
-### Doctor
-
-```bash
-./runtime/agentrun/agentrun doctor --agent claude
+```text
+claude      $HOME/.claude/.credentials.json
+            $HOME/.claude.json
+codex       $HOME/.codex/auth.json
+antigravity $HOME/.gemini/antigravity-cli/antigravity-oauth-token
+            $HOME/.gemini/antigravity-cli/installation_id
 ```
 
-Slurm command、Apptainer、Claude Code CLI、image など、ローカル実行に必要な前提を確認します。
+以後のジョブは store から認証情報を staging します。host 側の元ファイルは参照されません（store に存在しない場合のみ fallback します）。
 
-### Dry Run
+OAuth token が agent 実行中に refresh された場合、`agentrun` は以下のルールで自動処理します。
+
+- ジョブが正常終了（exit code 0）かつ store が未変更 → store に昇格 (`AUTH_REFRESH_PROMOTED`)
+- ジョブが失敗、または store が別ジョブに更新済み → `$HOME/.agentrun/auth-conflicts/<run_id>/` に保存 (`AUTH_REFRESH_CONFLICT`)
+
+store の状態確認:
 
 ```bash
-./runtime/agentrun/agentrun dry-run assist --agent claude --partition small-creator --show-mounts "Hello"
+agentrun auth status
+agentrun auth status --agent codex
 ```
 
-run directory のパス（host_run_directory）を計算・表示し、Claude Code は起動せずに、予定される Slurm command と Apptainer command を表示します。
-
-本番実行前に以下を確認する用途で使います。
-
-- どの repo が `/workspace` に mount されるか。
-- `settings.json` がどのファイルから生成されるか（assist か base か）。
-- `common/hooks` が `/home/sandbox/.claude/hooks` に mount されるか。
-- `assist` が interactive な `claude` を使うか。
-- `assist --submit` が `claude --print` を使うか。
-
-### 対話式 Assist
+保存されたコンフリクトの確認:
 
 ```bash
-./runtime/agentrun/agentrun assist --agent claude --partition small-creator --repo . "Your prompt"
+agentrun auth conflicts
+```
+
+store をリセットして再インポートする場合:
+
+```bash
+agentrun auth reset --agent codex
+agentrun auth import --agent codex
+```
+
+Codex を対話式に起動する例:
+
+```bash
+agentrun dry-run assist --agent codex --partition <partition> --show-mounts "Hello"
+agentrun assist --agent codex --partition <partition> "Hello"
+```
+
+TTY が不要な batch 実行にする場合:
+
+```bash
+agentrun assist --submit --agent codex --partition <partition> "Hello"
+```
+
+`<partition>` は利用環境の Slurm partition 名に置き換えてください。毎回 `--partition` を書きたくない場合は、環境変数 `AGENTRUN_SLURM_PARTITION` に設定できます。
+
+```bash
+export AGENTRUN_SLURM_PARTITION=<partition>
+agentrun assist --agent codex "Hello"
+```
+
+`AGENTRUN_SLURM_PARTITION` も `--partition` も指定しない場合、`agentrun` は partition 指定を Slurm に渡しません。その場合は cluster 側の default partition に従います。
+
+デフォルトの job time は profile ごとに決まります。
+
+```text
+assist        01:00:00
+review        01:00:00
+multi-review  02:00:00
+experiment    04:00:00
+campaign      04:00:00
+smoke-test    00:10:00
+```
+
+時間を変える場合は `--time HH:MM:SS` を指定します。
+
+```bash
+agentrun assist --agent codex --partition <partition> --time 02:00:00 "Hello"
+```
+
+### 任意ディレクトリで実行した場合の挙動
+
+`agentrun` は、コマンドを実行した host 側 current directory を基準に run directory を作ります。`--repo` を省略した場合は、その current directory 自体が container 内の `/workspace` に read/write mount されます。
+
+例えば host 側で `/path/to/my-project` にいる状態で以下を実行した場合:
+
+```bash
+cd /path/to/my-project
+agentrun assist --agent codex --partition <partition> "Hello"
+```
+
+主な対応関係は以下です。
+
+```text
+host: /path/to/my-project                         -> container: /workspace:rw
+host: /path/to/my-project/.agent-runs/<run_id>    -> container: /runs:rw
+host: /path/to/my-project/.agent-runs/<run_id>/home    -> container: /home/sandbox
+host: /path/to/my-project/.agent-runs/<run_id>/scratch -> container: /scratch:rw
+host: /path/to/my-project/.agent-runs/<run_id>/cache   -> container: /cache:rw
+host: <ai-agent-env repository>                   -> container: /home/sandbox/ai-agent-config:ro
+```
+
+`--repo` を指定した場合、`/workspace` に mount される対象だけが変わります。run directory は引き続き `agentrun` を実行した directory の `.agent-runs/<run_id>/` に作られます。
+
+```bash
+cd /path/to/run-ledger
+agentrun assist --agent codex --partition <partition> --repo /path/to/my-project "Hello"
+```
+
+この場合:
+
+```text
+host: /path/to/my-project                         -> container: /workspace:rw
+host: /path/to/run-ledger/.agent-runs/<run_id>    -> container: /runs:rw
+```
+
+agent は全て `/workspace` に移動してから起動します。したがって、agent の process cwd と作業対象 repository は `/workspace` です。Codex では CLI 側にも `--cd /workspace` を渡します。
+
+## Install / Uninstall
+
+install の dry-run:
+
+```bash
+./install.sh
+```
+
+実際に symlink を作成:
+
+```bash
+./install.sh --apply
+```
+
+uninstall の dry-run:
+
+```bash
+./uninstall.sh
+```
+
+実際に symlink を削除:
+
+```bash
+./uninstall.sh --apply
+```
+
+`install.sh` / `uninstall.sh` は repository 内の設定や `.agent-runs/` を削除しません。対象は `$HOME/.local/bin/agentrun` の symlink だけです。
+
+## 基本概念
+
+`agentrun` は、agent 固有の CLI / config / auth / hook だけを分岐し、run directory 作成、Slurm script 生成、Apptainer command 生成、status/log/verify は共通処理として扱います。
+
+共通の container 内パス:
+
+```text
+/home/sandbox                      container home
+/workspace                         作業 repository
+/runs                              run ledger
+/scratch                           run scratch
+/cache                             run cache
+/home/sandbox/ai-agent-config      この config repository
+```
+
+host 側の run directory:
+
+```text
+.agent-runs/<run_id>/
+```
+
+`dry-run` は `host_run_directory` を表示しますが、実際の directory は作成しません。副作用なしで plan を確認するためのコマンドです。
+
+`assist` は例外的に `--submit` なしで対話式実行します。`experiment` / `campaign` / `review` / `multi-review` は `--submit` なしでは run を prepare するだけで、`sbatch` しません。
+
+## 現在の実装範囲
+
+実装済み:
+
+- single-agent `assist`
+- single-agent `assist --submit`
+- single-agent `experiment --submit`
+- single-agent `campaign --submit`
+- single-agent `review --submit`
+- single-agent `multi-review --submit`
+- `dry-run`
+- `validate`
+- `doctor`
+- `sync-claude`
+- `sync-codex`
+- `sync-antigravity`
+- run status/log/list/open/verify
+- smoke-test scaffold
+
+未実装または scaffold 段階:
+
+- 複数 agent の同時起動 orchestrator
+- 相互レビューの自動実行
+- `multi-review` で複数 `sbatch` を発行して結果を自動集約する処理
+- `campaign` の提案を実際の training job に接続する自動制御
+
+`--reviewers`, `--target-diff`, `--target-report`, `--agents` は現状では prompt に追記されるだけです。複数 agent の起動や出力集約は行いません。
+
+## Agent 一覧
+
+```bash
+agentrun agents
+```
+
+利用可能な agent CLI を表示します。
+
+例:
+
+```text
+Available agents:
+  antigravity  primary   available /home/li/.local/bin/agy
+  claude       secondary available /home/li/.local/bin/claude
+  codex        secondary available /home/li/.local/bin/codex
+```
+
+## Validate
+
+```bash
+agentrun validate
+```
+
+以下を検証します。
+
+- 必須ファイルの存在
+- JSON / TOML の形
+- hook script の executable bit
+- agent 別 symlink
+- hook manifest と生成済み設定の一致
+- `common/hooks/*.py` が各 agent の manifest で分類済みであること
+
+`validate` が hook の不一致を報告した場合は、該当 agent の `sync-*` を実行してから再度 `validate` します。
+
+```bash
+agentrun sync-claude
+agentrun sync-codex
+agentrun sync-antigravity
+agentrun validate
+```
+
+## Doctor
+
+```bash
+agentrun doctor --agent codex
+agentrun doctor --all
+```
+
+以下を確認します。
+
+- Slurm command: `sinfo`, `squeue`, `srun`, `sbatch`
+- `jq`
+- agent CLI
+- auth file
+- image: `runtime/apptainer/base-agent.sif`
+- `.agent-runs` の書き込み可否
+- git repository / branch / dirty state
+
+login node 上で `apptainer` や `uv` が見つからない場合は WARN です。compute node や image 内で提供される構成もあるため、WARN は即失敗とは限りません。
+
+auth check の対象（store ファーストで確認、store になければ host fallback）:
+
+```text
+claude      $HOME/.agentrun/auth/claude/.claude/.credentials.json
+            $HOME/.agentrun/auth/claude/.claude.json
+codex       $HOME/.agentrun/auth/codex/.codex/auth.json
+antigravity $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity-oauth-token
+            $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
+```
+
+store にも host にも存在しない場合のみ `[FAIL]` になります。store には `agentrun auth import` でインポートしてください。
+
+## Dry Run
+
+```bash
+agentrun dry-run assist --agent codex --partition <partition> --show-mounts "Hello"
+```
+
+`dry-run` は agent を起動せず、以下を表示します。
+
+- run id
+- profile
+- agent
+- repository path
+- planned host run directory
+- launch method
+- Slurm command または sbatch args
+- Apptainer command
+- bind mounts
+- prompt
+- expected artifacts
+
+`dry-run` は `.agent-runs/<run_id>/` を作成しません。表示される `host_run_directory` は予定パスです。
+
+## Assist
+
+対話式 assist:
+
+```bash
+agentrun assist --agent codex --partition <partition> --repo . "Your prompt"
 ```
 
 挙動:
 
-- `srun --pty` を使います。
-- Apptainer 内で interactive な `claude` を起動します。
-- `--dangerously-skip-permissions` を付けます。
-- `settings.assist.json` と `settings.json` を jq でマージした設定が使われます。
-- assist モードでは `/runs/live/` の更新は行われません（terminal が live view になります）。
-- run 終了後に `<run_dir>/home/` が自動削除されます。
+- `srun --pty` を使う
+- run directory を作成する
+- auth を run home に stage する
+- Apptainer 内で interactive agent CLI を起動する
+- 終了時に `<run_dir>/home/` を削除する
 
-`--repo` は省略可能です。省略した場合は current directory が使われます。
+TTY が必要です。TTY のない環境では `assist --submit` を使います。
 
-### Submit する Assist
+`--repo` は省略可能です。省略時は current directory が `/workspace` に mount されます。
+
+## Assist Submit
 
 ```bash
-./runtime/agentrun/agentrun assist --submit --agent claude --partition small-creator --repo . "Your prompt"
+agentrun assist --submit --agent codex --partition <partition> --repo . "Your prompt"
 ```
 
 挙動:
 
-- `.agent-runs/<run_id>/` を生成します。
-- `sbatch` で Slurm job を投入します。
-- `claude --print --dangerously-skip-permissions` を使います（non-interactive）。
-- auth credentials を run home に stage します。
-- job 終了時に `<run_dir>/home/` を削除します。
-- job 終了後に `live/status.json` に `success` / `failed` を書き込みます。
+- `.agent-runs/<run_id>/` を作成する
+- `submit.sbatch` を生成する
+- auth を run home に stage する
+- `sbatch` で投入する
+- job 終了時に `<run_dir>/home/` を削除する
+- `live/status.json` に `success` / `failed` を書く
 
-### Experiment
+agent が required artifacts を作らない場合、Slurm job が成功しても `verify-run` は失敗することがあります。特に `artifacts/report.md` は verify 対象です。
+
+## Experiment / Campaign / Review / Multi-review
+
+これらは profile と expected artifacts を持つ single-agent batch run です。
 
 ```bash
-./runtime/agentrun/agentrun experiment --submit --agent claude --partition small-creator --goal path/to/goal.yaml --repo . "Run the goal"
+agentrun experiment --submit --agent codex --partition <partition> --goal tests/fixtures/goal_smoke.yaml --repo . "Run the goal"
+agentrun campaign --submit --agent antigravity --partition <partition> --goal path/to/goal.yaml --repo . "Run campaign"
+agentrun review --submit --agent claude --partition <partition> --target-diff path/to/diff.patch --repo . "Review this diff"
+agentrun multi-review --submit --agent codex --partition <partition> --agents claude,codex,antigravity --repo . "Collect review notes"
 ```
 
-挙動:
+重要:
 
-- batch execution を使います。
-- 存在する場合は `agents/claude/settings.experiment.json` を `settings.json` とマージした設定を使います。
-- `experiment` モードでは `git push` と `sbatch` が deny に追加されます。
+- `--submit` なしでは prepare のみで、`sbatch` しません。
+- `review` / `multi-review` は名前上 review 用ですが、現状は 1 agent だけを起動します。
+- `--agents` は requested agents として prompt に入るだけです。
+- 複数 agent を自動起動して比較・集約する機能は未実装です。
+
+profile ごとの主な期待成果物:
+
+```text
+assist        live/status.json, live/stdout.log, artifacts/report.md, artifacts/metrics.json
+experiment    assist の成果物 + live/current_task.md + artifacts/proposed_next.yaml
+campaign      live/status.json, artifacts/report.md, artifacts/proposed_next.yaml, artifacts/proposed_train.sbatch
+review        live/status.json, live/stdout.log, reviews/review_findings.json
+multi-review  live/status.json, reviews/*.md, reviews/disagreements.json, reviews/final_recommendation.md
+```
 
 ## Run Directory
 
-各 run は `.agent-runs/<run_id>/` を作成します。
+`dry-run` を除く run は `.agent-runs/<run_id>/` を作成します。
 
-重要なパス:
-
-```text
-.agent-runs/<run_id>/home/                 /home/sandbox 用の staged HOME
-.agent-runs/<run_id>/home/.claude/         staged Claude Code home
-.agent-runs/<run_id>/container_config/     モード別にマージ済みの settings.json
-.agent-runs/<run_id>/prompt.txt            Claude Code に渡される prompt
-.agent-runs/<run_id>/apptainer_exec.sh     生成された Apptainer command
-.agent-runs/<run_id>/submit.sbatch         生成された Slurm submit script
-.agent-runs/<run_id>/live/                 slurm.out, slurm.err, status.json
-.agent-runs/<run_id>/artifacts/            report, diff, metrics
-```
-
-便利な確認コマンド:
-
-```bash
-./runtime/agentrun/agentrun status
-./runtime/agentrun/agentrun logs [--follow]
-./runtime/agentrun/agentrun tail
-./runtime/agentrun/agentrun list-runs
-./runtime/agentrun/agentrun open-run .agent-runs/latest
-./runtime/agentrun/agentrun verify-run .agent-runs/latest
-```
-
-## Claude Code の Mount 構成
-
-Claude Code run では、`agentrun` は以下を mount します。
+主な構成:
 
 ```text
-<run_dir>/home                             -> /home/sandbox
-<repo>                                     -> /workspace:rw
-<run_dir>                                  -> /runs:rw
-<run_dir>/scratch                          -> /scratch:rw
-<run_dir>/cache                            -> /cache:rw
-<ai-agent-env>                             -> /home/sandbox/ai-agent-config:ro
-agents/claude/CLAUDE.md                    -> /home/sandbox/.claude/CLAUDE.md:ro
-<container_config>/settings.json           -> /home/sandbox/.claude/settings.json:ro
-common/hooks                               -> /home/sandbox/.claude/hooks:ro
-agents/claude/skills                       -> /home/sandbox/.claude/skills:ro
-```
-
-`<container_config>/settings.json` は run ごとに生成されます。assist モードでは `settings.json` + `settings.assist.json` を jq でマージしたものが使われます。他のモードも同様に mode overlay が存在する場合はマージされます。
-
-hook script は `common/hooks/` から直接 mount されます。`settings.json` の hooks 参照パスは `~/.claude/hooks/...` 形式で、container 内ではこの mount 先に解決されます。
-
-## Claude Code 設定ファイル
-
-Claude Code 固有ファイルは `agents/claude/` 以下にあります。
-
-```text
-agents/claude/CLAUDE.md                    ../../common/AGENTS.md への symlink
-agents/claude/skills                       ../../common/skills への symlink
-agents/claude/settings.json               Claude Code base config（hooks セクションは manifest から生成）
-agents/claude/settings.assist.json        assist モード用 permissions overlay
-agents/claude/settings.experiment.json    experiment モード用 permissions overlay
-agents/claude/hooks.manifest.json         hook 分類の source manifest
-```
-
-container run における実効設定は `<run_dir>/container_config/settings.json` です（base + mode overlay のマージ結果）。
-
-`settings.json` の hooks セクションは `hooks.manifest.json` から `sync-claude` で生成されます。permissions・env 等の他のキーは `sync-claude` では変更されません。
-
-## Common Instructions のメンテナンス
-
-編集対象:
-
-```text
-common/AGENTS.md
-```
-
-`agents/claude/CLAUDE.md` は symlink であるため、追加編集は不要です。run 時に `/home/sandbox/.claude/CLAUDE.md` に mount されます。
-
-編集後は以下を実行します。
-
-```bash
-./runtime/agentrun/agentrun validate
-```
-
-## Skills のメンテナンス
-
-skills は以下で編集または追加します。
-
-```text
-common/skills/
-```
-
-既存 skill の中身だけを編集する場合、sync は不要です。`agents/claude/skills` は `common/skills` への symlink であり、container 内に直接 mount されます。
-
-skill directory を追加または削除した場合は、symlink が正しいことを確認するために以下を実行します。
-
-```bash
-./runtime/agentrun/agentrun sync-claude
-./runtime/agentrun/agentrun validate
-```
-
-## Hooks のメンテナンス
-
-hook 実装は以下に置きます。
-
-```text
-common/hooks/
-```
-
-Claude Code の hook 分類は以下に置きます。
-
-```text
-agents/claude/hooks.manifest.json
-```
-
-manifest の構造:
-
-```json
-{
-  "hooks": [
-    {
-      "event": "PreToolUse",
-      "matcher": "Bash",
-      "entries": [
-        {"script": "block_dangerous_command.py"},
-        {"script": "git_branch_guard.py", "if": "Bash(git *)"}
-      ]
-    },
-    ...
-  ],
-  "ignored": []
-}
-```
-
-各エントリの説明:
-
-| フィールド | 説明 |
-|---|---|
-| `event` | フック発火イベント。`PreToolUse` / `PostToolUse` / `PermissionRequest` / `Stop` |
-| `matcher` | ツール名フィルタ。`Bash` / `Read` / `Edit\|Write\|NotebookEdit` / `""`（空=全ツール） |
-| `entries[].script` | `common/hooks/` 内のスクリプトファイル名 |
-| `entries[].if` | オプション。matcher 内のさらに細かいフィルタ条件 (`Bash(git *)` 形式) |
-| `ignored` | `common/hooks/` に存在するが Claude Code では使わないスクリプトのリスト |
-
-Codex の manifest（`pre_command` / `post_command` 2分類）と異なり、Claude Code は event × matcher の2軸構造を持ちます。
-
-### 既存 Hook の中身だけを編集する場合
-
-既存の `common/hooks/*.py` の中身だけを編集する場合、生成ファイルの更新は不要です。
-
-```bash
-./runtime/agentrun/agentrun validate
-```
-
-hook script は `common/hooks/` から直接 mount されるため、新しい run では更新後の script が即座に使われます。
-
-### Hook の追加・削除・リネーム
-
-`common/hooks/` を更新した後、`agents/claude/hooks.manifest.json` を更新します。
-
-すべての `common/hooks/*.py` は `hooks[].entries` または `ignored` のいずれかに分類する必要があります。event と matcher はスクリプトの役割に基づいて手動で割り当ててください（自動推定はしません）。
-
-その後、以下を実行します。
-
-```bash
-./runtime/agentrun/agentrun sync-claude
-./runtime/agentrun/agentrun validate
-```
-
-`sync-claude` は `settings.json` の `.hooks` セクションを再生成します。他のキー（permissions, env 等）は変更しません。
-
-hook が分類されていない場合、`validate` は失敗します。
-
-## Sync Command
-
-```bash
-./runtime/agentrun/agentrun sync-claude
-```
-
-実行内容:
-
-1. `agents/claude/hooks.manifest.json` を検証する。
-2. active hook が `common/hooks/` に存在し、実行可能であることを確認する。
-3. ignored hook が `common/hooks/` に存在することを確認する。
-4. 未分類の `common/hooks/*.py` があれば失敗する。
-5. manifest から hooks オブジェクト JSON を生成し、`agents/claude/settings.json` の `.hooks` キーを置換する。
-6. `agents/claude/CLAUDE.md -> ../../common/AGENTS.md` を refresh する。
-7. `agents/claude/skills -> ../../common/skills` を refresh する。
-
-## 認証
-
-Claude Code auth は repository に保存しません。
-
-host 側で期待される auth ファイル:
-
-```text
-$HOME/.claude/.credentials.json
-$HOME/.claude.json
-```
-
-どちらか一方または両方が存在すれば、run 時に run home へ copy されます。
-
-```text
-<run_dir>/home/.claude/.credentials.json
-<run_dir>/home/.claude.json
-```
-
-run home は run 終了後に削除されます。run-home auth は一時的な secret material として扱ってください。
-
-## Smoke Test
-
-```bash
-tests/slurm/submit_creator_tests.sh assist-pty
-```
-
-`assist-pty` は container 可視性と assist の動作を確認します。
-
-- interactive assist が `--print` なしの `claude` を使うこと。
-- submitted assist が `claude --print` を使うこと。
-- `CLAUDE.md` の bind-mount が `agents/claude/CLAUDE.md`（symlink）を経由していること。
-- container 内で `claude --version` が成功すること。
-
-## トラブルシューティング
-
-### validate が hooks の不一致を報告する
-
-`validate` が `claude-hooks-generated:agents/claude/settings.json` の FAIL を報告した場合、manifest と `settings.json` の hooks セクションが乖離しています。
-
-以下を実行します。
-
-```bash
-./runtime/agentrun/agentrun sync-claude
-./runtime/agentrun/agentrun validate
-```
-
-### 新しい Hook で validate が失敗する
-
-`validate` が `claude-hooks-unclassified` を報告した場合、`agents/claude/hooks.manifest.json` の `hooks` または `ignored` に追加してください。
-
-その後:
-
-```bash
-./runtime/agentrun/agentrun sync-claude
-./runtime/agentrun/agentrun validate
-```
-
-### Hooks が発火しない
-
-まず dry-run で mount 構成を確認します。
-
-```bash
-./runtime/agentrun/agentrun dry-run assist --agent claude --show-mounts "hook check"
-```
-
-Apptainer command に以下が含まれている必要があります。
-
-```text
-common/hooks:/home/sandbox/.claude/hooks:ro
-```
-
-次に、settings.json の hooks セクションが正しく生成されているか確認します。
-
-```bash
-jq '.hooks' agents/claude/settings.json
-./runtime/agentrun/agentrun validate
-```
-
-hook script の参照パスは `~/.claude/hooks/...` 形式である必要があります。`/home/sandbox/...` などの絶対パスになっていないか確認してください。
-
-### 認証エラー
-
-container 内で Claude Code の認証に失敗した場合、以下を確認します。
-
-```bash
-ls -la "$HOME/.claude/.credentials.json" "$HOME/.claude.json"
-./runtime/agentrun/agentrun doctor --agent claude
-```
-
-認証ファイルが存在する場合、run home に正しく copy されたか確認します。
-
-```bash
-ls -la .agent-runs/latest/home/.claude/
-```
-
-## 通常メンテナンスのチェックリスト
-
-common instructions を編集する場合:
-
-```bash
-vim common/AGENTS.md
-./runtime/agentrun/agentrun validate
-```
-
-common skill を編集する場合:
-
-```bash
-vim common/skills/<skill>/SKILL.md
-./runtime/agentrun/agentrun validate
-```
-
-common skill を追加または削除する場合:
-
-```bash
-mkdir -p common/skills/<skill>
-vim common/skills/<skill>/SKILL.md
-./runtime/agentrun/agentrun sync-claude
-./runtime/agentrun/agentrun validate
-```
-
-hook を編集する場合:
-
-```bash
-vim common/hooks/<hook>.py
-./runtime/agentrun/agentrun validate
-```
-
-hook を追加・削除・リネームする場合:
-
-```bash
-vim common/hooks/<hook>.py
-vim agents/claude/hooks.manifest.json   # event/matcher を指定して追記 or 削除
-./runtime/agentrun/agentrun sync-claude
-./runtime/agentrun/agentrun validate
-```
-
-permissions / env など hooks 以外の設定を変更する場合:
-
-```bash
-vim agents/claude/settings.json         # hooks キー以外を直接編集（sync-claude は不要）
-./runtime/agentrun/agentrun validate
-```
-
-assist / experiment モードの追加制限を変更する場合:
-
-```bash
-vim agents/claude/settings.assist.json
-vim agents/claude/settings.experiment.json
-./runtime/agentrun/agentrun validate
-```
-
-利用前に確信度を上げたい場合:
-
-```bash
-./runtime/agentrun/agentrun dry-run assist --agent claude --partition small-creator --show-mounts "smoke"
-tests/slurm/submit_creator_tests.sh assist-pty
-```
-
----
-
-# [codex]
-
-この章では `agentrun` の Codex 側だけを説明します。Antigravity と Claude Code の章は、それぞれの担当エージェントが後から追記する想定です。
-
-## スコープ
-
-このリポジトリは、Slurm の compute node 上で Apptainer sandbox 内に agent を起動するためのものです。host 上で Codex を直接使う運用は主経路ではありません。
-
-Codex run では以下のパスを使います。
-
-- host 側 config root: `mizuno-group/ai-agent-env`
-- container 側 config root: `/home/sandbox/ai-agent-config`
-- container home: `/home/sandbox`
-- workspace: `/workspace`
-- run ledger: `/runs`
-- Codex managed hooks: `/etc/codex/requirements.toml`
-
-現在の構成には `common/codex/` は存在しません。
-
-## クイックスタート
-
-`mizuno-group/ai-agent-env` から実行します。
-
-```bash
-./runtime/agentrun/agentrun validate
-./runtime/agentrun/agentrun doctor --agent codex
-./runtime/agentrun/agentrun dry-run assist --agent codex --partition small-creator --show-mounts "Hello"
-./runtime/agentrun/agentrun assist --agent codex --partition small-creator "Hello"
-```
-
-`--partition small-creator` は test site 用の例です。product script に partition 名を hard-code しないでください。
-
-## 基本コマンド
-
-### Agent 一覧
-
-```bash
-./runtime/agentrun/agentrun agents
-```
-
-現在の環境で `codex` が利用可能か確認します。
-
-### 設定検証
-
-```bash
-./runtime/agentrun/agentrun validate
-```
-
-必須ファイル、JSON/TOML の形、hook の executable bit、symlink、Codex の生成ファイルを検証します。
-
-Codex については、追加で以下を確認します。
-
-- `agents/codex/hooks.manifest.json` が存在し、形式が正しいこと。
-- active hook がすべて `common/hooks/` に存在し、実行可能であること。
-- すべての `common/hooks/*.py` が active または ignored として分類されていること。
-- `agents/codex/hooks.json` が manifest から生成された内容と一致すること。
-- `agents/codex/requirements.toml` が manifest から生成された内容と一致すること。
-- `agents/codex/AGENTS.md -> ../../common/AGENTS.md` であること。
-- `agents/codex/skills -> ../../common/skills` であること。
-
-### Doctor
-
-```bash
-./runtime/agentrun/agentrun doctor --agent codex
-```
-
-Slurm command、Apptainer、Codex CLI、image など、ローカル実行に必要な前提を確認します。
-
-### Dry Run
-
-```bash
-./runtime/agentrun/agentrun dry-run assist --agent codex --partition small-creator --show-mounts "Hello"
-```
-
-run directory のパス（host_run_directory）を計算・表示し、Codex は起動せずに、予定される Slurm command と Apptainer command を表示します。
-
-本番実行前に以下を確認する用途で使います。
-
-- どの repo が `/workspace` に mount されるか。
-- どの run directory が `/runs` に mount されるか。
-- `/etc/codex/requirements.toml` が mount されるか。
-- `assist` が interactive な top-level `codex` を使うか。
-- `assist --submit` が non-interactive な `codex exec` を使うか。
-
-### 対話式 Assist
-
-```bash
-./runtime/agentrun/agentrun assist --agent codex --partition small-creator --repo . "Your prompt"
-```
-
-挙動:
-
-- `srun --pty` を使います。
-- Apptainer 内で interactive な top-level `codex` を起動します。
-- `--cd /workspace` を指定します。
-- Slurm + Apptainer が外側の sandbox なので、`--dangerously-bypass-approvals-and-sandbox` を付けます。
-- `--dangerously-bypass-hook-trust` を付けます。managed hooks 自体は `/etc/codex/requirements.toml` によって制御されます。
-
-`--repo` は省略可能です。省略した場合は current directory が使われます。
-
-### Submit する Assist
-
-```bash
-./runtime/agentrun/agentrun assist --submit --agent codex --partition small-creator --repo . "Your prompt"
-```
-
-挙動:
-
-- `.agent-runs/<run_id>/` を生成します。
-- `sbatch` で Slurm job を投入します。
-- non-interactive な `codex exec` を使います。
-- Codex config と auth を run home に stage します。
-- 生成された job script に cleanup trap が入っている場合、job 終了時に staged home material を削除します。
-
-interactive TUI が不要な場合に使います。
-
-### Experiment
-
-```bash
-./runtime/agentrun/agentrun experiment --submit --agent codex --partition small-creator --goal path/to/goal.yaml --repo . "Run the goal"
-```
-
-挙動:
-
-- batch execution を使います。
-- 存在する場合は `agents/codex/config.experiment.toml` を使います。
-- `codex exec` を使います。
-- `assist` と同じ Codex common config と managed hooks を mount します。
-
-## Run Directory
-
-各 run は `.agent-runs/<run_id>/` を作成します。
-
-重要なパス:
-
-```text
-.agent-runs/<run_id>/home/                 /home/sandbox 用の staged HOME
-.agent-runs/<run_id>/home/.codex/          staged Codex home
-.agent-runs/<run_id>/container_config/     run ごとに選択された config copy
-.agent-runs/<run_id>/prompt.txt            Codex に渡される prompt
+.agent-runs/<run_id>/home/                 staged HOME
+.agent-runs/<run_id>/container_config/     run 用 config copy
+.agent-runs/<run_id>/prompt.txt            agent に渡す prompt
 .agent-runs/<run_id>/goal.yaml             goal metadata
-.agent-runs/<run_id>/apptainer_exec.sh     生成された Apptainer command
-.agent-runs/<run_id>/submit.sbatch         生成された Slurm submit script
-.agent-runs/<run_id>/live/                 stdout, stderr, status, heartbeat, command log
+.agent-runs/<run_id>/apptainer_exec.sh     Apptainer command
+.agent-runs/<run_id>/submit.sbatch         Slurm submit script
+.agent-runs/<run_id>/live/                 status, logs, heartbeat, command log
 .agent-runs/<run_id>/artifacts/            report, diff, metrics
+.agent-runs/<run_id>/reviews/              review outputs
 ```
 
-便利な確認コマンド:
-
-```bash
-./runtime/agentrun/agentrun status
-./runtime/agentrun/agentrun logs --follow
-./runtime/agentrun/agentrun tail
-./runtime/agentrun/agentrun list-runs
-./runtime/agentrun/agentrun open-run .agent-runs/latest
-./runtime/agentrun/agentrun verify-run .agent-runs/latest
-```
-
-## Codex の Mount 構成
-
-Codex run では、`agentrun` は以下を mount します。
+`.agent-runs/<run_id>/` 直下の主なファイル:
 
 ```text
-<run_dir>/home                       -> /home/sandbox
-<repo>                               -> /workspace:rw
-<run_dir>                            -> /runs:rw
-<run_dir>/scratch                    -> /scratch:rw
-<run_dir>/cache                      -> /cache:rw
-<ai-agent-env>                       -> /home/sandbox/ai-agent-config:ro
+capsule.yaml        run id, mode, agent, repo, goal などの run metadata
+prompt.txt          agent CLI に渡す最終 prompt
+goal.yaml           --goal 指定があればその copy。未指定なら mode/agent だけの最小 metadata
+apptainer_exec.sh   container を起動する実コマンド
+submit.sbatch       sbatch 用 script。--submit 時はこれを投入する
+```
+
+`live/` は実行中状態とログの置き場です。
+
+```text
+live/status.json        run の最終または現在 status。初期値は {}
+live/heartbeat.txt      最後に heartbeat を書いた時刻
+live/current_task.md    agent または smoke が現在作業内容を書く場所。初期値は initialized
+live/stdout.log         agent stdout 用 ledger。現状の batch では空のまま残ることがある
+live/stderr.log         apptainer_exec.sh の stderr 追記先
+live/slurm.out          Slurm stdout。submitted job の標準出力は主にここを見る
+live/slurm.err          Slurm stderr
+live/command_log.jsonl  command/hook 実行ログ用 JSONL。空でも異常とは限らない
+live/events.jsonl       run event 用 JSONL。空でも異常とは限らない
+live/auth_refresh_detected.txt auth file が run 中に更新されたかの要約
+live/exit_code.txt      Slurm job 内 command の exit code
+live/slurm_job_id.txt   Slurm job id。prepare-only では空のことがある
+```
+
+`artifacts/` は agent が最終成果物を書く場所です。
+
+```text
+artifacts/report.md             人間向けの最終 report。verify-run では非空が期待される
+artifacts/git_diff.patch        agent が作った diff。変更なしなら空
+artifacts/metrics.json          metrics / summary metadata。初期値は {}
+artifacts/environment.txt       submitted job の environment dump
+artifacts/container.txt         apptainer version など container 情報
+artifacts/data_manifest.txt     入出力データの manifest 用。未使用なら空
+artifacts/auth_baseline.tsv     auth file copy 直後の hash 記録
+artifacts/auth_refresh_report.tsv job 終了時の auth file hash 比較結果
+artifacts/proposed_next.yaml    experiment/campaign の次アクション提案
+artifacts/proposed_train.sbatch campaign の training job 提案
+```
+
+`reviews/` は review 系 profile の出力置き場です。
+
+```text
+reviews/review_findings.json      review の構造化 findings。初期値は {}
+reviews/claude.md                 Claude review 用 placeholder
+reviews/codex.md                  Codex review 用 placeholder
+reviews/antigravity.md            Antigravity review 用 placeholder
+reviews/summary.md                review summary
+reviews/disagreements.json        agent 間 disagreement 用。初期値は {}
+reviews/final_recommendation.md   final recommendation
+```
+
+`home/` は container の `/home/sandbox` です。auth file や writable config はここに一時配置されます。`submit.sbatch` には cleanup trap が入っており、job 終了時に `<run_dir>/home/` は削除されます。
+
+`scratch/` と `cache/` は run ごとの一時領域です。container 内ではそれぞれ `/scratch`, `/cache` に mount されます。
+
+初期作成直後や prepare-only run では、空ファイル、`{}`、`initialized` だけのファイルが多く残ります。これは異常ではありません。`--submit` した job が進むにつれて `live/` と `artifacts/` が更新されます。
+
+### Auth Refresh Detection と自動昇格
+
+agent auth file は `$HOME/.agentrun/auth/<agent>/`（store）から `<run_dir>/home/` に staging され、container には `/home/sandbox` として渡されます。host `$HOME` の auth file を直接 read/write mount する構成ではありません。store にファイルがない場合のみ host `$HOME` に fallback します。
+
+staging 対象の auth file:
+
+```text
+claude      $HOME/.agentrun/auth/claude/.claude/.credentials.json
+            $HOME/.agentrun/auth/claude/.claude.json
+codex       $HOME/.agentrun/auth/codex/.codex/auth.json
+antigravity $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity-oauth-token
+            $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
+```
+
+`agentrun` は staging 直後の store hash と run home hash を `artifacts/auth_baseline.tsv` に記録します。job 終了時に run home 側の hash を比較し、変化があれば以下のルールで処理します。
+
+```text
+exit code 0 かつ store が未変更  -> store に昇格 (AUTH_REFRESH_PROMOTED)
+それ以外                         -> $HOME/.agentrun/auth-conflicts/<run_id>/ に保存 (AUTH_REFRESH_CONFLICT)
+```
+
+処理結果は以下に残ります。
+
+```text
+live/auth_refresh_detected.txt
+artifacts/auth_refresh_report.tsv
+```
+
+`AUTH_REFRESH_CONFLICT` が出た場合は `agentrun auth conflicts` でコンフリクトの内容を確認し、必要であれば手動で store に反映してください。
+
+`.agent-runs/latest` は最後に prepare された run を指します。未完了 run や prepared-only run を指す場合があります。
+
+## Run 確認
+
+```bash
+agentrun status
+agentrun logs
+agentrun logs --follow
+agentrun tail
+agentrun list-runs
+agentrun open-run .agent-runs/latest
+agentrun verify-run .agent-runs/latest
+```
+
+挙動:
+
+- `status`: `.agent-runs/latest/live/status.json` を表示
+- `logs`: `.agent-runs/latest/live/stdout.log` を表示
+- `logs --follow`: stdout log を `tail -f`
+- `tail`: `logs --follow` と同等
+- `list-runs`: `.agent-runs/` 直下の run を列挙
+- `open-run`: symlink を解決した run path を表示
+- `verify-run`: required outputs と JSON/JSONL/status を検証
+
+`latest` が未完了 run を指している場合、`status` が `{}` のまま正常終了したり、`verify-run` が失敗したりします。これは検出として正常です。
+
+## Agent 差分
+
+### Claude Code
+
+container path:
+
+```text
+/home/sandbox/.claude/settings.json
+/home/sandbox/.claude/CLAUDE.md
+/home/sandbox/.claude/hooks/
+/home/sandbox/.claude/skills/
+```
+
+host files:
+
+```text
+agents/claude/CLAUDE.md                    -> ../../common/AGENTS.md
+agents/claude/skills                       -> ../../common/skills
+agents/claude/settings.json                base config
+agents/claude/settings.assist.json         assist overlay
+agents/claude/settings.experiment.json     experiment overlay
+agents/claude/hooks.manifest.json          hook source manifest
+```
+
+commands:
+
+```text
+interactive assist   cd /workspace && claude --dangerously-skip-permissions
+batch                cd /workspace && claude --print --dangerously-skip-permissions
+```
+
+auth (store):
+
+```text
+$HOME/.agentrun/auth/claude/.claude/.credentials.json
+$HOME/.agentrun/auth/claude/.claude.json
+```
+
+mounts:
+
+```text
+agents/claude/CLAUDE.md          -> /home/sandbox/.claude/CLAUDE.md:ro
+container_config/settings.json   -> /home/sandbox/.claude/settings.json:ro
+common/hooks                     -> /home/sandbox/.claude/hooks:ro
+agents/claude/skills             -> /home/sandbox/.claude/skills:ro
+```
+
+### Codex
+
+container path:
+
+```text
+/home/sandbox/.codex/config.toml
+/home/sandbox/.codex/AGENTS.md
+/home/sandbox/.codex/rules/
+/home/sandbox/.codex/skills/
+/etc/codex/requirements.toml
+```
+
+host files:
+
+```text
+agents/codex/AGENTS.md              -> ../../common/AGENTS.md
+agents/codex/skills                 -> ../../common/skills
+agents/codex/config.toml            base config
+agents/codex/config.assist.toml     assist config
+agents/codex/config.experiment.toml experiment config
+agents/codex/hooks.manifest.json    hook source manifest
+agents/codex/hooks.json             generated compatibility hook JSON
+agents/codex/requirements.toml      generated managed hook config
+agents/codex/rules/                 exec policy
+```
+
+commands:
+
+```text
+interactive assist   cd /workspace && codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --cd /workspace
+batch                cd /workspace && codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --cd /workspace
+```
+
+auth (store):
+
+```text
+$HOME/.agentrun/auth/codex/.codex/auth.json
+```
+
+mounts and staged files:
+
+```text
 agents/codex/requirements.toml       -> /etc/codex/requirements.toml:ro
 agents/codex/AGENTS.md               -> /home/sandbox/.codex/AGENTS.md:ro
 agents/codex/rules                   -> /home/sandbox/.codex/rules:ro
+container_config/config.toml         -> <run_dir>/home/.codex/config.toml
+common/skills/*                      -> <run_dir>/home/.codex/skills/* symlink
 ```
 
-選択された Codex の `config*.toml` は以下に copy されます。
+Codex config は run home に copy されるため writable です。trust/config persistence error が出る場合は `/home/sandbox/.codex/config.toml` が read-only bind mount になっていないか確認してください。
+
+### Antigravity
+
+container path:
 
 ```text
-<run_dir>/home/.codex/config.toml -> /home/sandbox/.codex/config.toml
+/home/sandbox/.gemini/AGENTS.md
+/home/sandbox/.gemini/GEMINI.md
+/home/sandbox/.gemini/antigravity-cli/settings.json
+/home/sandbox/.gemini/antigravity-cli/hooks.json
+/home/sandbox/.gemini/antigravity-cli/hooks/
+/home/sandbox/.gemini/antigravity-cli/skills/
 ```
 
-このファイルは container 内で writable です。そのため、Codex は read-only な repository mount に書き込まずに runtime trust/config state を保存できます。
-
-common skills は以下に link されます。
+host files:
 
 ```text
-<run_dir>/home/.codex/skills/<skill_name> -> /home/sandbox/ai-agent-config/common/skills/<skill_name>
+agents/antigravity/AGENTS.md                 -> ../../common/AGENTS.md
+agents/antigravity/GEMINI.md                 -> ../../common/AGENTS.md
+agents/antigravity/skills                    -> ../../common/skills
+agents/antigravity/settings.json             base config
+agents/antigravity/settings.assist.json      assist overlay
+agents/antigravity/settings.experiment.json  experiment overlay
+agents/antigravity/hooks.manifest.json       hook source manifest
+agents/antigravity/hooks.json                generated hook config
 ```
 
-## Codex 設定ファイル
-
-Codex 固有ファイルは `agents/codex/` 以下にあります。
+commands:
 
 ```text
-agents/codex/AGENTS.md              ../../common/AGENTS.md への symlink
-agents/codex/skills                 ../../common/skills への symlink
-agents/codex/config.toml            Codex base config
-agents/codex/config.assist.toml     assist 用 config
-agents/codex/config.experiment.toml experiment 用 config
-agents/codex/hooks.manifest.json    hook 分類の source manifest
-agents/codex/hooks.json             生成された通常の Codex hook JSON
-agents/codex/requirements.toml      container で使う生成済み managed hook config
-agents/codex/rules/                 Codex 固有の exec policy
+interactive assist   cd /workspace && agy --dangerously-skip-permissions -i
+batch                cd /workspace && agy --print --dangerously-skip-permissions
 ```
 
-container run における実効 hook config は `agents/codex/requirements.toml` です。これは `/etc/codex/requirements.toml` に mount されます。
+`agy` が見つからない場合は `antigravity`、それもなければ `gemini` に fallback します。
 
-`agents/codex/hooks.json` は確認と将来互換性のために生成していますが、検証済みの実行経路は `/etc/codex/requirements.toml` 経由の managed hooks です。
+auth (store):
 
-## Common Instructions のメンテナンス
+```text
+$HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity-oauth-token
+$HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
+```
 
-編集対象:
+mounts and staged files:
+
+```text
+agents/antigravity/AGENTS.md       -> /home/sandbox/.gemini/AGENTS.md:ro
+agents/antigravity/GEMINI.md       -> /home/sandbox/.gemini/GEMINI.md:ro
+agents/antigravity/hooks.json      -> /home/sandbox/.gemini/antigravity-cli/hooks.json:ro
+common/hooks                       -> /home/sandbox/.gemini/antigravity-cli/hooks:ro
+agents/antigravity/skills          -> /home/sandbox/.gemini/antigravity-cli/skills:ro
+container_config/settings.json     -> <run_dir>/home/.gemini/antigravity-cli/settings.json
+```
+
+Antigravity の `settings.json` は `/home/sandbox/.gemini/settings.json` には bind mount しません。read-only config による書き込みエラーを避けるため、run home に copy して使います。
+
+## Common Instructions
+
+共通 instruction は以下を編集します。
 
 ```text
 common/AGENTS.md
 ```
 
-通常、Codex 固有の追加編集は不要です。`agents/codex/AGENTS.md` は common file への symlink であり、run 時には `/home/sandbox/.codex/AGENTS.md` に mount されます。
+各 agent の instruction file は common file への symlink です。
 
-編集後は以下を実行します。
-
-```bash
-./runtime/agentrun/agentrun validate
+```text
+agents/claude/CLAUDE.md       -> ../../common/AGENTS.md
+agents/codex/AGENTS.md        -> ../../common/AGENTS.md
+agents/antigravity/AGENTS.md  -> ../../common/AGENTS.md
+agents/antigravity/GEMINI.md  -> ../../common/AGENTS.md
 ```
 
-## Skills のメンテナンス
+編集後:
 
-skills は以下で編集または追加します。
+```bash
+agentrun validate
+```
+
+## Skills Maintenance
+
+共通 skill は以下に置きます。
 
 ```text
 common/skills/
 ```
 
-既存 skill の中身だけを編集する場合、通常 Codex 固有の sync は不要です。Codex run home は `common/skills` に直接 link します。
-
-skill directory を追加または削除した場合は、以下を実行します。
+既存 skill の中身だけを編集する場合、通常 sync は不要です。
 
 ```bash
-./runtime/agentrun/agentrun sync-codex
-./runtime/agentrun/agentrun validate
+agentrun validate
 ```
 
-`sync-codex` は `agents/codex/skills` symlink を refresh します。run home は run ごとに新規作成されるため、新しい run では現在の `common/skills/*` が link されます。
+skill directory を追加・削除した場合は、symlink refresh のため sync します。
 
-## Hooks のメンテナンス
+```bash
+agentrun sync-claude
+agentrun sync-codex
+agentrun sync-antigravity
+agentrun validate
+```
 
-hook 実装は以下に置きます。
+## Hooks Maintenance
+
+hook 実装は共通です。
 
 ```text
 common/hooks/
 ```
 
-Codex の hook 分類は以下に置きます。
+ただし、どの hook をどの agent で使うかは agent ごとの manifest で管理します。
 
 ```text
+agents/claude/hooks.manifest.json
 agents/codex/hooks.manifest.json
+agents/antigravity/hooks.manifest.json
 ```
 
-manifest には 3 つの list があります。
-
-```json
-{
-  "pre_command": [],
-  "post_command": [],
-  "ignored": []
-}
-```
-
-使い分け:
-
-- `pre_command`: Codex の shell/tool command の前に実行したい hook。
-- `post_command`: Codex の shell/tool command の後に実行したい hook。
-- `ignored`: `common/hooks/` には存在するが Codex では使わない hook。
-
-### 既存 Hook の中身だけを編集する場合
-
-既存の `common/hooks/*.py` の中身だけを編集する場合、通常、生成ファイルの更新は不要です。
-
-以下を実行します。
+既存 hook の中身だけを編集する場合:
 
 ```bash
-./runtime/agentrun/agentrun validate
+agentrun validate
 ```
 
-新しい Codex run では `/home/sandbox/ai-agent-config/common/hooks/...` 経由で更新後の script が使われます。
-
-### Hook の追加・削除・リネーム
-
-`common/hooks/` を更新した後、`agents/codex/hooks.manifest.json` を更新します。
-
-すべての `common/hooks/*.py` は、概念上ちょうど 1 つの分類に入れる必要があります。
-
-- `pre_command`
-- `post_command`
-- `ignored`
-
-その後、以下を実行します。
+hook を追加・削除・リネームした場合:
 
 ```bash
-./runtime/agentrun/agentrun sync-codex
-./runtime/agentrun/agentrun validate
+agentrun sync-claude
+agentrun sync-codex
+agentrun sync-antigravity
+agentrun validate
 ```
 
-`sync-codex` は以下を再生成します。
+全ての `common/hooks/*.py` は、各 agent の manifest で active または ignored に分類されている必要があります。未分類 hook があると `validate` は失敗します。
 
-```text
-agents/codex/hooks.json
-agents/codex/requirements.toml
-```
+Claude / Antigravity の manifest は event × matcher 形式です。Codex の manifest は `pre_command`, `post_command`, `ignored` の分類です。
 
-hook が分類されていない場合、`validate` は失敗します。これは silent drift を防ぐための意図的な挙動です。
+## Smoke Tests
 
-### Hook 実行の確認済み経路
+`agentrun smoke-test` は、run directory と `submit.sbatch` を生成する軽量 smoke scaffold です。
 
-Codex で検証済みの hook 経路は managed hooks です。
-
-```text
-agents/codex/requirements.toml -> /etc/codex/requirements.toml
-```
-
-Slurm smoke job `3537` では、Codex の stderr に `hook: PreToolUse` と `hook: PostToolUse` が表示され、`common/hooks/update_run_status.py` が command event を以下に書き込みました。
-
-```text
-/runs/live/command_log.jsonl
-```
-
-以前の non-interactive `codex exec` smoke では通常の `~/.codex/hooks.json` は発火しませんでした。そのため、これを container hook の実効経路として扱わないでください。
-
-## Sync Command
+prepare のみ:
 
 ```bash
-./runtime/agentrun/agentrun sync-codex
+agentrun smoke-test --agent codex --partition <partition>
 ```
 
-Codex の hook 分類を変更した後、または Codex symlink を refresh したい場合に使います。
-
-実行内容:
-
-1. `agents/codex/hooks.manifest.json` を検証する。
-2. active hook が `common/hooks/` に存在し、実行可能であることを確認する。
-3. ignored hook が `common/hooks/` に存在することを確認する。
-4. 未分類の `common/hooks/*.py` があれば失敗する。
-5. `agents/codex/hooks.json` を再生成する。
-6. `agents/codex/requirements.toml` を再生成する。
-7. `agents/codex/AGENTS.md -> ../../common/AGENTS.md` を refresh する。
-8. `agents/codex/skills -> ../../common/skills` を refresh する。
-
-## 認証
-
-Codex auth は repository に保存しません。
-
-host 側で期待される auth path:
-
-```text
-$HOME/.codex/auth.json
-```
-
-submitted Codex smoke test では、auth は run home に copy されます。
-
-```text
-<run_dir>/home/.codex/auth.json
-```
-
-Codex auth smoke test では、stage された run home は cleanup で削除されます。通常の runtime run でも、run-home auth は一時的な secret material として扱ってください。
-
-## Smoke Test
-
-creator test helper:
+Slurm に投入:
 
 ```bash
-tests/slurm/submit_creator_tests.sh codex-assist-pty
-tests/slurm/submit_creator_tests.sh codex-auth
+agentrun smoke-test --agent codex --partition <partition> --submit
 ```
 
-`codex-assist-pty` は planning と container visibility を確認します。
+この smoke test は agent の認証済み model response までは検証しません。Creator node 用の追加 helper として `assist-pty`, `codex-assist-pty`, `codex-auth` もあります。これらは container visibility、Codex writable config、authenticated `codex exec`、managed hook 発火を確認するための開発者向け Slurm test です。
 
-- interactive assist が top-level `codex` を使うこと。
-- submitted assist が `codex exec` を使うこと。
-- Codex config が run home 内で writable であること。
-- `/etc/codex/requirements.toml` が見えること。
-- `AGENTS.md`、`rules`、common skills が見えること。
+## Troubleshooting
 
-`codex-auth` は authenticated execution を確認します。
+### `agentrun` が見つからない
 
-- container 内で `codex exec` が実行できること。
-- Codex が shell command を実行できること。
-- managed hooks が発火すること。
-- `PostToolUse` が command を `/runs/live/command_log.jsonl` に記録すること。
+```bash
+./install.sh --apply
+which agentrun
+```
 
-## トラブルシューティング
+`$HOME/.local/bin` が `PATH` に入っていない場合は shell の設定を確認してください。
 
-### Trust Persistence Error
+### `doctor` が auth を FAIL にする
 
-Codex が `/home/sandbox/.codex/config.toml` に trust を保存できないと報告した場合、read-only bind mount ではなく、run home に copy された writable config を使っているか確認してください。
+auth store (`$HOME/.agentrun/auth/`) と host 両方にファイルが存在しない場合に FAIL になります。
+
+```bash
+agentrun auth status
+agentrun auth import --all
+agentrun doctor --all
+```
+
+auth file は repository に保存しません。store から `<run_dir>/home/` へ staging され、job 終了後に削除されます。
+
+### `dry-run` の directory が存在しない
+
+正常です。`dry-run` は副作用なしの plan 表示だけを行います。実体を作るには `assist`, `assist --submit`, `experiment --submit` などを実行してください。
+
+### `status` が `{}` のまま
+
+`.agent-runs/latest` が prepared run または未完了 run を指している可能性があります。
+
+```bash
+agentrun open-run .agent-runs/latest
+agentrun verify-run .agent-runs/latest
+```
+
+### `verify-run` が `artifacts/report.md` で失敗する
+
+agent が required artifact を作っていない状態です。Slurm job の exit code が 0 でも、run contract を満たしていなければ `verify-run` は失敗します。
+
+### Codex trust persistence error
 
 期待される状態:
 
 ```text
-<run_dir>/home/.codex/config.toml
+/home/sandbox/.codex/config.toml は run home 内の writable file
 ```
 
 期待しない状態:
@@ -878,392 +824,58 @@ Codex が `/home/sandbox/.codex/config.toml` に trust を保存できないと�
 /home/sandbox/.codex/config.toml:ro
 ```
 
+`codex-assist-pty` smoke test で writable config を確認できます。
+
 ### Hooks が発火しない
 
-まず実効 path を確認します。
+まず mount と generated config を確認します。
 
 ```bash
-./runtime/agentrun/agentrun dry-run assist --agent codex --show-mounts "hook check"
+agentrun dry-run assist --agent codex --show-mounts "hook check"
+agentrun validate
 ```
 
-Apptainer command に以下が含まれている必要があります。
+Codex の実効 hook 経路は `/etc/codex/requirements.toml` です。Claude は `/home/sandbox/.claude/hooks/`、Antigravity は `/home/sandbox/.gemini/antigravity-cli/hooks/` を使います。
+
+## Command Reference
 
 ```text
-agents/codex/requirements.toml:/etc/codex/requirements.toml:ro
+agentrun agents
+agentrun validate
+agentrun doctor [--agent NAME|--all]
+agentrun auth import --agent NAME|--all
+agentrun auth status [--agent NAME]
+agentrun auth reset --agent NAME
+agentrun auth conflicts
+agentrun dry-run MODE [options] PROMPT
+agentrun assist [options] PROMPT
+agentrun assist --submit [options] PROMPT
+agentrun experiment|campaign|review|multi-review [options] PROMPT
+agentrun smoke-test [--agent NAME] [--submit]
+agentrun sync-claude
+agentrun sync-codex
+agentrun sync-antigravity
+agentrun status
+agentrun logs [--follow]
+agentrun tail
+agentrun list-runs
+agentrun open-run [RUN_DIR]
+agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 ```
 
-次に以下を確認します。
-
-```bash
-./runtime/agentrun/agentrun sync-codex
-./runtime/agentrun/agentrun validate
-```
-
-container execution では `/home/sandbox/.codex/hooks.json` に依存しないでください。検証済みの経路は `/etc/codex/requirements.toml` です。
-
-### 新しい Hook で Validate が失敗する
-
-`validate` が unclassified Codex hook を報告する場合、その file name を以下のどれかに追加してください。
+主要 option:
 
 ```text
-agents/codex/hooks.manifest.json: pre_command
-agents/codex/hooks.manifest.json: post_command
-agents/codex/hooks.manifest.json: ignored
+--agent NAME        antigravity, claude, codex
+--repo PATH         /workspace に mount する repository。default: .
+--goal PATH         goal.yaml
+--gpus N            GPU count。default: 0
+--time HH:MM:SS     walltime override。省略時は profile default
+--partition NAME    Slurm partition。省略時は AGENTRUN_SLURM_PARTITION、未設定なら cluster default
+--reviewers LIST    prompt に追記される reviewer list
+--target-diff PATH  prompt に追記される review target diff
+--target-report PATH prompt に追記される review target report
+--agents LIST       prompt に追記される requested agents
+--show-mounts       dry-run で agent 固有 mount も表示
+--submit            prepare 後に sbatch する
 ```
-
-その後、以下を実行します。
-
-```bash
-./runtime/agentrun/agentrun sync-codex
-./runtime/agentrun/agentrun validate
-```
-
-### 認証 Smoke が失敗する
-
-確認:
-
-```bash
-test -f "$HOME/.codex/auth.json"
-tests/slurm/submit_creator_tests.sh codex-auth
-```
-
-最新 run を確認します。
-
-```bash
-./runtime/agentrun/agentrun list-runs
-tail -n 100 .agent-runs/creator-codex-auth-smoke/*/live/stderr.log
-cat .agent-runs/creator-codex-auth-smoke/*/live/status.json
-```
-
-## 通常メンテナンスのチェックリスト
-
-common instructions を編集する場合:
-
-```bash
-vim common/AGENTS.md
-./runtime/agentrun/agentrun validate
-```
-
-common skill を編集する場合:
-
-```bash
-vim common/skills/<skill>/SKILL.md
-./runtime/agentrun/agentrun validate
-```
-
-common skill を追加または削除する場合:
-
-```bash
-mkdir -p common/skills/<skill>
-vim common/skills/<skill>/SKILL.md
-./runtime/agentrun/agentrun sync-codex
-./runtime/agentrun/agentrun validate
-```
-
-hook を編集する場合:
-
-```bash
-vim common/hooks/<hook>.py
-./runtime/agentrun/agentrun validate
-```
-
-hook を追加・削除・リネームする場合:
-
-```bash
-vim common/hooks/<hook>.py
-vim agents/codex/hooks.manifest.json
-./runtime/agentrun/agentrun sync-codex
-./runtime/agentrun/agentrun validate
-```
-
-利用前に確信度を上げたい場合:
-
-```bash
-./runtime/agentrun/agentrun dry-run assist --agent codex --partition small-creator --show-mounts "smoke"
-tests/slurm/submit_creator_tests.sh codex-assist-pty
-tests/slurm/submit_creator_tests.sh codex-auth
-```
-
----
-
-# [antigravity]
-
-この章では `agentrun` の Antigravity (agy) 側だけを説明します。
-
-## スコープ
-
-このリポジトリは、Slurm の compute node 上で Apptainer sandbox 内に Antigravity を起動するためのものです。host 上で Antigravity を直接使う運用は主経路ではありません。
-
-Antigravity run では以下のパスを使います。
-
-- host 側 config root: `mizuno-group/ai-agent-env`
-- container 側 config root: `/home/sandbox/ai-agent-config`
-- container home: `/home/sandbox`
-- workspace: `/workspace`
-- run ledger: `/runs`
-- Antigravity config: `/home/sandbox/.gemini/antigravity-cli/settings.json`
-- Antigravity hooks.json: `/home/sandbox/.gemini/antigravity-cli/hooks.json`
-- Antigravity hooks: `/home/sandbox/.gemini/antigravity-cli/hooks/`
-- Antigravity skills: `/home/sandbox/.gemini/antigravity-cli/skills/`
-- Antigravity instructions: `/home/sandbox/.gemini/AGENTS.md` および `/home/sandbox/.gemini/GEMINI.md`
-
-## クイックスタート
-
-`mizuno-group/ai-agent-env` から実行します。
-
-```bash
-./runtime/agentrun/agentrun validate
-./runtime/agentrun/agentrun doctor --agent antigravity
-./runtime/agentrun/agentrun dry-run assist --agent antigravity --partition small-creator --show-mounts "Hello"
-./runtime/agentrun/agentrun assist --agent antigravity --partition small-creator "Hello"
-```
-
-`--partition small-creator` は test site 用の例です。product script に partition 名を hard-code しないでください。
-
-## 基本コマンド
-
-### Agent 一覧
-
-```bash
-./runtime/agentrun/agentrun agents
-```
-
-現在の環境で `antigravity` が利用可能か確認します。
-
-### 設定検証
-
-```bash
-./runtime/agentrun/agentrun validate
-```
-
-必須ファイル、JSON の形、hook の executable bit、symlink の整合性を検証します。
-
-Antigravity については、追加で以下を確認します。
-
-- `agents/antigravity/hooks.manifest.json` が存在し、形式が正しいこと。
-- active hook がすべて `common/hooks/` に存在し、実行可能であること。
-- すべての `common/hooks/*.py` が manifest に分類されていること。
-- `agents/antigravity/hooks.json` が manifest から生成した内容と一致すること。
-- `agents/antigravity/AGENTS.md -> ../../common/AGENTS.md` であること。
-- `agents/antigravity/GEMINI.md -> ../../common/AGENTS.md` であること。
-- `agents/antigravity/skills -> ../../common/skills` であること。
-
-### Doctor
-
-```bash
-./runtime/agentrun/agentrun doctor --agent antigravity
-```
-
-Slurm command、Apptainer、Antigravity CLI、image など、ローカル実行に必要な前提を確認します。
-
-### Dry Run
-
-```bash
-./runtime/agentrun/agentrun dry-run assist --agent antigravity --partition small-creator --show-mounts "Hello"
-```
-
-run directory のパス（host_run_directory）を計算・表示し、Antigravity は起動せずに、予定される Slurm command と Apptainer command を表示します。
-
-本番実行前に以下を確認する用途で使います。
-
-- どの repo が `/workspace` に mount されるか。
-- `settings.json` がどのファイルから生成されるか（assist か base か）。
-- `common/hooks` が `/home/sandbox/.gemini/antigravity-cli/hooks` に mount されるか。
-
-### 対話式 Assist
-
-```bash
-./runtime/agentrun/agentrun assist --agent antigravity --partition small-creator --repo . "Your prompt"
-```
-
-挙動:
-
-- `srun --pty` を使います。
-- Apptainer 内で interactive な `agy` (または `antigravity`) を起動します。
-- `settings.assist.json` と `settings.json` を jq でディープマージした設定が使われ、`git push` や `sbatch` などの一時的な権限緩和が行われます。
-- run 終了後に `<run_dir>/home/` が自動削除されます。
-
-### Submit する Assist
-
-```bash
-./runtime/agentrun/agentrun assist --submit --agent antigravity --partition small-creator --repo . "Your prompt"
-```
-
-挙動:
-
-- `.agent-runs/<run_id>/` を生成します。
-- `sbatch` で Slurm job を投入します。
-- non-interactive に実行されます。
-- auth credentials を run home に stage します。
-- job 終了時に `<run_dir>/home/` を削除します。
-
-### Experiment
-
-```bash
-./runtime/agentrun/agentrun experiment --submit --agent antigravity --partition small-creator --goal path/to/goal.yaml --repo . "Run the goal"
-```
-
-挙動:
-
-- batch execution を使います。
-- 存在する場合は `agents/antigravity/settings.experiment.json` を `settings.json` とマージした設定を使います（より強力な安全制限が適用されます）。
-- 初期プロンプトの先頭に自動で `/goal` が付与され、自律実行に入ります。
-
-## Run Directory
-
-各 run は `.agent-runs/<run_id>/` を作成します。
-
-重要なパス:
-
-```text
-.agent-runs/<run_id>/home/                                  /home/sandbox 用の staged HOME
-.agent-runs/<run_id>/home/.gemini/antigravity-cli/          staged Antigravity home
-.agent-runs/<run_id>/container_config/                      モード別にマージ済みの settings.json
-.agent-runs/<run_id>/prompt.txt                             Antigravity に渡される prompt
-.agent-runs/<run_id>/apptainer_exec.sh                      生成された Apptainer command
-.agent-runs/<run_id>/submit.sbatch                          生成された Slurm submit script
-.agent-runs/<run_id>/live/                                  stdout, stderr, status.json
-```
-
-## Antigravity の Mount 構成
-
-Antigravity run では、`agentrun` は以下を mount します。
-
-```text
-<run_dir>/home                             -> /home/sandbox
-<repo>                                     -> /workspace:rw
-<run_dir>                                  -> /runs:rw
-<run_dir>/scratch                          -> /scratch:rw
-<run_dir>/cache                            -> /cache:rw
-<ai-agent-env>                             -> /home/sandbox/ai-agent-config:ro
-agents/antigravity/AGENTS.md               -> /home/sandbox/.gemini/AGENTS.md:ro
-agents/antigravity/GEMINI.md               -> /home/sandbox/.gemini/GEMINI.md:ro
-agents/antigravity/hooks.json              -> /home/sandbox/.gemini/antigravity-cli/hooks.json:ro
-common/hooks                               -> /home/sandbox/.gemini/antigravity-cli/hooks:ro
-agents/antigravity/skills                  -> /home/sandbox/.gemini/antigravity-cli/skills:ro
-```
-
-設定ファイル `settings.json` は書き込みエラー（read-only file system）を防ぐため、バインドマウントではなく `<run_dir>/home/.gemini/antigravity-cli/settings.json` に **コピー** されて配置されます。
-`assist` モードでは `settings.json` + `settings.assist.json` を jq でマージしたものが使われます。
-
-## Antigravity 設定ファイル
-
-Antigravity 固有ファイルは `agents/antigravity/` 以下にあります。
-
-```text
-agents/antigravity/AGENTS.md                    ../../common/AGENTS.md への symlink
-agents/antigravity/GEMINI.md                    ../../common/AGENTS.md への symlink
-agents/antigravity/skills                       ../../common/skills への symlink
-agents/antigravity/settings.json                Antigravity base config
-agents/antigravity/settings.assist.json         assist モード用 safety overlay
-agents/antigravity/settings.experiment.json     experiment モード用 safety overlay
-agents/antigravity/hooks.manifest.json          hook 分類の source manifest
-agents/antigravity/hooks.json                   生成された Antigravity hook JSON
-```
-
-## Hooks のメンテナンス
-
-hook 実装は以下に置きます。
-
-```text
-common/hooks/
-```
-
-Antigravity の hook 分類は以下に置きます。Claude Code のマニフェスト形式と全く同じ構造を持っています。
-
-```text
-agents/antigravity/hooks.manifest.json
-```
-
-manifest の構造:
-
-```json
-{
-  "hooks": [
-    {
-      "event": "PreToolUse",
-      "matcher": "Bash",
-      "entries": [
-        {"script": "block_dangerous_command.py"},
-        {"script": "git_branch_guard.py", "if": "Bash(git *)"}
-      ]
-    },
-    ...
-  ],
-  "ignored": []
-}
-```
-
-### Hook の追加・削除・リネーム
-
-`common/hooks/` を更新した後、`agents/antigravity/hooks.manifest.json` を更新します。
-
-その後、以下を実行します。
-
-```bash
-./runtime/agentrun/agentrun sync-antigravity
-./runtime/agentrun/agentrun validate
-```
-
-`sync-antigravity` は `agents/antigravity/hooks.json` を再生成します。
-hook が分類されていない場合、`validate` は失敗します。
-
-## Sync Command
-
-```bash
-./runtime/agentrun/agentrun sync-antigravity
-```
-
-実行内容:
-
-1. `agents/antigravity/hooks.manifest.json` を検証する。
-2. active hook が `common/hooks/` に存在し、実行可能であることを確認する。
-3. ignored hook が `common/hooks/` に存在することを確認する。
-4. 未分類の `common/hooks/*.py` があれば失敗する。
-5. manifest から `agents/antigravity/hooks.json` を再生成する。
-6. `agents/antigravity/AGENTS.md -> ../../common/AGENTS.md` を refresh する。
-7. `agents/antigravity/GEMINI.md -> ../../common/AGENTS.md` を refresh する。
-8. `agents/antigravity/skills -> ../../common/skills` を refresh する。
-
-## 認証
-
-Antigravity auth は repository に保存しません。
-
-host 側で期待される auth ファイル:
-
-```text
-$HOME/.gemini/antigravity-cli/antigravity-oauth-token
-$HOME/.gemini/antigravity-cli/installation_id
-```
-
-どちらか一方または両方が存在すれば、run 時に run home へ copy されます。
-
-```text
-<run_dir>/home/.gemini/antigravity-cli/antigravity-oauth-token
-<run_dir>/home/.gemini/antigravity-cli/installation_id
-```
-
-run home は run 終了後に削除されます。run-home auth は一時的な secret material として扱ってください。
-
-## トラブルシューティング
-
-### validate が hooks の不一致を報告する
-
-`validate` が `antigravity-hooks-generated:agents/antigravity/hooks.json` の FAIL を報告した場合、manifest と `hooks.json` が乖離しています。
-
-以下を実行します。
-
-```bash
-./runtime/agentrun/agentrun sync-antigravity
-./runtime/agentrun/agentrun validate
-```
-
-### 認証エラー
-
-container 内で Antigravity の認証に失敗した場合、以下を確認します。
-
-```bash
-ls -la "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
-./runtime/agentrun/agentrun doctor --agent antigravity
-```
-

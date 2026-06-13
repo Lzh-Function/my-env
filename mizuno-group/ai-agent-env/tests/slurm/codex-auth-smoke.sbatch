@@ -12,11 +12,12 @@ set -euo pipefail
 ENV_ROOT="${AI_AGENT_ENV_DIR:?AI_AGENT_ENV_DIR must be exported by submit_creator_tests.sh}"
 RUN_DIR="${CODEX_AUTH_SMOKE_RUN_DIR:?CODEX_AUTH_SMOKE_RUN_DIR must be exported by submit_creator_tests.sh}"
 IMAGE="$ENV_ROOT/runtime/apptainer/base-agent.sif"
-EXPECTED="OK_CODEX_AUTH_SMOKE"
+EXPECTED="OK_CODEX_AUTH_SMOKE_DONE"
 
 cd "$ENV_ROOT"
 
 mkdir -p "$RUN_DIR/home/.codex/skills"
+cp "$ENV_ROOT/agents/codex/config.toml" "$RUN_DIR/home/.codex/config.toml"
 for skill in "$ENV_ROOT"/common/skills/*; do
     [ -d "$skill" ] || continue
     ln -sfn "/home/sandbox/ai-agent-config/common/skills/$(basename "$skill")" \
@@ -28,10 +29,10 @@ if [ ! -f "$RUN_DIR/home/.codex/auth.json" ]; then
     exit 2
 fi
 
-cleanup_auth() {
-    rm -f "$RUN_DIR/home/.codex/auth.json"
+cleanup_home() {
+    rm -rf "$RUN_DIR/home"
 }
-trap cleanup_auth EXIT
+trap cleanup_home EXIT
 
 {
     printf 'job_id=%s\n' "${SLURM_JOB_ID:-}"
@@ -41,7 +42,10 @@ trap cleanup_auth EXIT
 } | tee "$RUN_DIR/live/job.env"
 
 cat > "$RUN_DIR/prompt.txt" <<EOF
-Reply with exactly this token and no extra text:
+Use shell to run exactly this command once:
+printf OK_CODEX_AUTH_SMOKE
+
+After the command has run, reply with exactly this token and no extra text:
 $EXPECTED
 EOF
 
@@ -55,12 +59,11 @@ apptainer exec \
     --bind "$RUN_DIR/scratch:/scratch:rw" \
     --bind "$RUN_DIR/cache:/cache:rw" \
     --bind "$ENV_ROOT:/home/sandbox/ai-agent-config:ro" \
-    --bind "$ENV_ROOT/agents/codex/config.toml:/home/sandbox/.codex/config.toml:ro" \
-    --bind "$ENV_ROOT/agents/codex/hooks.json:/home/sandbox/.codex/hooks.json:ro" \
+    --bind "$ENV_ROOT/agents/codex/requirements.toml:/etc/codex/requirements.toml:ro" \
     --bind "$ENV_ROOT/agents/codex/AGENTS.md:/home/sandbox/.codex/AGENTS.md:ro" \
     --bind "$ENV_ROOT/agents/codex/rules:/home/sandbox/.codex/rules:ro" \
     "$IMAGE" \
-    bash -lc 'codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd /workspace "$(cat /runs/prompt.txt)"' \
+    bash -lc 'codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --cd /workspace "$(cat /runs/prompt.txt)"' \
     > "$RUN_DIR/live/stdout.log" \
     2> "$RUN_DIR/live/stderr.log"
 RC=$?
@@ -81,6 +84,14 @@ if ! grep -q "$EXPECTED" "$RUN_DIR/live/stdout.log"; then
     exit 1
 fi
 
+if ! grep -q "OK_CODEX_AUTH_SMOKE" "$RUN_DIR/live/command_log.jsonl"; then
+    printf '{"status":"failed","agent":"codex","reason":"managed hook did not record shell command"}\n' > "$RUN_DIR/live/status.json"
+    printf 'managed Codex PostToolUse hook did not update %s\n' "$RUN_DIR/live/command_log.jsonl" >&2
+    cat "$RUN_DIR/live/stdout.log" >&2
+    cat "$RUN_DIR/live/stderr.log" >&2
+    exit 1
+fi
+
 printf '{"status":"success","agent":"codex","mode":"auth-smoke","job_id":"%s"}\n' "${SLURM_JOB_ID:-}" > "$RUN_DIR/live/status.json"
 printf '{"codex_auth_smoke":true,"status":"passed","agent":"codex","job_id":"%s"}\n' "${SLURM_JOB_ID:-}" > "$RUN_DIR/artifacts/metrics.json"
-printf '# Codex Auth Smoke\n\nCodex returned the expected token through authenticated `codex exec`.\n' > "$RUN_DIR/artifacts/report.md"
+printf '# Codex Auth Smoke\n\nCodex returned the expected token through authenticated `codex exec`, and managed Codex hooks recorded the shell command.\n' > "$RUN_DIR/artifacts/report.md"
