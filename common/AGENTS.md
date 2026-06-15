@@ -4,46 +4,36 @@ These rules apply to Antigravity, Claude Code, Codex, and any future agent launc
 
 ## Execution Boundary
 
-- Run agents inside a Slurm job and Apptainer capsule.
-- Use the login node only to inspect files, prepare commands, and submit jobs.
-- Do not run GPU workloads or non-trivial Python workloads directly on the login node.
-- Keep agent changes inside the mounted workspace and run directory.
+- You are running inside an Apptainer capsule on a Slurm compute node.
+- The workspace repository is mounted at `/workspace`. Work only within `/workspace`.
+- Run directory (logs and outputs) is mounted at `/runs`. Write all live state and artifacts there.
+- Submitting new Slurm jobs (`sbatch`, `salloc`) from inside the capsule is blocked. To propose a follow-up job, write `artifacts/proposed_job.sbatch` instead.
 
-## Python And Slurm
+## Python and Environment
 
-- Python environments are managed with uv.
-- Do not use `pip install` directly.
-- Before generating an `srun` or `sbatch` command that invokes Python, identify the project venv and source it inside the Slurm command or job script.
-- Follow the local `CLAUDE.md` Slurm partition, time, memory, and GPU guidance.
+- Python environments are managed with `uv`. Do not use `pip install` directly; use `uv add` or `uv run`.
+- No system Python is available. Always use the project venv (e.g. `source .venv/bin/activate` or `uv run`).
+- You are already on a compute node. Run Python directly — do not wrap commands in `srun` or `sbatch`.
 
 ## Git Safety
 
 - Do not overwrite user changes.
 - Do not run destructive git operations unless explicitly requested.
 - Do not push, force-push, rebase, or reset without explicit approval.
-- Write patches and reports to the run ledger when working inside a capsule.
+- Write patches and reports to the run directory when working inside a capsule.
 
 ## Secrets
 
 - Do not read SSH keys, API tokens, `.env` files, OAuth tokens, or agent auth files.
 - Do not store authentication state in this repository.
-- Bind only the minimum required auth metadata into the capsule.
 
 ## Observability
 
 - Write live state under `/runs/live`.
 - Write final outputs under `/runs/artifacts`.
-- Required live outputs are `status.json`, `heartbeat.txt`, `stdout.log`, `stderr.log`, and `command_log.jsonl`.
-- Required final outputs are `report.md`, `git_diff.patch`, and `metrics.json`.
+- Required live outputs: `status.json`, `heartbeat.txt`, `stdout.log`, `stderr.log`, `command_log.jsonl`.
+- Required final outputs: `report.md`, `git_diff.patch`, `metrics.json`.
 - The `status` field in `status.json` must be one of: `"success"`, `"failed"`, `"cancelled"`, `"timeout"`. Use `"success"` when all required outputs are written without error.
-
-## Testing
-
-- Validate configuration before launching a run.
-- Use `doctor` to check host tools, images, and auth state.
-- Use `dry-run` before running Slurm and Apptainer commands.
-- Use `smoke-test` before real assist or experiment mode.
-- Use `verify-run` after each run.
 
 # BASE GUIDELINES
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
