@@ -1404,7 +1404,7 @@ command_prepare() {
         [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
         [ "$GPUS" -gt 0 ] && srun_args+=("--gres=gpu:$GPUS")
         printf 'launching interactive session via srun %s\n' "${srun_args[*]}"
-        srun "${srun_args[@]}" "$run_dir/apptainer_exec.sh" || true
+        srun "${srun_args[@]}" bash "$run_dir/apptainer_exec.sh" || true
         rm -rf "$run_dir/home"
         trap - EXIT INT TERM
         return 0
