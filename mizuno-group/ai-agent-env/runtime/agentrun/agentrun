@@ -572,7 +572,7 @@ home_config_mounts() {
         antigravity)
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/GEMINI.md" "/home/sandbox/.gemini/GEMINI.md"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/AGENTS.md" "/home/sandbox/.gemini/AGENTS.md"
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/antigravity-cli/hooks.json"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/config/hooks.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.gemini/antigravity-cli/hooks"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/skills" "/home/sandbox/.gemini/antigravity-cli/skills"
             ;;
@@ -792,62 +792,32 @@ codex_hooks_manifest() {
     printf '%s\n' "$ROOT_DIR/agents/codex/hooks.manifest.json"
 }
 
-render_codex_hooks_json() {
-    local output="$1"
-    jq --arg prefix "/home/sandbox/ai-agent-config/common/hooks/" '
-      def command_hook:
-        . as $name |
-        {
-          type: "command",
-          command: ($prefix + $name),
-          timeout: 30
-        };
-      {
-        hooks: {
-          PreToolUse: [
-            {
-              hooks: [(.pre_command // [])[] | command_hook]
-            }
-          ],
-          PostToolUse: [
-            {
-              hooks: [(.post_command // [])[] | command_hook]
-            }
-          ]
-        }
-      }
-    ' "$(codex_hooks_manifest)" > "$output"
-}
-
 render_codex_requirements_toml() {
     local output="$1"
     local prefix="/home/sandbox/ai-agent-config/common/hooks/"
+    local manifest
+    manifest="$(codex_hooks_manifest)"
     {
-        printf '[features]\n'
-        printf 'hooks = true\n\n'
-        printf '[hooks]\n'
-        printf 'managed_dir = "%s"\n\n' "${prefix%/}"
-        while IFS= read -r hook; do
-            [ -n "$hook" ] || continue
-            printf '[[hooks.PreToolUse]]\n'
-            printf '[[hooks.PreToolUse.hooks]]\n'
-            printf 'type = "command"\n'
-            printf 'command = "%s%s"\n' "$prefix" "$hook"
-            printf 'timeout = 30\n\n'
-        done < <(jq -r '(.pre_command // [])[]' "$(codex_hooks_manifest)")
-        while IFS= read -r hook; do
-            [ -n "$hook" ] || continue
-            printf '[[hooks.PostToolUse]]\n'
-            printf '[[hooks.PostToolUse.hooks]]\n'
-            printf 'type = "command"\n'
-            printf 'command = "%s%s"\n' "$prefix" "$hook"
-            printf 'timeout = 30\n\n'
-        done < <(jq -r '(.post_command // [])[]' "$(codex_hooks_manifest)")
+        printf '[features]\nhooks = true\n\n[hooks]\nmanaged_dir = "%s"\n\n' "${prefix%/}"
+        jq -rj --arg prefix "$prefix" '
+            .hooks[] |
+            . as $g |
+            .event as $e |
+            (
+                "[[hooks." + $e + "]]\n" +
+                (if (($g.matcher // "") != "") then "matcher = \"" + $g.matcher + "\"\n" else "" end) +
+                "\n",
+                (
+                    $g.entries[] |
+                    "[[hooks." + $e + ".hooks]]\ntype = \"command\"\ncommand = \"" + $prefix + .script + "\"\ntimeout = 30\n\n"
+                )
+            )
+        ' "$manifest"
     } > "$output"
 }
 
 validate_codex_hook_manifest() {
-    local manifest hook failed=0
+    local manifest hook failed=0 event
     manifest="$(codex_hooks_manifest)"
     if [ ! -f "$manifest" ]; then
         printf '[FAIL] agents/codex/hooks.manifest.json\n'
@@ -855,14 +825,18 @@ validate_codex_hook_manifest() {
     fi
     if ! jq -e '
       type == "object" and
-      ((.pre_command // []) | type == "array" and all(.[]; type == "string")) and
-      ((.post_command // []) | type == "array" and all(.[]; type == "string")) and
+      ((.hooks // []) | type == "array" and all(.[];
+        type == "object" and
+        (.event | type == "string" and length > 0) and
+        (.matcher | type == "string" or type == "null") and
+        (.entries | type == "array" and all(.[]; type == "object" and (.script | type == "string" and length > 0)))
+      )) and
       ((.ignored // []) | type == "array" and all(.[]; type == "string"))
     ' "$manifest" >/dev/null; then
         printf '[FAIL] codex-hooks-manifest:shape\n'
         return 1
     fi
-    while IFS= read -r hook; do
+    while IFS=$'\t' read -r event hook; do
         [ -n "$hook" ] || continue
         case "$hook" in
             ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
@@ -872,12 +846,12 @@ validate_codex_hook_manifest() {
                 ;;
         esac
         if [ -x "$ROOT_DIR/common/hooks/$hook" ]; then
-            printf '[OK] codex-hooks-manifest:%s\n' "$hook"
+            printf '[OK] codex-hooks-manifest:%s:%s\n' "$event" "$hook"
         else
-            printf '[FAIL] codex-hooks-manifest:%s\n' "$hook"
+            printf '[FAIL] codex-hooks-manifest:%s:%s\n' "$event" "$hook"
             failed=1
         fi
-    done < <(jq -r '(.pre_command // [])[], (.post_command // [])[]' "$manifest")
+    done < <(jq -r '.hooks[] | .event as $e | .entries[].script | [$e, .] | @tsv' "$manifest")
     while IFS= read -r hook; do
         [ -n "$hook" ] || continue
         case "$hook" in
@@ -896,14 +870,14 @@ validate_codex_hook_manifest() {
     done < <(jq -r '(.ignored // [])[]' "$manifest")
     local covered
     local unclassified=0
-    covered="$(jq -r '(.pre_command // [])[], (.post_command // [])[], (.ignored // [])[]' "$manifest")"
+    covered="$(jq -r '.hooks[].entries[].script, (.ignored // [])[]' "$manifest")"
     for hook_path in "$ROOT_DIR"/common/hooks/*.py; do
         [ -e "$hook_path" ] || continue
         hook="$(basename "$hook_path")"
         if printf '%s\n' "$covered" | grep -Fxq "$hook"; then
             :
         else
-            printf '[FAIL] codex-hooks-unclassified:%s - add it to pre_command, post_command, or ignored\n' "$hook"
+            printf '[FAIL] codex-hooks-unclassified:%s - add to hooks or ignored\n' "$hook"
             unclassified=1
             failed=1
         fi
@@ -926,16 +900,11 @@ command_sync_codex() {
     validate_codex_hook_manifest >/dev/null
     local tmp
     tmp="$(mktemp)"
-    render_codex_hooks_json "$tmp"
-    mv "$tmp" "$ROOT_DIR/agents/codex/hooks.json"
-    chmod 0644 "$ROOT_DIR/agents/codex/hooks.json"
-    tmp="$(mktemp)"
     render_codex_requirements_toml "$tmp"
     mv "$tmp" "$ROOT_DIR/agents/codex/requirements.toml"
     chmod 0644 "$ROOT_DIR/agents/codex/requirements.toml"
     ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/codex/AGENTS.md"
     ln -sfnT ../../common/skills "$ROOT_DIR/agents/codex/skills"
-    printf '[OK] synced agents/codex/hooks.json from agents/codex/hooks.manifest.json\n'
     printf '[OK] synced agents/codex/requirements.toml from agents/codex/hooks.manifest.json\n'
     printf '[OK] synced agents/codex/AGENTS.md -> ../../common/AGENTS.md\n'
     printf '[OK] synced agents/codex/skills -> ../../common/skills\n'
@@ -1106,15 +1075,6 @@ validate_codex_sync() {
         failed=1
     fi
     tmp="$(mktemp)"
-    render_codex_hooks_json "$tmp"
-    if cmp -s "$tmp" "$ROOT_DIR/agents/codex/hooks.json"; then
-        printf '[OK] codex-hooks-generated:agents/codex/hooks.json\n'
-    else
-        printf '[FAIL] codex-hooks-generated:agents/codex/hooks.json - run agentrun sync-codex\n'
-        failed=1
-    fi
-    rm -f "$tmp"
-    tmp="$(mktemp)"
     render_codex_requirements_toml "$tmp"
     if cmp -s "$tmp" "$ROOT_DIR/agents/codex/requirements.toml"; then
         printf '[OK] codex-hooks-generated:agents/codex/requirements.toml\n'
@@ -1145,22 +1105,41 @@ antigravity_hooks_manifest() {
 
 render_antigravity_hooks_json() {
     local output="$1"
+    # Stop/PreInvocation/PostInvocation: flat handler list (no matcher/hooks wrapper)
+    # PreToolUse/PostToolUse: {matcher, hooks} structure
     jq '
       .hooks |
       group_by(.event) |
-      map({
-        key: .[0].event,
-        value: [
-          .[] | {
-            matcher: .matcher,
-            hooks: [
-              .entries[] |
-              {"type": "command", "command": ("~/.gemini/antigravity-cli/hooks/" + .script)} +
-              if .if then {"if": .if} else {} end
-            ]
+      map(
+        . as $group |
+        ($group[0].event) as $event |
+        if ($event == "Stop" or $event == "PreInvocation" or $event == "PostInvocation") then
+          {
+            key: ("agentrun-" + $event),
+            value: {
+              ($event): [
+                $group[].entries[] |
+                {"type": "command", "command": ("~/.gemini/antigravity-cli/hooks/" + .script)}
+              ]
+            }
           }
-        ]
-      }) |
+        else
+          {
+            key: ("agentrun-" + $event),
+            value: {
+              ($event): [
+                $group[] | {
+                  matcher: .matcher,
+                  hooks: [
+                    .entries[] |
+                    {"type": "command", "command": ("~/.gemini/antigravity-cli/hooks/" + .script)}
+                  ]
+                }
+              ]
+            }
+          }
+        end
+      ) |
       from_entries
     ' "$(antigravity_hooks_manifest)" > "$output"
 }
@@ -1310,7 +1289,6 @@ command_validate() {
         agents/codex/config.assist.toml \
         agents/codex/config.experiment.toml \
         agents/codex/hooks.manifest.json \
-        agents/codex/hooks.json \
         agents/codex/requirements.toml \
         agents/antigravity/AGENTS.md \
         agents/antigravity/hooks.manifest.json \

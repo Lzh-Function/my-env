@@ -4,15 +4,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-ENV_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-
 RUN=0
-if [ "${1:-}" = "--run" ]; then
-    RUN=1
-fi
+TARGET=all
 
-printf 'apptainer build --disable-cache base-system.sif base-system.def\n'
-printf 'apptainer build --disable-cache base-agent.sif base-agent.def\n'
+for arg in "$@"; do
+    case "$arg" in
+        --run)   RUN=1 ;;
+        system)  TARGET=system ;;
+        agent)   TARGET=agent ;;
+        *)       printf 'usage: build-images.sh [--run] [system|agent]\n' >&2; exit 2 ;;
+    esac
+done
+
+case "$TARGET" in
+    system) printf 'apptainer build --disable-cache base-system.sif base-system.def\n' ;;
+    agent)  printf 'apptainer build --disable-cache base-agent.sif base-agent.def\n' ;;
+    all)
+        printf 'apptainer build --disable-cache base-system.sif base-system.def\n'
+        printf 'apptainer build --disable-cache base-agent.sif base-agent.def\n'
+        ;;
+esac
 
 if [ "$RUN" -ne 1 ]; then
     printf 'dry-run complete; rerun inside a Slurm allocation with --run to build images\n'
@@ -36,10 +47,22 @@ build_if_missing_or_stale() {
 
     apptainer build --disable-cache "$tmp" "$definition"
     mv -f "$tmp" "$target"
+    printf 'built %s/%s\n' "$SCRIPT_DIR" "$target"
 }
 
-build_if_missing_or_stale base-system.sif base-system.def
-build_if_missing_or_stale base-agent.sif base-agent.def
-
-printf 'built %s/base-system.sif\n' "$SCRIPT_DIR"
-printf 'built %s/base-agent.sif\n' "$SCRIPT_DIR"
+case "$TARGET" in
+    system)
+        build_if_missing_or_stale base-system.sif base-system.def
+        ;;
+    agent)
+        if [ ! -e base-system.sif ]; then
+            printf 'error: base-system.sif not found; build system first\n' >&2
+            exit 2
+        fi
+        build_if_missing_or_stale base-agent.sif base-agent.def
+        ;;
+    all)
+        build_if_missing_or_stale base-system.sif base-system.def
+        build_if_missing_or_stale base-agent.sif base-agent.def
+        ;;
+esac

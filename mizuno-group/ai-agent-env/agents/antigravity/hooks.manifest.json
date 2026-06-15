@@ -2,33 +2,32 @@
   "hooks": [
     {
       "event": "PreToolUse",
-      "matcher": "Bash",
+      "matcher": "run_command",
       "entries": [
         {"script": "block_dangerous_command.py"},
         {"script": "check_login_node.py"},
-        {"script": "python_env_guard.py"},
         {"script": "check_pip_forbidden.py"},
         {"script": "check_sbatch_forbidden.py"},
-        {"script": "git_branch_guard.py", "if": "Bash(git *)"}
+        {"script": "git_branch_guard.py"}
       ]
     },
     {
       "event": "PreToolUse",
-      "matcher": "Read",
+      "matcher": "view_file",
       "entries": [
-        {"script": "check_secret_read.py"}
+        {"script": "block_dangerous_command.py"}
       ]
     },
     {
       "event": "PreToolUse",
-      "matcher": "Edit|Write|NotebookEdit",
+      "matcher": "write_to_file|replace_file_content|multi_replace_file_content",
       "entries": [
-        {"script": "git_main_edit_guard.py"}
+        {"script": "block_dangerous_command.py"}
       ]
     },
     {
       "event": "PostToolUse",
-      "matcher": "Bash",
+      "matcher": "run_command",
       "entries": [
         {"script": "git_worktree_auto_create.py"},
         {"script": "update_run_status.py"}
@@ -36,16 +35,9 @@
     },
     {
       "event": "PostToolUse",
-      "matcher": "Edit|Write|NotebookEdit",
+      "matcher": "write_to_file|replace_file_content|multi_replace_file_content",
       "entries": [
         {"script": "post_edit_format.py"}
-      ]
-    },
-    {
-      "event": "PermissionRequest",
-      "matcher": "",
-      "entries": [
-        {"script": "permission_request_notify.py"}
       ]
     },
     {
@@ -56,6 +48,5 @@
         {"script": "summarize_session.py"}
       ]
     }
-  ],
-  "ignored": []
+  ]
 }

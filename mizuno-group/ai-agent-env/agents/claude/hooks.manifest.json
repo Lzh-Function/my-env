@@ -6,7 +6,6 @@
       "entries": [
         {"script": "block_dangerous_command.py"},
         {"script": "check_login_node.py"},
-        {"script": "python_env_guard.py"},
         {"script": "check_pip_forbidden.py"},
         {"script": "check_sbatch_forbidden.py"},
         {"script": "git_branch_guard.py", "if": "Bash(git *)"}
@@ -16,14 +15,14 @@
       "event": "PreToolUse",
       "matcher": "Read",
       "entries": [
-        {"script": "check_secret_read.py"}
+        {"script": "block_dangerous_command.py"}
       ]
     },
     {
       "event": "PreToolUse",
       "matcher": "Edit|Write|NotebookEdit",
       "entries": [
-        {"script": "git_main_edit_guard.py"}
+        {"script": "block_dangerous_command.py"}
       ]
     },
     {
@@ -42,13 +41,6 @@
       ]
     },
     {
-      "event": "PermissionRequest",
-      "matcher": "",
-      "entries": [
-        {"script": "permission_request_notify.py"}
-      ]
-    },
-    {
       "event": "Stop",
       "matcher": "",
       "entries": [
@@ -56,6 +48,5 @@
         {"script": "summarize_session.py"}
       ]
     }
-  ],
-  "ignored": []
+  ]
 }

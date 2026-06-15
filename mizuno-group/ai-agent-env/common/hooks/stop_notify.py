@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send Slack notification on Claude Code Stop, then clean up session temp files."""
+"""Send Slack notification on agent Stop, then clean up session temp files."""
 
 from __future__ import annotations
 
@@ -11,25 +11,29 @@ import urllib.request
 from pathlib import Path
 
 
-SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/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"
+SLACK_WEBHOOK_URL = "SLACK_WEBHOOK_URL" # Set your Slack Incoming Webhook URL here
 
 
-def extract_summary(payload: dict) -> str:
-    transcript = payload.get("transcript", [])
-    assistant_msgs = [m for m in transcript if m.get("role") == "assistant"]
-    if not assistant_msgs:
+def detect_agent(payload: dict) -> str:
+    if "conversationId" in payload:
+        return "Antigravity"
+    if "model" in payload or "turn_id" in payload:
+        return "Codex"
+    return "Claude Code"
+
+
+def extract_summary(payload: dict, agent: str) -> str:
+    if agent == "Antigravity":
+        reason = payload.get("terminationReason", "")
+        if reason and reason != "model_stop":
+            return f"終了理由: {reason}"
         return "作業が完了しました。"
-    content = assistant_msgs[-1].get("content", "")
-    if isinstance(content, list):
-        text = " ".join(b.get("text", "") for b in content if b.get("type") == "text")
-    elif isinstance(content, str):
-        text = content
-    else:
-        text = ""
-    text = text.replace("\n", " ").strip()
-    if not text:
+    # Claude Code and Codex both provide last_assistant_message
+    msg = payload.get("last_assistant_message", "")
+    if not msg:
         return "作業が完了しました。"
-    return (text[:120] + "...") if len(text) > 120 else text
+    msg = msg.replace("\n", " ").strip()
+    return (msg[:120] + "...") if len(msg) > 120 else msg
 
 
 def main() -> int:
@@ -39,9 +43,10 @@ def main() -> int:
     except json.JSONDecodeError:
         payload = {}
 
-    summary = extract_summary(payload)
+    agent = detect_agent(payload)
+    summary = extract_summary(payload, agent)
     hostname = socket.gethostname().split(".")[0]
-    text = f"*[{hostname}] Claude Code 完了* :white_check_mark:\n{summary}"
+    text = f"*[{hostname}] {agent} 完了* :white_check_mark:\n{summary}"
     body = json.dumps({"text": text}).encode()
 
     try:
@@ -55,7 +60,6 @@ def main() -> int:
     except Exception:
         pass
 
-    Path("/tmp/claude_allow_main_edit").unlink(missing_ok=True)
     for f in glob.glob("/tmp/claude_python_env_*"):
         Path(f).unlink(missing_ok=True)
 

@@ -35,9 +35,7 @@
       "Bash(scancel *)",
       "Bash(sinfo *)",
       "Bash(sacct *)",
-      "Bash(scontrol *)",
-      "Bash(touch /tmp/claude_allow_main_edit)",
-      "Bash(rm -f /tmp/claude_allow_main_edit)"
+      "Bash(scontrol *)"
     ],
     "deny": [
       "Read(.git/**)",
@@ -45,10 +43,22 @@
       "Write(.git/**)",
       "Read(.env)",
       "Read(.env.*)",
+      "Edit(.env)",
+      "Edit(.env.*)",
+      "Write(.env)",
+      "Write(.env.*)",
       "Read(./secrets/**)",
+      "Edit(./secrets/**)",
+      "Write(./secrets/**)",
       "Read(~/.ssh/**)",
+      "Edit(~/.ssh/**)",
+      "Write(~/.ssh/**)",
       "Read(~/.bashrc)",
+      "Edit(~/.bashrc)",
+      "Write(~/.bashrc)",
       "Read(.workspace_rc)",
+      "Edit(.workspace_rc)",
+      "Write(.workspace_rc)",
       "Bash(ssh *)",
       "Bash(sudo *)",
       "Bash(rm -rf /)",
@@ -56,11 +66,11 @@
       "Bash(rm -rf ~/*)",
       "Bash(rm -rf /*)",
       "Bash(git config *)",
+      "Bash(git push *)",
       "Bash(pip *)",
       "Bash(conda *)"
     ],
     "ask": [
-      "Bash(git push *)",
       "Bash(rm *)",
       "Bash(cp *)",
       "Bash(mv *)",
@@ -69,17 +79,6 @@
     ]
   },
   "hooks": {
-    "PermissionRequest": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/permission_request_notify.py"
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
         "matcher": "Bash",
@@ -118,10 +117,6 @@
           },
           {
             "type": "command",
-            "command": "~/.claude/hooks/python_env_guard.py"
-          },
-          {
-            "type": "command",
             "command": "~/.claude/hooks/check_pip_forbidden.py"
           },
           {
@@ -140,7 +135,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/check_secret_read.py"
+            "command": "~/.claude/hooks/block_dangerous_command.py"
           }
         ]
       },
@@ -149,7 +144,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/git_main_edit_guard.py"
+            "command": "~/.claude/hooks/block_dangerous_command.py"
           }
         ]
       }

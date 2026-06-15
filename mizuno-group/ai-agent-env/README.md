@@ -24,6 +24,18 @@ tests/fixtures/           smoke-test goal ファイルおよびダミー reposit
 ./install.sh --apply  # $HOME/.local/bin/agentrun に symlink を作成
 ```
 
+### Image ビルド（初回必須）
+
+`.sif` は git 管理外のため、各ユーザーが compute node でビルドする必要があります。`runtime/apptainer/base-agent.sif` が存在しない場合、`doctor` は `[FAIL]` を出し、agent を起動できません。
+
+```bash
+runtime/apptainer/build-images.sh                                            # dry-run（確認のみ）
+srun --partition <partition> runtime/apptainer/build-images.sh --run         # 両方ビルド
+srun --partition <partition> runtime/apptainer/build-images.sh --run agent   # agent 層のみ再ビルド
+```
+
+`base-system.sif` → `base-agent.sif` の順にビルドされます。ダウンロードを含むため数十分かかります。agent CLI のバージョンアップ時は `agent` を指定することで `base-system.sif` の再ビルドをスキップできます。完了後は `agentrun doctor --agent <name>` の `image:base-agent.sif` が `[OK]` になります。
+
 ### 認証情報のセットアップ（初回必須）
 
 インポートの前提として、**使用する agent CLI を host にインストールし、ログイン（認証）を済ませておく**必要があります。`auth import` は host 上の認証ファイルを agentrun の auth store にコピーするため、元ファイルが存在しない場合はスキップされます。
@@ -68,10 +80,14 @@ agentrun dry-run assist --agent codex --partition <partition> --show-mounts "Hel
 
 ## Image ビルド
 
+Quick Start の「[Image ビルド（初回必須）](#image-ビルド初回必須)」を参照してください。
+
+`build-images.sh` は `SLURM_JOB_ID` が設定されていない環境（login node）での実行を拒否します。`srun` または `sbatch` で compute node に投入してください。
+
 ```bash
-cd runtime/apptainer
-./build-images.sh           # dry-run
-./build-images.sh --run     # Slurm allocation 内で実際にビルド
+runtime/apptainer/build-images.sh [system|agent]                                          # dry-run
+srun --partition <partition> runtime/apptainer/build-images.sh --run                      # 両方ビルド
+srun --partition <partition> runtime/apptainer/build-images.sh --run agent                # agent 層のみ
 ```
 
 ## ドキュメント

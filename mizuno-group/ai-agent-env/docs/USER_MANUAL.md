@@ -15,11 +15,27 @@
 
 `install.sh` は `$HOME/.local/bin/agentrun` に symlink を作ります。`$HOME/.local/bin` が `PATH` に入っていれば、以後はパスなしで `agentrun` を実行できます。
 
+### Image ビルド（初回必須）
+
+`.sif` は git 管理外のため、各ユーザーが compute node でビルドする必要があります。`runtime/apptainer/base-agent.sif` が存在しない場合、`doctor` は `[FAIL]` を出し、agent を起動できません。
+
+```bash
+runtime/apptainer/build-images.sh [system|agent]                                          # dry-run（確認のみ）
+srun --partition <partition> runtime/apptainer/build-images.sh --run                      # 両方ビルド
+srun --partition <partition> runtime/apptainer/build-images.sh --run agent                # agent 層のみ再ビルド
+```
+
+`base-system.sif` → `base-agent.sif` の順にビルドされます。ダウンロードを含むため数十分かかります。agent CLI のバージョンアップ時は `agent` を指定することで `base-system.sif` の再ビルドをスキップできます。`build-images.sh` は `SLURM_JOB_ID` が設定されていない環境（login node）での実行を拒否します。
+
+ビルド完了後、以下で状態を確認します。
+
 ```bash
 agentrun agents
 agentrun validate
 agentrun doctor --agent <name>   # 使用する agent を指定する（例: claude, codex, antigravity）
 ```
+
+`doctor` の `image:base-agent.sif` が `[OK]` になれば準備完了です。
 
 ### 認証情報のセットアップ（初回必須）
 
@@ -599,7 +615,6 @@ agents/codex/config.toml            base config
 agents/codex/config.assist.toml     assist config
 agents/codex/config.experiment.toml experiment config
 agents/codex/hooks.manifest.json    hook source manifest
-agents/codex/hooks.json             generated compatibility hook JSON
 agents/codex/requirements.toml      generated managed hook config
 agents/codex/rules/                 exec policy
 ```
@@ -636,8 +651,8 @@ container path:
 ```text
 /home/sandbox/.gemini/AGENTS.md
 /home/sandbox/.gemini/GEMINI.md
+/home/sandbox/.gemini/config/hooks.json
 /home/sandbox/.gemini/antigravity-cli/settings.json
-/home/sandbox/.gemini/antigravity-cli/hooks.json
 /home/sandbox/.gemini/antigravity-cli/hooks/
 /home/sandbox/.gemini/antigravity-cli/skills/
 ```
@@ -676,7 +691,7 @@ mounts and staged files:
 ```text
 agents/antigravity/AGENTS.md       -> /home/sandbox/.gemini/AGENTS.md:ro
 agents/antigravity/GEMINI.md       -> /home/sandbox/.gemini/GEMINI.md:ro
-agents/antigravity/hooks.json      -> /home/sandbox/.gemini/antigravity-cli/hooks.json:ro
+agents/antigravity/hooks.json      -> /home/sandbox/.gemini/config/hooks.json:ro
 common/hooks                       -> /home/sandbox/.gemini/antigravity-cli/hooks:ro
 agents/antigravity/skills          -> /home/sandbox/.gemini/antigravity-cli/skills:ro
 container_config/settings.json     -> <run_dir>/home/.gemini/antigravity-cli/settings.json
@@ -763,7 +778,49 @@ agentrun validate
 
 全ての `common/hooks/*.py` は、各 agent の manifest で active または ignored に分類されている必要があります。未分類 hook があると `validate` は失敗します。
 
-Claude / Antigravity の manifest は event × matcher 形式です。Codex の manifest は `pre_command`, `post_command`, `ignored` の分類です。
+全 agent の manifest は同一の event × matcher 形式を使います。
+
+### デフォルト Hook の解説
+
+`common/hooks/` に含まれる hook とその役割を以下に示します。
+
+#### PreToolUse: コマンド実行フィルタ
+
+これらは agent がコマンド実行ツール（Claude/Codex の `Bash`、Antigravity の `run_command`）を呼ぶ前に発火します。
+
+| hook | 役割 |
+| ---- | ---- |
+| `block_dangerous_command.py` | `rm -rf /`・`rm -rf ~`、`ssh`、`sudo`、`.ssh/`・auth ファイル・`.env`・token へのアクセスをブロックします。コマンド実行ツールとファイル系ツール（Read/Edit/Write/view_file など）の両方に適用されます。 |
+| `check_login_node.py` | Slurm login node 上での compute 系コマンド（`python`、`pytest`、`jupyter`、`torchrun` 等）をブロックします。`SLURM_JOB_ID` が設定されていない場合のみ動作するため、compute node 内では pass-through になります。 |
+| `check_pip_forbidden.py` | `pip` の直接呼び出しと `uv pip install`/`uninstall`/`sync`/`compile` をブロックします。パッケージ管理は `uv add`/`uv remove` を使います。`uv pip list`/`show`/`freeze`/`check` は許可されます。 |
+| `check_sbatch_forbidden.py` | Slurm allocation の内部（`SLURM_JOB_ID` が設定されている環境）での `sbatch`/`salloc` 呼び出しをブロックします。ネストした job 投入を防ぎます。 |
+| `git_branch_guard.py` | `git checkout`/`switch` で main/master への切り替え、`git merge`、`git rebase` をブロックします。Claude では manifest の `if: "Bash(git *)"` フィルタにより、git コマンド以外では発火しません。 |
+
+#### PostToolUse: コマンド実行後
+
+コマンド実行ツールが完了した後に発火します。
+
+| hook | 役割 |
+| ---- | ---- |
+| `git_worktree_auto_create.py` | `git checkout -b <branch>` または `git switch -c <branch>` の直後に、`../<branch>` に worktree を自動作成します。 |
+| `update_run_status.py` | 実行されたコマンドのイベントを `live/command_log.jsonl` に追記し、`live/status.json` を更新します。`AGENTRUN_DIR` が未設定の場合は何もしません。 |
+
+#### PostToolUse: ファイル編集後
+
+ファイル編集ツール（Claude/Codex の `Edit`/`Write`、Antigravity の `write_to_file` 等）が完了した後に発火します。
+
+| hook | 役割 |
+| ---- | ---- |
+| `post_edit_format.py` | 編集イベントを `live/events.jsonl` に記録します。フォーマッタは自動実行しません。フォーマットが必要なプロジェクトでは agent 自身がコマンドとして実行するか、別 hook に追加してください。 |
+
+#### Stop
+
+agent セッションが終了するときに発火します。
+
+| hook | 役割 |
+| ---- | ---- |
+| `stop_notify.py` | Slack Incoming Webhook で完了通知を送ります。スクリプト内の `SLACK_WEBHOOK_URL` に実際の URL を設定してください。未設定のままでも hook は失敗せず、通知をスキップします。agent 種別（Claude / Codex / Antigravity）を payload から自動検出します。 |
+| `summarize_session.py` | `artifacts/report.md` が存在しない場合にプレースホルダを作成します。agent が report を出力しなかったときに `verify-run` を通過させるための最低限の保護です。 |
 
 ## Smoke Tests
 

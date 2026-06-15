@@ -24,9 +24,14 @@ VERSION_RE = re.compile(r"\s+(-V|--version|--help|-h)\s*$")
 
 def main() -> int:
     raw = sys.stdin.read()
+    decision = "deny"
     try:
         payload = json.loads(raw)
-        cmd = payload.get("tool_input", {}).get("command", "")
+        if "toolCall" in payload:
+            cmd = payload["toolCall"].get("args", {}).get("CommandLine", "")
+        else:
+            decision = "block"
+            cmd = payload.get("tool_input", {}).get("command", "")
     except json.JSONDecodeError:
         cmd = raw
 
@@ -50,7 +55,7 @@ def main() -> int:
 
     first_word = (stripped.split() or cmd.split() or ["?"])[0]
     print(json.dumps({
-        "decision": "block",
+        "decision": decision,
         "reason": (
             f"ログインノードでの直接実行は禁止です: {first_word} は"
             "srunまたはsbatchで投入してください。"

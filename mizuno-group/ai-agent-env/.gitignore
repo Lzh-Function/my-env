@@ -10,4 +10,4 @@ auth.json
 .env.*
 base-system.sif
 base-agent.sif
-
+__pycache__/

@@ -15,21 +15,19 @@ def main() -> int:
     if not os.environ.get("SLURM_JOB_ID"):
         return 0
     raw = sys.stdin.read()
-    command = raw
+    command = ""
+    decision = "deny"
     try:
         payload = json.loads(raw)
-        command = payload.get("tool_input", {}).get("command", raw)
+        if "toolCall" in payload:
+            command = payload["toolCall"].get("args", {}).get("CommandLine", "")
+        else:
+            decision = "block"
+            command = payload.get("tool_input", {}).get("command", raw)
     except json.JSONDecodeError:
-        pass
+        command = raw
     if SUBMIT_RE.search(command):
-        print(
-            json.dumps(
-                {
-                    "decision": "block",
-                    "reason": "Cannot submit Slurm jobs from inside a Slurm allocation.",
-                }
-            )
-        )
+        print(json.dumps({"decision": decision, "reason": "Cannot submit Slurm jobs from inside a Slurm allocation."}))
         return 2
     return 0
 
