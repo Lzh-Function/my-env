@@ -26,18 +26,25 @@ tests/fixtures/           smoke-test goal ファイルおよびダミー reposit
 
 ### 認証情報のセットアップ（初回必須）
 
-host 側の認証情報を agentrun の auth store にインポートします。
+インポートの前提として、**使用する agent CLI を host にインストールし、ログイン（認証）を済ませておく**必要があります。`auth import` は host 上の認証ファイルを agentrun の auth store にコピーするため、元ファイルが存在しない場合はスキップされます。
 
 ```bash
+# 使用する agent だけをインポートする場合
+agentrun auth import --agent claude
+agentrun auth status --agent claude
+
+# 全 agent をまとめてインポートする場合（host に存在しないファイルは自動スキップ）
 agentrun auth import --all
 agentrun auth status
 ```
 
 ### 動作確認
 
+`doctor --agent NAME` は指定した agent の auth のみを検証します。`--all` は全 agent の auth を検証するため、使用しない agent のファイルが未設定だと FAIL になります。
+
 ```bash
 agentrun validate
-agentrun doctor --all
+agentrun doctor --agent claude   # 使用する agent を指定する
 ```
 
 ### 実行例
@@ -59,8 +66,6 @@ agentrun dry-run assist --agent codex --partition <partition> --show-mounts "Hel
 
 `agentrun` は run ごとに `.agent-runs/<run_id>/` を作成し、container 固有の config を生成してから bind-mount します。host `$HOME` は書き換えません。
 
-login node 上で `claude` / `codex` / `agy` を直接使いたい場合のみ `./install.sh --apply` が必要です（container 経由の通常運用では不要）。
-
 ## Image ビルド
 
 ```bash
@@ -71,7 +76,7 @@ cd runtime/apptainer
 
 ## ドキュメント
 
-| ドキュメント | 内容 |
-|---|---|
-| [docs/USER_MANUAL.md](docs/USER_MANUAL.md) | コマンドリファレンス、run directory 構造、agent 差分、トラブルシューティング |
-| [docs/operations-ja.md](docs/operations-ja.md) | 検証済みステータス、mount レイアウト、認証バインディング詳細 |
+| ドキュメント                                   | 内容                                                                         |
+| ---------------------------------------------- | ---------------------------------------------------------------------------- |
+| [docs/USER_MANUAL.md](docs/USER_MANUAL.md)     | コマンドリファレンス、run directory 構造、agent 差分、トラブルシューティング |
+| [docs/operations-ja.md](docs/operations-ja.md) | 検証済みステータス、mount レイアウト、認証バインディング詳細                 |

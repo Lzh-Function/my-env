@@ -18,19 +18,30 @@
 ```bash
 agentrun agents
 agentrun validate
-agentrun doctor --all
+agentrun doctor --agent <name>   # 使用する agent を指定する（例: claude, codex, antigravity）
 ```
 
 ### 認証情報のセットアップ（初回必須）
 
-`agentrun` は各 agent の認証情報を `$HOME/.agentrun/auth/<agent>/` に管理します。初回セットアップ時に、host 側の認証情報を store にインポートしてください。
+`agentrun` は各 agent の認証情報を `$HOME/.agentrun/auth/<agent>/` に管理します。
+
+インポートの前提として、**使用する agent CLI を host にインストールし、ログイン（認証）を済ませておく**必要があります。`auth import` は host 上の認証ファイルを store にコピーするため、元ファイルが存在しない場合はスキップされます。
+
+使用する agent だけをインポートする場合は `--agent NAME` を指定します。
+
+```bash
+agentrun auth import --agent claude
+agentrun auth status --agent claude
+```
+
+全 agent をまとめてインポートすることもできます。host に存在しないファイルは自動スキップされます。
 
 ```bash
 agentrun auth import --all
 agentrun auth status
 ```
 
-`auth import --all` は以下のファイルを `$HOME/.agentrun/auth/` に copy します。
+`auth import` がコピーするファイルは以下の通りです。
 
 ```text
 claude      $HOME/.claude/.credentials.json
@@ -269,8 +280,8 @@ agentrun validate
 ## Doctor
 
 ```bash
-agentrun doctor --agent codex
-agentrun doctor --all
+agentrun doctor --agent claude   # 使用する agent を指定する
+agentrun doctor --all            # 全 agent の auth を検証する
 ```
 
 以下を確認します。
@@ -285,6 +296,8 @@ agentrun doctor --all
 
 login node 上で `apptainer` や `uv` が見つからない場合は WARN です。compute node や image 内で提供される構成もあるため、WARN は即失敗とは限りません。
 
+**`--all` を指定すると 3 agent 全ての auth を検証します。**使用しない agent の auth ファイルが未設定の場合、その agent の auth チェックが `[FAIL]` になります。使用する agent だけを確認する場合は `--agent NAME` を使ってください。
+
 auth check の対象（store ファーストで確認、store になければ host fallback）:
 
 ```text
@@ -295,7 +308,7 @@ antigravity $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity
             $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
 ```
 
-store にも host にも存在しない場合のみ `[FAIL]` になります。store には `agentrun auth import` でインポートしてください。
+store にも host にも存在しない場合のみ `[FAIL]` になります。store には `agentrun auth import --agent NAME` でインポートしてください。
 
 ## Dry Run
 
