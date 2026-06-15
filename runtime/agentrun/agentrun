@@ -1,0 +1,1825 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+DEFAULT_AGENT="antigravity"
+PROFILES="assist experiment campaign review multi-review"
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  agentrun agents
+  agentrun sync-claude
+  agentrun sync-codex
+  agentrun sync-antigravity
+  agentrun validate
+  agentrun doctor [--agent NAME|--all]
+  agentrun dry-run MODE [options] PROMPT
+  agentrun assist [options] PROMPT          # interactive PTY session via srun --pty
+  agentrun assist --submit [options] PROMPT # batch via sbatch (non-interactive)
+  agentrun experiment|campaign|review|multi-review [options] PROMPT  # prepare, or batch with --submit
+  agentrun smoke-test [--agent NAME]
+  agentrun init-goal
+  agentrun status
+  agentrun logs [--follow]
+  agentrun tail
+  agentrun list-runs
+  agentrun open-run [RUN_DIR]
+  agentrun verify-run [RUN_DIR|--run-id RUN_ID]
+  agentrun auth login --agent NAME|--all
+  agentrun auth import --agent NAME|--all
+  agentrun auth status [--agent NAME]
+  agentrun auth reset --agent NAME
+
+Options:
+  --agent NAME        antigravity, claude, or codex
+  --repo PATH        repository path, default: .
+  --goal PATH        goal.yaml path
+  --gpus N           GPU count, default: 0
+  --time HH:MM:SS    walltime, default comes from the selected profile
+  --partition NAME   Slurm partition, default: AGENTRUN_SLURM_PARTITION or cluster default
+  --reviewers LIST   reviewer agents
+  --target-diff PATH review target diff
+  --target-report PATH review target report
+  --agents LIST      multi-review agents
+  --show-mounts      print mount plan in dry-run
+  --submit           submit prepared run with sbatch
+USAGE
+}
+
+is_profile() {
+    case " $PROFILES " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+agent_candidates() {
+    case "$1" in
+        antigravity) printf 'agy antigravity gemini\n' ;;
+        claude) printf 'claude\n' ;;
+        codex) printf 'codex\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+agent_role() {
+    case "$1" in
+        antigravity) printf 'primary\n' ;;
+        claude|codex) printf 'secondary\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+first_available() {
+    for cmd in "$@"; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            command -v "$cmd"
+            return 0
+        fi
+    done
+    return 1
+}
+
+agent_command() {
+    local agent="$1" mode="${2:-}" launch="${3:-batch}"
+    case "$agent" in
+        claude)
+            if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
+                printf 'cd /workspace && claude --dangerously-skip-permissions "$(cat /runs/prompt.txt)"\n'
+            else
+                printf 'cd /workspace && claude --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"\n'
+            fi
+            ;;
+        codex)
+            if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
+                printf 'cd /workspace && codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --cd /workspace "$(cat /runs/prompt.txt)"\n'
+            else
+                printf 'cd /workspace && codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --cd /workspace "$(cat /runs/prompt.txt)"\n'
+            fi
+            ;;
+        antigravity)
+            if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
+                printf 'cd /workspace && if command -v agy >/dev/null 2>&1; then agy --dangerously-skip-permissions -i "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --dangerously-skip-permissions -i "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi\n'
+            else
+                printf 'cd /workspace && if command -v agy >/dev/null 2>&1; then agy --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi\n'
+            fi
+            ;;
+        *) printf 'unknown agent: %s\n' "$agent" >&2; return 2 ;;
+    esac
+}
+
+profile_cpus() {
+    case "$1" in
+        experiment|campaign) printf '8\n' ;;
+        *) printf '4\n' ;;
+    esac
+}
+
+profile_mem() {
+    case "$1" in
+        experiment|campaign) printf '64000M\n' ;;
+        review) printf '16000M\n' ;;
+        *) printf '32000M\n' ;;
+    esac
+}
+
+profile_time() {
+    case "$1" in
+        experiment) printf '04:00:00\n' ;;
+        campaign) printf '04:00:00\n' ;;
+        multi-review) printf '02:00:00\n' ;;
+        *) printf '01:00:00\n' ;;
+    esac
+}
+
+profile_required_outputs() {
+    case "$1" in
+        assist)
+            printf '%s\n' \
+                live/status.json \
+                live/heartbeat.txt \
+                live/stdout.log \
+                live/stderr.log \
+                live/command_log.jsonl \
+                artifacts/report.md \
+                artifacts/git_diff.patch \
+                artifacts/metrics.json
+            ;;
+        experiment)
+            printf '%s\n' \
+                live/status.json \
+                live/heartbeat.txt \
+                live/stdout.log \
+                live/stderr.log \
+                live/command_log.jsonl \
+                live/current_task.md \
+                artifacts/report.md \
+                artifacts/git_diff.patch \
+                artifacts/metrics.json \
+                artifacts/proposed_next.yaml
+            ;;
+        campaign)
+            printf '%s\n' \
+                live/status.json \
+                live/heartbeat.txt \
+                artifacts/report.md \
+                artifacts/metrics.json \
+                artifacts/proposed_next.yaml \
+                artifacts/proposed_train.sbatch
+            ;;
+        review)
+            printf '%s\n' \
+                live/status.json \
+                live/stdout.log \
+                reviews/review_findings.json
+            ;;
+        multi-review)
+            printf '%s\n' \
+                live/status.json \
+                reviews/antigravity.md \
+                reviews/claude.md \
+                reviews/codex.md \
+                reviews/summary.md \
+                reviews/disagreements.json \
+                reviews/final_recommendation.md
+            ;;
+        smoke-test)
+            printf '%s\n' \
+                live/status.json \
+                live/heartbeat.txt \
+                live/stdout.log \
+                live/stderr.log \
+                live/command_log.jsonl \
+                artifacts/report.md \
+                artifacts/git_diff.patch \
+                artifacts/metrics.json
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+slurm_partition_args() {
+    local partition="${1:-${AGENTRUN_SLURM_PARTITION:-}}"
+    [ -n "$partition" ] || return 0
+    printf '#SBATCH --partition=%s\n' "$partition"
+}
+
+srun_partition_args() {
+    local partition="${1:-${AGENTRUN_SLURM_PARTITION:-}}"
+    [ -n "$partition" ] || return 0
+    printf ' --partition=%s' "$partition"
+}
+
+run_id() {
+    date +"%Y%m%d_%H%M%S_$1_$2"
+}
+
+make_layout() {
+    local run_dir="$1"
+    mkdir -p \
+        "$run_dir/live" \
+        "$run_dir/artifacts" \
+        "$run_dir/reviews" \
+        "$run_dir/workspace" \
+        "$run_dir/scratch" \
+        "$run_dir/cache" \
+        "$run_dir/home/.claude" \
+        "$run_dir/home/.codex" \
+        "$run_dir/home/.codex/skills" \
+        "$run_dir/home/.agents" \
+        "$run_dir/home/.gemini/antigravity-cli" \
+        "$run_dir/home/.antigravity"
+    : > "$run_dir/live/stdout.log"
+    : > "$run_dir/live/stderr.log"
+    : > "$run_dir/live/command_log.jsonl"
+    : > "$run_dir/live/events.jsonl"
+    : > "$run_dir/live/slurm.out"
+    : > "$run_dir/live/slurm.err"
+    : > "$run_dir/live/exit_code.txt"
+    : > "$run_dir/live/slurm_job_id.txt"
+    printf 'initialized\n' > "$run_dir/live/current_task.md"
+    printf '{}\n' > "$run_dir/live/status.json"
+    date -Iseconds > "$run_dir/live/heartbeat.txt"
+    : > "$run_dir/artifacts/git_diff.patch"
+    printf '{}\n' > "$run_dir/artifacts/metrics.json"
+    : > "$run_dir/artifacts/environment.txt"
+    : > "$run_dir/artifacts/container.txt"
+    : > "$run_dir/artifacts/data_manifest.txt"
+    : > "$run_dir/artifacts/proposed_next.yaml"
+    : > "$run_dir/artifacts/proposed_train.sbatch"
+    : > "$run_dir/reviews/claude.md"
+    : > "$run_dir/reviews/codex.md"
+    : > "$run_dir/reviews/antigravity.md"
+    printf '{}\n' > "$run_dir/reviews/review_findings.json"
+    : > "$run_dir/reviews/summary.md"
+    printf '{}\n' > "$run_dir/reviews/disagreements.json"
+    : > "$run_dir/reviews/final_recommendation.md"
+    ln -sfn "$(basename "$run_dir")" "$(dirname "$run_dir")/latest"
+}
+
+auth_store_root() {
+    printf '%s/.agentrun/auth' "$HOME"
+}
+
+stage_auth_file() {
+    local store_root="$1" agent="$2" rel="$3" run_dir="$4"
+    local store_src="$store_root/$agent/$rel"
+    local host_src="$HOME/$rel"
+    local dst="$run_dir/home/$rel"
+    if [ -f "$store_src" ]; then
+        cp "$store_src" "$dst"
+    elif [ -f "$host_src" ]; then
+        cp "$host_src" "$dst"
+    fi
+}
+
+auth_mounts() {
+    local agent="$1"
+    case "$agent" in
+        claude)
+            # credentials are copied to run_dir/home at submit time; --home mount delivers them
+            ;;
+        codex)
+            # credentials are copied to run_dir/home at submit time; --home mount delivers them
+            ;;
+        antigravity)
+            # credentials are copied to run_dir/home at submit time; --home mount delivers them
+            ;;
+    esac
+    return 0
+}
+
+copy_auth_credentials() {
+    local run_dir="$1" agent="$2"
+    local store_root
+    store_root="$(auth_store_root)"
+    case "$agent" in
+        claude)
+            stage_auth_file "$store_root" "claude" ".claude/.credentials.json" "$run_dir"
+            stage_auth_file "$store_root" "claude" ".claude.json" "$run_dir"
+            ;;
+        codex)
+            stage_auth_file "$store_root" "codex" ".codex/auth.json" "$run_dir"
+            ;;
+        antigravity)
+            stage_auth_file "$store_root" "antigravity" ".gemini/antigravity-cli/antigravity-oauth-token" "$run_dir"
+            stage_auth_file "$store_root" "antigravity" ".gemini/antigravity-cli/installation_id" "$run_dir"
+            [ -f "$run_dir/container_config/settings.json" ] && \
+                cp "$run_dir/container_config/settings.json" "$run_dir/home/.gemini/antigravity-cli/settings.json"
+            ;;
+    esac
+}
+
+generate_container_config() {
+    local run_dir="$1" agent="$2" mode="$3"
+    local config_dir="$run_dir/container_config"
+    mkdir -p "$config_dir"
+    if [ "$agent" = "claude" ]; then
+        local base="$ROOT_DIR/agents/claude/settings.json"
+        local overlay=""
+        if [ "$mode" = "assist" ] && [ -f "$ROOT_DIR/agents/claude/settings.assist.json" ]; then
+            overlay="$ROOT_DIR/agents/claude/settings.assist.json"
+        elif [ "$mode" = "experiment" ] && [ -f "$ROOT_DIR/agents/claude/settings.experiment.json" ]; then
+            overlay="$ROOT_DIR/agents/claude/settings.experiment.json"
+        fi
+        if [ -n "$overlay" ] && command -v jq >/dev/null 2>&1; then
+            # Deep-merge base + overlay; concatenate permission arrays so hooks are preserved.
+            jq -s '
+              .[0] as $b | .[1] as $o |
+              ($b + $o + {
+                permissions: {
+                  allow: (($b.permissions.allow // []) + ($o.permissions.allow // [])),
+                  deny:  (($b.permissions.deny  // []) + ($o.permissions.deny  // [])),
+                  ask:   (($b.permissions.ask   // []) + ($o.permissions.ask   // []))
+                }
+              }) | del(.extends)
+            ' "$base" "$overlay" > "$config_dir/settings.json"
+        else
+            cp "$base" "$config_dir/settings.json"
+        fi
+    elif [ "$agent" = "antigravity" ]; then
+        local base="$ROOT_DIR/agents/antigravity/settings.json"
+        local overlay=""
+        if [ "$mode" = "assist" ] && [ -f "$ROOT_DIR/agents/antigravity/settings.assist.json" ]; then
+            overlay="$ROOT_DIR/agents/antigravity/settings.assist.json"
+        elif [ "$mode" = "experiment" ] && [ -f "$ROOT_DIR/agents/antigravity/settings.experiment.json" ]; then
+            overlay="$ROOT_DIR/agents/antigravity/settings.experiment.json"
+        fi
+        if [ -n "$overlay" ] && command -v jq >/dev/null 2>&1; then
+            jq -s '.[0] * .[1]' "$base" "$overlay" > "$config_dir/settings.json"
+        else
+            cp "$base" "$config_dir/settings.json"
+        fi
+    elif [ "$agent" = "codex" ]; then
+        cp "$(codex_config_source "$mode")" "$config_dir/config.toml"
+    fi
+}
+
+codex_config_source() {
+    local mode="${1:-}"
+    if [ "$mode" = "assist" ] && [ -f "$ROOT_DIR/agents/codex/config.assist.toml" ]; then
+        printf '%s\n' "$ROOT_DIR/agents/codex/config.assist.toml"
+    elif [ "$mode" = "experiment" ] && [ -f "$ROOT_DIR/agents/codex/config.experiment.toml" ]; then
+        printf '%s\n' "$ROOT_DIR/agents/codex/config.experiment.toml"
+    else
+        printf '%s\n' "$ROOT_DIR/agents/codex/config.toml"
+    fi
+}
+
+link_codex_shared_assets() {
+    local run_dir="$1"
+    local skill skill_name
+    mkdir -p "$run_dir/home/.codex/skills"
+    cp "$run_dir/container_config/config.toml" "$run_dir/home/.codex/config.toml"
+    for skill in "$ROOT_DIR"/common/skills/*; do
+        [ -d "$skill" ] || continue
+        skill_name="$(basename "$skill")"
+        ln -sfn "/home/sandbox/ai-agent-config/common/skills/$skill_name" \
+            "$run_dir/home/.codex/skills/$skill_name"
+    done
+}
+
+home_config_mounts() {
+    local agent="$1" run_dir="${2:-}" mode="${3:-}"
+    case "$agent" in
+        claude)
+            local settings="$ROOT_DIR/agents/claude/settings.json"
+            if [ -n "$run_dir" ] && [ -f "$run_dir/container_config/settings.json" ]; then
+                settings="$run_dir/container_config/settings.json"
+            fi
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/CLAUDE.md" "/home/sandbox/.claude/CLAUDE.md"
+            printf ' --bind %q:%q:ro' "$settings" "/home/sandbox/.claude/settings.json"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.claude/hooks"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/skills" "/home/sandbox/.claude/skills"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/statusline.sh" "/home/sandbox/.claude/statusline.sh"
+            ;;
+        codex)
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/requirements.toml" "/etc/codex/requirements.toml"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/AGENTS.md" "/home/sandbox/.codex/AGENTS.md"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/rules" "/home/sandbox/.codex/rules"
+            ;;
+        antigravity)
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/GEMINI.md" "/home/sandbox/.gemini/GEMINI.md"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/AGENTS.md" "/home/sandbox/.gemini/AGENTS.md"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/config/hooks.json"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.gemini/antigravity-cli/hooks"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/skills" "/home/sandbox/.gemini/antigravity-cli/skills"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/statusline.sh" "/home/sandbox/.gemini/antigravity-cli/statusline.sh"
+            ;;
+    esac
+}
+
+write_prompt() {
+    local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5"
+    
+    local prefix=""
+    if [ "$mode" = "experiment" ] || [ "$mode" = "campaign" ]; then
+        prefix="/goal "
+    fi
+
+    cat > "$path" <<EOF
+${prefix}You are running inside an HPC agent capsule.
+
+Mode: $mode
+Agent: $agent
+Workspace: /workspace
+Runs: /runs
+Scratch: /scratch
+Config: /home/sandbox/ai-agent-config
+
+User goal:
+$prompt
+
+Required live outputs:
+- /runs/live/status.json
+- /runs/live/heartbeat.txt
+- /runs/live/command_log.jsonl
+- /runs/live/current_task.md
+
+Required final outputs:
+- /runs/artifacts/report.md
+- /runs/artifacts/git_diff.patch
+- /runs/artifacts/metrics.json
+
+Host repo: $repo
+EOF
+    if [ -n "${GOAL:-}" ]; then
+        printf '\nGoal file: /runs/goal.yaml\n' >> "$path"
+    fi
+    if [ -n "${REVIEWERS:-}" ]; then
+        printf '\nReviewers: %s\n' "$REVIEWERS" >> "$path"
+    fi
+    if [ -n "${TARGET_DIFF:-}" ]; then
+        printf '\nTarget diff: %s\n' "$TARGET_DIFF" >> "$path"
+    fi
+    if [ -n "${TARGET_REPORT:-}" ]; then
+        printf '\nTarget report: %s\n' "$TARGET_REPORT" >> "$path"
+    fi
+    if [ -n "${REQUESTED_AGENTS:-}" ]; then
+        printf '\nRequested agents: %s\n' "$REQUESTED_AGENTS" >> "$path"
+    fi
+}
+
+apptainer_command() {
+    local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
+    local nv="" image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
+    [ "$gpus" -gt 0 ] && nv=" --nv"
+    local cmd
+    cmd="$(agent_command "$agent" "$mode" "$launch")"
+    printf 'apptainer exec%s --containall --cleanenv --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q:ro' \
+        "$nv" \
+        "$run_dir/home" "/home/sandbox" \
+        "$repo" "/workspace:rw" \
+        "$run_dir" "/runs:rw" \
+        "$run_dir/scratch" "/scratch:rw" \
+        "$run_dir/cache" "/cache:rw" \
+        "$ROOT_DIR" "/home/sandbox/ai-agent-config"
+    auth_mounts "$agent"
+    home_config_mounts "$agent" "$run_dir" "$mode"
+    printf ' %q bash -l -c %q\n' "$image" "$cmd"
+}
+
+write_plan() {
+    local mode="$1" agent="$2" repo="$3" goal="$4" gpus="$5" time_limit="$6" prompt="$7" run_dir="$8" partition="${9:-}" launch="${10:-batch}"
+    local cpus mem
+    cpus="$(profile_cpus "$mode")"
+    mem="$(profile_mem "$mode")"
+    repo="$(cd "$repo" && pwd)"
+    make_layout "$run_dir"
+    generate_container_config "$run_dir" "$agent" "$mode"
+    if [ "$agent" = "codex" ]; then
+        link_codex_shared_assets "$run_dir"
+    fi
+    write_prompt "$run_dir/prompt.txt" "$mode" "$agent" "$repo" "$prompt"
+    if [ -n "$goal" ]; then
+        cp "$goal" "$run_dir/goal.yaml"
+    else
+        printf 'mode: %s\nagent: %s\n' "$mode" "$agent" > "$run_dir/goal.yaml"
+    fi
+    cat > "$run_dir/capsule.yaml" <<EOF
+run_id: $(basename "$run_dir")
+mode: $mode
+agent: $agent
+repo: $repo
+goal: $goal
+EOF
+    apptainer_command "$mode" "$agent" "$run_dir" "$gpus" "$repo" "$launch" > "$run_dir/apptainer_exec.sh"
+    sed -i '1i#!/usr/bin/env bash\nset -euo pipefail' "$run_dir/apptainer_exec.sh"
+    cat > "$run_dir/submit.sbatch" <<EOF
+#!/usr/bin/env bash
+#SBATCH --job-name=agentrun-$mode-$agent
+EOF
+    slurm_partition_args "$partition" >> "$run_dir/submit.sbatch"
+    cat >> "$run_dir/submit.sbatch" <<EOF
+#SBATCH --time=$time_limit
+#SBATCH --mem=$mem
+#SBATCH --cpus-per-task=$cpus
+EOF
+    if [ "$gpus" -gt 0 ]; then
+        printf '#SBATCH --gres=gpu:%s\n' "$gpus" >> "$run_dir/submit.sbatch"
+    fi
+    cat >> "$run_dir/submit.sbatch" <<EOF
+#SBATCH --output=$run_dir/live/slurm.out
+#SBATCH --error=$run_dir/live/slurm.err
+
+set -euo pipefail
+_cleanup_home() { rm -rf $run_dir/home; }
+trap _cleanup_home EXIT
+printf '%s\n' "\${SLURM_JOB_ID:-}" > $run_dir/live/slurm_job_id.txt
+env | sort > $run_dir/artifacts/environment.txt
+apptainer --version > $run_dir/artifacts/container.txt 2>/dev/null || true
+set +e
+bash $run_dir/apptainer_exec.sh 2>>"$run_dir/live/stderr.log"
+rc=\$?
+set -e
+printf '%s\n' "\$rc" > $run_dir/live/exit_code.txt
+if [ "\$rc" -eq 0 ]; then
+    printf '{"status":"success","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\${SLURM_JOB_ID:-}" > $run_dir/live/status.json
+else
+    printf '{"status":"failed","exit_code":"%s","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\$rc" "\${SLURM_JOB_ID:-}" > $run_dir/live/status.json
+fi
+exit "\$rc"
+EOF
+    chmod +x "$run_dir/apptainer_exec.sh" "$run_dir/submit.sbatch"
+}
+
+command_agents() {
+    printf 'Available agents:\n'
+    for agent in antigravity claude codex; do
+        local candidates found role
+        candidates="$(agent_candidates "$agent")"
+        role="$(agent_role "$agent")"
+        found=""
+        for cmd in $candidates; do
+            if command -v "$cmd" >/dev/null 2>&1; then
+                found="$(command -v "$cmd")"
+                break
+            fi
+        done
+        if [ -n "$found" ]; then
+            printf '  %-12s %-9s available %s\n' "$agent" "$role" "$found"
+        else
+            printf '  %-12s %-9s missing   %s\n' "$agent" "$role" "$candidates"
+        fi
+    done
+}
+
+check_agent_auth() {
+    local agent="$1" failed=0
+    local store_root
+    store_root="$(auth_store_root)/$agent"
+    _check_auth_file() {
+        local store_path="$1" host_path="$2" label="$3"
+        if [ -f "$store_path" ]; then
+            printf '[OK] auth:%s - store: %s\n' "$label" "$store_path"
+        elif [ -f "$host_path" ]; then
+            printf '[OK] auth:%s - host: %s (run: agentrun auth import --agent %s to persist to store)\n' \
+                "$label" "$host_path" "$agent"
+        else
+            printf '[FAIL] auth:%s - not found in store (%s) or host (%s)\n' \
+                "$label" "$store_path" "$host_path"
+            failed=1
+        fi
+    }
+    case "$agent" in
+        claude)
+            _check_auth_file \
+                "$store_root/.claude/.credentials.json" \
+                "$HOME/.claude/.credentials.json" \
+                "claude:.claude/.credentials.json"
+            _check_auth_file \
+                "$store_root/.claude.json" \
+                "$HOME/.claude.json" \
+                "claude:.claude.json"
+            ;;
+        codex)
+            _check_auth_file \
+                "$store_root/.codex/auth.json" \
+                "$HOME/.codex/auth.json" \
+                "codex:.codex/auth.json"
+            ;;
+        antigravity)
+            _check_auth_file \
+                "$store_root/.gemini/antigravity-cli/antigravity-oauth-token" \
+                "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" \
+                "antigravity:antigravity-oauth-token"
+            _check_auth_file \
+                "$store_root/.gemini/antigravity-cli/installation_id" \
+                "$HOME/.gemini/antigravity-cli/installation_id" \
+                "antigravity:installation_id"
+            ;;
+        *)
+            printf '[FAIL] auth:%s - unknown agent\n' "$agent"
+            failed=1
+            ;;
+    esac
+    unset -f _check_auth_file
+    return "$failed"
+}
+
+codex_hooks_manifest() {
+    printf '%s\n' "$ROOT_DIR/agents/codex/hooks.manifest.json"
+}
+
+render_codex_requirements_toml() {
+    local output="$1"
+    local prefix="/home/sandbox/ai-agent-config/common/hooks/"
+    local manifest
+    manifest="$(codex_hooks_manifest)"
+    {
+        printf '[features]\nhooks = true\n\n[hooks]\nmanaged_dir = "%s"\n\n' "${prefix%/}"
+        jq -rj --arg prefix "$prefix" '
+            .hooks[] |
+            . as $g |
+            .event as $e |
+            (
+                "[[hooks." + $e + "]]\n" +
+                (if (($g.matcher // "") != "") then "matcher = \"" + $g.matcher + "\"\n" else "" end) +
+                "\n",
+                (
+                    $g.entries[] |
+                    "[[hooks." + $e + ".hooks]]\ntype = \"command\"\ncommand = \"" + $prefix + .script + "\"\ntimeout = 30\n\n"
+                )
+            )
+        ' "$manifest"
+    } > "$output"
+}
+
+validate_codex_hook_manifest() {
+    local manifest hook failed=0 event
+    manifest="$(codex_hooks_manifest)"
+    if [ ! -f "$manifest" ]; then
+        printf '[FAIL] agents/codex/hooks.manifest.json\n'
+        return 1
+    fi
+    if ! jq -e '
+      type == "object" and
+      ((.hooks // []) | type == "array" and all(.[];
+        type == "object" and
+        (.event | type == "string" and length > 0) and
+        (.matcher | type == "string" or type == "null") and
+        (.entries | type == "array" and all(.[]; type == "object" and (.script | type == "string" and length > 0)))
+      )) and
+      ((.ignored // []) | type == "array" and all(.[]; type == "string"))
+    ' "$manifest" >/dev/null; then
+        printf '[FAIL] codex-hooks-manifest:shape\n'
+        return 1
+    fi
+    while IFS=$'\t' read -r event hook; do
+        [ -n "$hook" ] || continue
+        case "$hook" in
+            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
+                printf '[FAIL] codex-hooks-manifest:invalid-name:%s\n' "$hook"
+                failed=1
+                continue
+                ;;
+        esac
+        if [ -x "$ROOT_DIR/common/hooks/$hook" ]; then
+            printf '[OK] codex-hooks-manifest:%s:%s\n' "$event" "$hook"
+        else
+            printf '[FAIL] codex-hooks-manifest:%s:%s\n' "$event" "$hook"
+            failed=1
+        fi
+    done < <(jq -r '.hooks[] | .event as $e | .entries[].script | [$e, .] | @tsv' "$manifest")
+    while IFS= read -r hook; do
+        [ -n "$hook" ] || continue
+        case "$hook" in
+            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
+                printf '[FAIL] codex-hooks-manifest:invalid-ignored-name:%s\n' "$hook"
+                failed=1
+                continue
+                ;;
+        esac
+        if [ -e "$ROOT_DIR/common/hooks/$hook" ]; then
+            printf '[OK] codex-hooks-ignored:%s\n' "$hook"
+        else
+            printf '[FAIL] codex-hooks-ignored:%s\n' "$hook"
+            failed=1
+        fi
+    done < <(jq -r '(.ignored // [])[]' "$manifest")
+    local covered
+    local unclassified=0
+    covered="$(jq -r '.hooks[].entries[].script, (.ignored // [])[]' "$manifest")"
+    for hook_path in "$ROOT_DIR"/common/hooks/*.py; do
+        [ -e "$hook_path" ] || continue
+        hook="$(basename "$hook_path")"
+        if printf '%s\n' "$covered" | grep -Fxq "$hook"; then
+            :
+        else
+            printf '[FAIL] codex-hooks-unclassified:%s - add to hooks or ignored\n' "$hook"
+            unclassified=1
+            failed=1
+        fi
+    done
+    if [ "$unclassified" -eq 0 ]; then
+        printf '[OK] codex-hooks-classified:all-common-hooks\n'
+    fi
+    return "$failed"
+}
+
+command_sync_codex() {
+    if [ "$#" -ne 0 ]; then
+        printf 'sync-codex takes no arguments\n' >&2
+        return 2
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        printf 'jq is required for sync-codex\n' >&2
+        return 1
+    fi
+    validate_codex_hook_manifest >/dev/null
+    local tmp
+    tmp="$(mktemp)"
+    render_codex_requirements_toml "$tmp"
+    mv "$tmp" "$ROOT_DIR/agents/codex/requirements.toml"
+    chmod 0644 "$ROOT_DIR/agents/codex/requirements.toml"
+    ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/codex/AGENTS.md"
+    ln -sfnT ../../common/skills "$ROOT_DIR/agents/codex/skills"
+    printf '[OK] synced agents/codex/requirements.toml from agents/codex/hooks.manifest.json\n'
+    printf '[OK] synced agents/codex/AGENTS.md -> ../../common/AGENTS.md\n'
+    printf '[OK] synced agents/codex/skills -> ../../common/skills\n'
+}
+
+claude_hooks_manifest() {
+    printf '%s\n' "$ROOT_DIR/agents/claude/hooks.manifest.json"
+}
+
+render_claude_settings_hooks() {
+    local output="$1"
+    jq '
+      .hooks |
+      group_by(.event) |
+      map({
+        key: .[0].event,
+        value: [
+          .[] | {
+            matcher: .matcher,
+            hooks: [
+              .entries[] |
+              {"type": "command", "command": ("~/.claude/hooks/" + .script)} +
+              if .if then {"if": .if} else {} end
+            ]
+          }
+        ]
+      }) |
+      from_entries
+    ' "$(claude_hooks_manifest)" > "$output"
+}
+
+validate_claude_hook_manifest() {
+    local manifest hook failed=0
+    manifest="$(claude_hooks_manifest)"
+    if [ ! -f "$manifest" ]; then
+        printf '[FAIL] agents/claude/hooks.manifest.json\n'
+        return 1
+    fi
+    if ! jq -e '
+      type == "object" and
+      (.hooks | type == "array" and all(.[]; (
+        .event | type == "string"
+      ) and (
+        .matcher | type == "string"
+      ) and (
+        .entries | type == "array" and all(.[]; (.script | type == "string"))
+      ))) and
+      ((.ignored // []) | type == "array" and all(.[]; type == "string"))
+    ' "$manifest" >/dev/null; then
+        printf '[FAIL] claude-hooks-manifest:shape\n'
+        return 1
+    fi
+    while IFS= read -r hook; do
+        [ -n "$hook" ] || continue
+        case "$hook" in
+            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
+                printf '[FAIL] claude-hooks-manifest:invalid-name:%s\n' "$hook"
+                failed=1
+                continue
+                ;;
+        esac
+        if [ -x "$ROOT_DIR/common/hooks/$hook" ]; then
+            printf '[OK] claude-hooks-manifest:%s\n' "$hook"
+        else
+            printf '[FAIL] claude-hooks-manifest:%s\n' "$hook"
+            failed=1
+        fi
+    done < <(jq -r '[.hooks[].entries[].script] | unique[]' "$manifest")
+    while IFS= read -r hook; do
+        [ -n "$hook" ] || continue
+        case "$hook" in
+            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
+                printf '[FAIL] claude-hooks-manifest:invalid-ignored-name:%s\n' "$hook"
+                failed=1
+                continue
+                ;;
+        esac
+        if [ -e "$ROOT_DIR/common/hooks/$hook" ]; then
+            printf '[OK] claude-hooks-ignored:%s\n' "$hook"
+        else
+            printf '[FAIL] claude-hooks-ignored:%s\n' "$hook"
+            failed=1
+        fi
+    done < <(jq -r '(.ignored // [])[]' "$manifest")
+    local covered unclassified=0
+    covered="$(jq -r '[.hooks[].entries[].script, (.ignored // [])[]] | unique[]' "$manifest")"
+    for hook_path in "$ROOT_DIR"/common/hooks/*.py; do
+        [ -e "$hook_path" ] || continue
+        hook="$(basename "$hook_path")"
+        if printf '%s\n' "$covered" | grep -Fxq "$hook"; then
+            :
+        else
+            printf '[FAIL] claude-hooks-unclassified:%s - add it to hooks or ignored\n' "$hook"
+            unclassified=1
+            failed=1
+        fi
+    done
+    if [ "$unclassified" -eq 0 ]; then
+        printf '[OK] claude-hooks-classified:all-common-hooks\n'
+    fi
+    return "$failed"
+}
+
+command_sync_claude() {
+    if [ "$#" -ne 0 ]; then
+        printf 'sync-claude takes no arguments\n' >&2
+        return 2
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        printf 'jq is required for sync-claude\n' >&2
+        return 1
+    fi
+    validate_claude_hook_manifest >/dev/null
+    local hooks_tmp settings_tmp
+    hooks_tmp="$(mktemp)"
+    settings_tmp="$(mktemp)"
+    render_claude_settings_hooks "$hooks_tmp"
+    jq --slurpfile h "$hooks_tmp" '.hooks = $h[0]' \
+        "$ROOT_DIR/agents/claude/settings.json" > "$settings_tmp"
+    mv "$settings_tmp" "$ROOT_DIR/agents/claude/settings.json"
+    chmod 0644 "$ROOT_DIR/agents/claude/settings.json"
+    rm -f "$hooks_tmp"
+    ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/claude/CLAUDE.md"
+    ln -sfnT ../../common/skills "$ROOT_DIR/agents/claude/skills"
+    printf '[OK] synced agents/claude/settings.json hooks from agents/claude/hooks.manifest.json\n'
+    printf '[OK] synced agents/claude/CLAUDE.md -> ../../common/AGENTS.md\n'
+    printf '[OK] synced agents/claude/skills -> ../../common/skills\n'
+}
+
+validate_claude_sync() {
+    local failed=0 hooks_tmp settings_hooks_tmp
+    if validate_claude_hook_manifest; then
+        printf '[OK] claude-hooks-manifest\n'
+    else
+        failed=1
+    fi
+    hooks_tmp="$(mktemp)"
+    settings_hooks_tmp="$(mktemp)"
+    render_claude_settings_hooks "$hooks_tmp"
+    jq '.hooks' "$ROOT_DIR/agents/claude/settings.json" > "$settings_hooks_tmp"
+    if cmp -s "$hooks_tmp" "$settings_hooks_tmp"; then
+        printf '[OK] claude-hooks-generated:agents/claude/settings.json\n'
+    else
+        printf '[FAIL] claude-hooks-generated:agents/claude/settings.json - run agentrun sync-claude\n'
+        failed=1
+    fi
+    rm -f "$hooks_tmp" "$settings_hooks_tmp"
+    if [ "$(readlink "$ROOT_DIR/agents/claude/CLAUDE.md" 2>/dev/null || true)" = "../../common/AGENTS.md" ]; then
+        printf '[OK] claude-agents-link:agents/claude/CLAUDE.md\n'
+    else
+        printf '[FAIL] claude-agents-link:agents/claude/CLAUDE.md - run agentrun sync-claude\n'
+        failed=1
+    fi
+    if [ "$(readlink "$ROOT_DIR/agents/claude/skills" 2>/dev/null || true)" = "../../common/skills" ]; then
+        printf '[OK] claude-skills-link:agents/claude/skills\n'
+    else
+        printf '[FAIL] claude-skills-link:agents/claude/skills - run agentrun sync-claude\n'
+        failed=1
+    fi
+    return "$failed"
+}
+
+validate_codex_sync() {
+    local failed=0 tmp
+    if validate_codex_hook_manifest; then
+        printf '[OK] codex-hooks-manifest\n'
+    else
+        failed=1
+    fi
+    tmp="$(mktemp)"
+    render_codex_requirements_toml "$tmp"
+    if cmp -s "$tmp" "$ROOT_DIR/agents/codex/requirements.toml"; then
+        printf '[OK] codex-hooks-generated:agents/codex/requirements.toml\n'
+    else
+        printf '[FAIL] codex-hooks-generated:agents/codex/requirements.toml - run agentrun sync-codex\n'
+        failed=1
+    fi
+    rm -f "$tmp"
+    if [ "$(readlink "$ROOT_DIR/agents/codex/AGENTS.md" 2>/dev/null || true)" = "../../common/AGENTS.md" ]; then
+        printf '[OK] codex-agents-link:agents/codex/AGENTS.md\n'
+    else
+        printf '[FAIL] codex-agents-link:agents/codex/AGENTS.md - run agentrun sync-codex\n'
+        failed=1
+    fi
+    if [ "$(readlink "$ROOT_DIR/agents/codex/skills" 2>/dev/null || true)" = "../../common/skills" ]; then
+        printf '[OK] codex-skills-link:agents/codex/skills\n'
+    else
+        printf '[FAIL] codex-skills-link:agents/codex/skills - run agentrun sync-codex\n'
+        failed=1
+    fi
+    return "$failed"
+}
+
+
+antigravity_hooks_manifest() {
+    printf '%s\n' "$ROOT_DIR/agents/antigravity/hooks.manifest.json"
+}
+
+render_antigravity_hooks_json() {
+    local output="$1"
+    # Stop/PreInvocation/PostInvocation: flat handler list (no matcher/hooks wrapper)
+    # PreToolUse/PostToolUse: {matcher, hooks} structure
+    jq '
+      .hooks |
+      group_by(.event) |
+      map(
+        . as $group |
+        ($group[0].event) as $event |
+        if ($event == "Stop" or $event == "PreInvocation" or $event == "PostInvocation") then
+          {
+            key: ("agentrun-" + $event),
+            value: {
+              ($event): [
+                $group[].entries[] |
+                {"type": "command", "command": ("~/.gemini/antigravity-cli/hooks/" + .script)}
+              ]
+            }
+          }
+        else
+          {
+            key: ("agentrun-" + $event),
+            value: {
+              ($event): [
+                $group[] | {
+                  matcher: .matcher,
+                  hooks: [
+                    .entries[] |
+                    {"type": "command", "command": ("~/.gemini/antigravity-cli/hooks/" + .script)}
+                  ]
+                }
+              ]
+            }
+          }
+        end
+      ) |
+      from_entries
+    ' "$(antigravity_hooks_manifest)" > "$output"
+}
+
+validate_antigravity_hook_manifest() {
+    local manifest hook failed=0
+    manifest="$(antigravity_hooks_manifest)"
+    if [ ! -f "$manifest" ]; then
+        printf '[FAIL] agents/antigravity/hooks.manifest.json\n'
+        return 1
+    fi
+    if ! jq -e '
+      type == "object" and
+      (.hooks | type == "array" and all(.[]; (
+        .event | type == "string"
+      ) and (
+        .matcher | type == "string"
+      ) and (
+        .entries | type == "array" and all(.[]; (.script | type == "string"))
+      ))) and
+      ((.ignored // []) | type == "array" and all(.[]; type == "string"))
+    ' "$manifest" >/dev/null; then
+        printf '[FAIL] antigravity-hooks-manifest:shape\n'
+        return 1
+    fi
+    while IFS= read -r hook; do
+        [ -n "$hook" ] || continue
+        case "$hook" in
+            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
+                printf '[FAIL] antigravity-hooks-manifest:invalid-name:%s\n' "$hook"
+                failed=1
+                continue
+                ;;
+        esac
+        if [ -x "$ROOT_DIR/common/hooks/$hook" ]; then
+            printf '[OK] antigravity-hooks-manifest:%s\n' "$hook"
+        else
+            printf '[FAIL] antigravity-hooks-manifest:%s\n' "$hook"
+            failed=1
+        fi
+    done < <(jq -r '[.hooks[].entries[].script] | unique[]' "$manifest")
+    while IFS= read -r hook; do
+        [ -n "$hook" ] || continue
+        case "$hook" in
+            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
+                printf '[FAIL] antigravity-hooks-manifest:invalid-ignored-name:%s\n' "$hook"
+                failed=1
+                continue
+                ;;
+        esac
+        if [ -e "$ROOT_DIR/common/hooks/$hook" ]; then
+            printf '[OK] antigravity-hooks-ignored:%s\n' "$hook"
+        else
+            printf '[FAIL] antigravity-hooks-ignored:%s\n' "$hook"
+            failed=1
+        fi
+    done < <(jq -r '(.ignored // [])[]' "$manifest")
+    local covered unclassified=0
+    covered="$(jq -r '[.hooks[].entries[].script, (.ignored // [])[]] | unique[]' "$manifest")"
+    for hook_path in "$ROOT_DIR"/common/hooks/*.py; do
+        [ -e "$hook_path" ] || continue
+        hook="$(basename "$hook_path")"
+        if printf '%s\n' "$covered" | grep -Fxq "$hook"; then
+            :
+        else
+            printf '[FAIL] antigravity-hooks-unclassified:%s - add it to hooks or ignored\n' "$hook"
+            unclassified=1
+            failed=1
+        fi
+    done
+    if [ "$unclassified" -eq 0 ]; then
+        printf '[OK] antigravity-hooks-classified:all-common-hooks\n'
+    fi
+    return "$failed"
+}
+
+command_sync_antigravity() {
+    if [ "$#" -ne 0 ]; then
+        printf 'sync-antigravity takes no arguments\n' >&2
+        return 2
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        printf 'jq is required for sync-antigravity\n' >&2
+        return 1
+    fi
+    validate_antigravity_hook_manifest >/dev/null
+    local tmp
+    tmp="$(mktemp)"
+    render_antigravity_hooks_json "$tmp"
+    mv "$tmp" "$ROOT_DIR/agents/antigravity/hooks.json"
+    chmod 0644 "$ROOT_DIR/agents/antigravity/hooks.json"
+    ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/antigravity/AGENTS.md"
+    ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/antigravity/GEMINI.md"
+    ln -sfnT ../../common/skills "$ROOT_DIR/agents/antigravity/skills"
+    printf '[OK] synced agents/antigravity/hooks.json from agents/antigravity/hooks.manifest.json\n'
+    printf '[OK] synced agents/antigravity/AGENTS.md -> ../../common/AGENTS.md\n'
+    printf '[OK] synced agents/antigravity/GEMINI.md -> ../../common/AGENTS.md\n'
+    printf '[OK] synced agents/antigravity/skills -> ../../common/skills\n'
+}
+
+validate_antigravity_sync() {
+    local failed=0 tmp
+    if validate_antigravity_hook_manifest; then
+        printf '[OK] antigravity-hooks-manifest\n'
+    else
+        failed=1
+    fi
+    tmp="$(mktemp)"
+    render_antigravity_hooks_json "$tmp"
+    if cmp -s "$tmp" "$ROOT_DIR/agents/antigravity/hooks.json"; then
+        printf '[OK] antigravity-hooks-generated:agents/antigravity/hooks.json\n'
+    else
+        printf '[FAIL] antigravity-hooks-generated:agents/antigravity/hooks.json - run agentrun sync-antigravity\n'
+        failed=1
+    fi
+    rm -f "$tmp"
+    if [ "$(readlink "$ROOT_DIR/agents/antigravity/AGENTS.md" 2>/dev/null || true)" = "../../common/AGENTS.md" ]; then
+        printf '[OK] antigravity-agents-link:agents/antigravity/AGENTS.md\n'
+    else
+        printf '[FAIL] antigravity-agents-link:agents/antigravity/AGENTS.md - run agentrun sync-antigravity\n'
+        failed=1
+    fi
+    if [ "$(readlink "$ROOT_DIR/agents/antigravity/GEMINI.md" 2>/dev/null || true)" = "../../common/AGENTS.md" ]; then
+        printf '[OK] antigravity-agents-link:agents/antigravity/GEMINI.md\n'
+    else
+        printf '[FAIL] antigravity-agents-link:agents/antigravity/GEMINI.md - run agentrun sync-antigravity\n'
+        failed=1
+    fi
+    if [ "$(readlink "$ROOT_DIR/agents/antigravity/skills" 2>/dev/null || true)" = "../../common/skills" ]; then
+        printf '[OK] antigravity-skills-link:agents/antigravity/skills\n'
+    else
+        printf '[FAIL] antigravity-skills-link:agents/antigravity/skills - run agentrun sync-antigravity\n'
+        failed=1
+    fi
+    return "$failed"
+}
+
+command_validate() {
+    local missing=0
+    for path in \
+        common/AGENTS.md \
+        agents/claude/CLAUDE.md \
+        agents/claude/settings.json \
+        agents/claude/hooks.manifest.json \
+        agents/codex/AGENTS.md \
+        agents/codex/config.toml \
+        agents/codex/config.assist.toml \
+        agents/codex/config.experiment.toml \
+        agents/codex/hooks.manifest.json \
+        agents/codex/requirements.toml \
+        agents/antigravity/AGENTS.md \
+        agents/antigravity/hooks.manifest.json \
+        agents/antigravity/hooks.json \
+        agents/antigravity/GEMINI.md \
+        runtime/apptainer/base-system.def \
+        runtime/apptainer/base-agent.def
+    do
+        if [ -e "$ROOT_DIR/$path" ]; then
+            printf '[OK] %s\n' "$path"
+        else
+            printf '[FAIL] %s\n' "$path"
+            missing=1
+        fi
+    done
+    for profile in assist experiment campaign review multi-review; do
+        local profile_path="$ROOT_DIR/profiles/$profile.yaml"
+        if [ -e "$profile_path" ]; then
+            printf '[OK] profiles/%s.yaml\n' "$profile"
+            for key in "name:" "resources:" "outputs:" "policy:"; do
+                if grep -q "^$key" "$profile_path"; then
+                    printf '[OK] profiles/%s.yaml:%s\n' "$profile" "$key"
+                else
+                    printf '[FAIL] profiles/%s.yaml:%s\n' "$profile" "$key"
+                    missing=1
+                fi
+            done
+        else
+            printf '[FAIL] profiles/%s.yaml\n' "$profile"
+            missing=1
+        fi
+    done
+    for hook in "$ROOT_DIR"/common/hooks/*; do
+        [ -e "$hook" ] || continue
+        if [ -x "$hook" ]; then
+            printf '[OK] executable:%s\n' "${hook#$ROOT_DIR/}"
+        else
+            printf '[FAIL] executable:%s\n' "${hook#$ROOT_DIR/}"
+            missing=1
+        fi
+    done
+    if command -v jq >/dev/null 2>&1; then
+        while IFS= read -r json_file; do
+            if jq empty "$json_file" >/dev/null 2>&1; then
+                printf '[OK] json:%s\n' "${json_file#$ROOT_DIR/}"
+            else
+                printf '[FAIL] json:%s\n' "${json_file#$ROOT_DIR/}"
+                missing=1
+            fi
+        done < <(find "$ROOT_DIR/agents" -name '*.json' -type f)
+    else
+        printf '[FAIL] jq:not-found - JSON validation unavailable\n'
+        missing=1
+    fi
+    while IFS= read -r toml_file; do
+        if grep -Eq '^\[.+\]' "$toml_file"; then
+            printf '[OK] toml-shape:%s\n' "${toml_file#$ROOT_DIR/}"
+        else
+            printf '[FAIL] toml-shape:%s\n' "${toml_file#$ROOT_DIR/}"
+            missing=1
+        fi
+    done < <(find "$ROOT_DIR/agents" "$ROOT_DIR/tests" -name '*.toml' -type f)
+    while IFS= read -r link; do
+        if [ -e "$link" ]; then
+            printf '[OK] symlink:%s\n' "${link#$ROOT_DIR/}"
+        else
+            printf '[FAIL] symlink:%s\n' "${link#$ROOT_DIR/}"
+            missing=1
+        fi
+    done < <(find "$ROOT_DIR" \
+        -path "$ROOT_DIR/.git" -prune -o \
+        -path "$ROOT_DIR/.agent-runs" -prune -o \
+        -type l -print)
+    validate_claude_sync || missing=1
+    validate_codex_sync || missing=1
+    validate_antigravity_sync || missing=1
+    return "$missing"
+}
+
+command_doctor() {
+    local agent="$DEFAULT_AGENT" all=0 gpus=0 failed=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --agent) agent="$2"; shift 2 ;;
+            --all) all=1; shift ;;
+            --gpus) gpus="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    for cmd in sinfo squeue srun sbatch jq; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            printf '[OK] command:%s - %s\n' "$cmd" "$(command -v "$cmd")"
+        else
+            printf '[FAIL] command:%s - not found\n' "$cmd"
+            failed=1
+        fi
+    done
+    for cmd in apptainer uv; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            printf '[OK] command:%s - %s\n' "$cmd" "$(command -v "$cmd")"
+        else
+            printf '[WARN] command:%s - not found on this host; may be provided on compute nodes or inside the image\n' "$cmd"
+        fi
+    done
+    if [ "$all" -eq 1 ]; then
+        command_agents
+    else
+        command_agents | grep -E "(^Available| $agent[[:space:]])" || true
+    fi
+    if [ "$all" -eq 1 ]; then
+        for auth_agent in antigravity claude codex; do
+            check_agent_auth "$auth_agent" || failed=1
+        done
+    else
+        check_agent_auth "$agent" || failed=1
+    fi
+    if [ -e "$ROOT_DIR/runtime/apptainer/base-agent.sif" ]; then
+        printf '[OK] image:base-agent.sif\n'
+    else
+        printf '[FAIL] image:base-agent.sif - not built\n'
+        failed=1
+    fi
+    if [ -w "$PWD" ]; then
+        printf '[OK] writable:%s/.agent-runs\n' "$PWD"
+    else
+        printf '[FAIL] writable:%s/.agent-runs\n' "$PWD"
+        failed=1
+    fi
+    if [ "$gpus" -gt 0 ]; then
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            printf '[OK] gpu:nvidia-smi - %s\n' "$(command -v nvidia-smi)"
+        else
+            printf '[FAIL] gpu:nvidia-smi - not found\n'
+            failed=1
+        fi
+    fi
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        printf '[OK] git:repo\n'
+        printf '[OK] git:branch - %s\n' "$(git branch --show-current 2>/dev/null || true)"
+        if git diff --quiet --ignore-submodules -- 2>/dev/null; then
+            printf '[OK] git:worktree-clean\n'
+        else
+            printf '[WARN] git:worktree-dirty\n'
+        fi
+    else
+        printf '[FAIL] git:repo - not inside a git worktree\n'
+        failed=1
+    fi
+    return "$failed"
+}
+
+parse_run_args() {
+    AGENT="$DEFAULT_AGENT"
+    REPO="."
+    GOAL=""
+    GPUS=0
+    TIME_LIMIT=""
+    PARTITION="${AGENTRUN_SLURM_PARTITION:-}"
+    SHOW_MOUNTS=0
+    SUBMIT=0
+    REVIEWERS=""
+    TARGET_DIFF=""
+    TARGET_REPORT=""
+    REQUESTED_AGENTS=""
+    PROMPT=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --agent) AGENT="$2"; shift 2 ;;
+            --repo) REPO="$2"; shift 2 ;;
+            --goal) GOAL="$2"; shift 2 ;;
+            --gpus) GPUS="$2"; shift 2 ;;
+            --time) TIME_LIMIT="$2"; shift 2 ;;
+            --partition) PARTITION="$2"; shift 2 ;;
+            --show-mounts) SHOW_MOUNTS=1; shift ;;
+            --reviewers) REVIEWERS="$2"; shift 2 ;;
+            --target-diff) TARGET_DIFF="$2"; shift 2 ;;
+            --target-report) TARGET_REPORT="$2"; shift 2 ;;
+            --agents) REQUESTED_AGENTS="$2"; shift 2 ;;
+            --submit) SUBMIT=1; shift ;;
+            --*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+            *) PROMPT="${PROMPT:+$PROMPT }$1"; shift ;;
+        esac
+    done
+    [ -n "$PROMPT" ] || { printf 'missing prompt\n' >&2; exit 2; }
+}
+
+command_dry_run() {
+    local mode="$1"; shift
+    parse_run_args "$@"
+    local id run_dir
+    [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
+    REPO="$(cd "$REPO" && pwd)"
+    id="$(run_id "$mode" "$AGENT")"
+    run_dir="$PWD/.agent-runs/$id"
+    printf 'run_id: %s\nselected_profile: %s\nselected_agent: %s\nrepo: %s\nhost_run_directory: %s\n' "$id" "$mode" "$AGENT" "$REPO" "$run_dir"
+    if [ "$mode" = "assist" ]; then
+        if [ "$SUBMIT" -eq 1 ]; then
+            printf 'launch_method: sbatch\n'
+            printf 'sbatch_args:'
+            slurm_partition_args "$PARTITION"
+            printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
+            [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
+            printf '\n'
+        else
+            printf 'launch_method: srun --pty (interactive)\n'
+            printf 'slurm_command: srun'
+            srun_partition_args "$PARTITION"
+            printf ' --time=%s --mem=%s --cpus-per-task=%s --pty' "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
+            [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
+            printf '\n'
+        fi
+    else
+        printf 'launch_method: sbatch\n'
+        printf 'sbatch_args:'
+        slurm_partition_args "$PARTITION"
+        printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
+        [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
+        printf '\n'
+    fi
+    local launch="batch"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
+        launch="interactive"
+    fi
+    printf 'apptainer: '
+    apptainer_command "$mode" "$AGENT" "$run_dir" "$GPUS" "$REPO" "$launch"
+    printf '\nbind_mounts:\n'
+    printf '  %s/home:/home/sandbox\n' "$run_dir"
+    printf '  %s:/workspace:rw\n' "$REPO"
+    printf '  %s:/runs:rw\n' "$run_dir"
+    printf '  %s/scratch:/scratch:rw\n' "$run_dir"
+    printf '  %s/cache:/cache:rw\n' "$run_dir"
+    printf '  %s:/home/sandbox/ai-agent-config:ro\n' "$ROOT_DIR"
+    if [ "$SHOW_MOUNTS" -eq 1 ]; then
+        auth_mounts "$AGENT"
+        printf '\n'
+        home_config_mounts "$AGENT" "$run_dir" "$mode"
+        printf '\n'
+    fi
+    printf '\n--- capsule.yaml ---\n'
+    printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\n' "$id" "$mode" "$AGENT" "$REPO" "$GOAL"
+    printf '\n--- prompt.txt ---\n'
+    local _ptmp
+    _ptmp="$(mktemp)"
+    write_prompt "$_ptmp" "$mode" "$AGENT" "$REPO" "$PROMPT"
+    cat "$_ptmp"
+    rm -f "$_ptmp"
+    printf '\n--- expected artifacts ---\n'
+    for path in \
+        live/status.json \
+        live/heartbeat.txt \
+        live/stdout.log \
+        live/stderr.log \
+        live/command_log.jsonl \
+        live/events.jsonl \
+        live/current_task.md \
+        artifacts/report.md \
+        artifacts/git_diff.patch \
+        artifacts/metrics.json \
+        artifacts/proposed_next.yaml \
+        reviews/summary.md
+    do
+        printf '%s\n' "$path"
+    done
+}
+
+command_prepare() {
+    local mode="$1"; shift
+    parse_run_args "$@"
+    local id run_dir
+    [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
+    id="$(run_id "$mode" "$AGENT")"
+    run_dir="$PWD/.agent-runs/$id"
+    local launch="batch"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
+        launch="interactive"
+    fi
+    write_plan "$mode" "$AGENT" "$REPO" "$GOAL" "$GPUS" "$TIME_LIMIT" "$PROMPT" "$run_dir" "$PARTITION" "$launch"
+    printf 'prepared run: %s\n' "$run_dir"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
+        copy_auth_credentials "$run_dir" "$AGENT"
+        trap "rm -rf $(printf '%q' "$run_dir/home")" EXIT INT TERM
+        local srun_args=("--time=$TIME_LIMIT" "--mem=$(profile_mem "$mode")" "--cpus-per-task=$(profile_cpus "$mode")" "--pty")
+        [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
+        [ "$GPUS" -gt 0 ] && srun_args+=("--gres=gpu:$GPUS")
+        printf 'launching interactive session via srun %s\n' "${srun_args[*]}"
+        srun "${srun_args[@]}" "$run_dir/apptainer_exec.sh" || true
+        rm -rf "$run_dir/home"
+        trap - EXIT INT TERM
+        return 0
+    fi
+    printf 'submit script: %s\n' "$run_dir/submit.sbatch"
+    if [ "$SUBMIT" -eq 1 ]; then
+        copy_auth_credentials "$run_dir" "$AGENT"
+        sbatch "$run_dir/submit.sbatch"
+    elif [ "$AGENT" = "claude" ] || [ "$AGENT" = "codex" ]; then
+        printf 'auth credentials were not staged; rerun with --submit to copy them before sbatch\n'
+    fi
+}
+
+command_smoke_test() {
+    local agent="$DEFAULT_AGENT"
+    local submit=0 partition="${AGENTRUN_SLURM_PARTITION:-}" time_limit="00:10:00" mem="4000M"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --agent) agent="$2"; shift 2 ;;
+            --partition) partition="$2"; shift 2 ;;
+            --time) time_limit="$2"; shift 2 ;;
+            --mem) mem="$2"; shift 2 ;;
+            --submit) submit=1; shift ;;
+            *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+        esac
+    done
+    local id run_dir
+    id="$(run_id smoke-test "$agent")"
+    run_dir="$PWD/.agent-runs/$id"
+    make_layout "$run_dir"
+    cat > "$run_dir/live/status.json" <<EOF
+{"status":"prepared","agent":"$agent","mode":"smoke-test","note":"submit.sbatch must run on a Slurm compute node to complete this smoke test"}
+EOF
+    printf 'run_id: %s\nagent: %s\nmode: smoke-test\n' "$id" "$agent" > "$run_dir/capsule.yaml"
+    printf 'Write {"smoke_test": true, "status": "passed"} to /runs/artifacts/metrics.json.\n' > "$run_dir/prompt.txt"
+    printf 'mode: smoke-test\nagent: %s\n' "$agent" > "$run_dir/goal.yaml"
+    cat > "$run_dir/submit.sbatch" <<EOF
+#!/usr/bin/env bash
+#SBATCH --job-name=agentrun-smoke-$agent
+EOF
+    slurm_partition_args "$partition" >> "$run_dir/submit.sbatch"
+    cat >> "$run_dir/submit.sbatch" <<EOF
+#SBATCH --time=$time_limit
+#SBATCH --mem=$mem
+#SBATCH --cpus-per-task=1
+#SBATCH --output=$run_dir/live/slurm.out
+#SBATCH --error=$run_dir/live/slurm.err
+
+set -euo pipefail
+_cleanup_home() { rm -rf "$run_dir/home"; }
+trap _cleanup_home EXIT
+printf '%s\n' "\${SLURM_JOB_ID:-}" > "$run_dir/live/slurm_job_id.txt"
+printf '{"status":"running","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/status.json"
+date -Iseconds > "$run_dir/live/heartbeat.txt"
+printf 'Smoke test running on node %s\n' "\${SLURMD_NODENAME:-unknown}" > "$run_dir/live/stdout.log"
+: > "$run_dir/live/stderr.log"
+printf '{"event":"smoke-test","agent":"%s","status":"running","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/command_log.jsonl"
+printf '{"event":"slurm-job","status":"running"}\n' > "$run_dir/live/events.jsonl"
+printf 'Smoke test completed on compute node.\n' > "$run_dir/live/current_task.md"
+: > "$run_dir/artifacts/git_diff.patch"
+printf '# Smoke Test Report\n\nPassed on Slurm job %s.\n' "\${SLURM_JOB_ID:-}" > "$run_dir/artifacts/report.md"
+printf '{"smoke_test":true,"status":"passed","agent":"%s","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/artifacts/metrics.json"
+printf '{"status":"success","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/status.json"
+printf '0\n' > "$run_dir/live/exit_code.txt"
+EOF
+    chmod +x "$run_dir/submit.sbatch"
+    printf 'prepared smoke-test run: %s\n' "$run_dir"
+    printf 'submit script: %s\n' "$run_dir/submit.sbatch"
+    if [ "$submit" -eq 1 ]; then
+        sbatch "$run_dir/submit.sbatch"
+    fi
+}
+
+command_init_goal() {
+    local dest="goal.yaml"
+    if [ -e "$dest" ]; then
+        printf 'error: %s already exists\n' "$dest" >&2
+        exit 2
+    fi
+    cp "$ROOT_DIR/templates/goal.yaml" "$dest"
+    printf 'created %s\n' "$dest"
+}
+
+command_status() {
+    cat "$PWD/.agent-runs/latest/live/status.json"
+}
+
+command_logs() {
+    if [ "${1:-}" = "--follow" ]; then
+        tail -f "$PWD/.agent-runs/latest/live/slurm.out"
+    else
+        cat "$PWD/.agent-runs/latest/live/slurm.out"
+    fi
+}
+
+command_list_runs() {
+    [ -d "$PWD/.agent-runs" ] || return 0
+    find "$PWD/.agent-runs" -mindepth 1 -maxdepth 1 ! -name latest -printf '%f\n' | sort
+}
+
+command_open_run() {
+    local target="${1:-$PWD/.agent-runs/latest}"
+    if [ -L "$target" ]; then
+        readlink -f "$target"
+    else
+        printf '%s\n' "$target"
+    fi
+}
+
+command_verify_run() {
+    local run_dir=""
+    if [ "${1:-}" = "--run-id" ]; then
+        run_dir="$PWD/.agent-runs/$2"
+    else
+        run_dir="${1:-$PWD/.agent-runs/latest}"
+    fi
+    [ -L "$run_dir" ] && run_dir="$(readlink -f "$run_dir")"
+    local failed=0
+    if [ ! -d "$run_dir" ]; then
+        printf '[FAIL] run directory: %s\n' "$run_dir"
+        return 1
+    fi
+    printf '[OK] run directory: %s\n' "$run_dir"
+    for path in capsule.yaml prompt.txt goal.yaml live/status.json live/heartbeat.txt live/stdout.log live/stderr.log live/command_log.jsonl live/events.jsonl live/current_task.md artifacts/report.md artifacts/git_diff.patch artifacts/metrics.json; do
+        if [ -e "$run_dir/$path" ]; then
+            printf '[OK] %s\n' "$path"
+        else
+            printf '[FAIL] %s\n' "$path"
+            failed=1
+        fi
+    done
+    if [ -s "$run_dir/artifacts/report.md" ]; then
+        printf '[OK] nonempty:artifacts/report.md\n'
+    else
+        printf '[FAIL] nonempty:artifacts/report.md\n'
+        failed=1
+    fi
+    local mode
+    mode="$(sed -n 's/^mode:[[:space:]]*//p' "$run_dir/capsule.yaml" 2>/dev/null | sed -n '1p')"
+    if [ -n "$mode" ] && profile_required_outputs "$mode" >/dev/null 2>&1; then
+        while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            if [ -e "$run_dir/$path" ]; then
+                printf '[OK] profile_required:%s\n' "$path"
+            else
+                printf '[FAIL] profile_required:%s\n' "$path"
+                failed=1
+            fi
+        done < <(profile_required_outputs "$mode")
+    else
+        printf '[FAIL] profile_required:unknown-mode:%s\n' "${mode:-missing}"
+        failed=1
+    fi
+    if command -v jq >/dev/null 2>&1; then
+        for json_file in live/status.json artifacts/metrics.json; do
+            if [ -e "$run_dir/$json_file" ] && jq empty "$run_dir/$json_file" >/dev/null 2>&1; then
+                printf '[OK] json:%s\n' "$json_file"
+            else
+                printf '[FAIL] json:%s\n' "$json_file"
+                failed=1
+            fi
+        done
+        if [ -e "$run_dir/live/command_log.jsonl" ]; then
+            if sed '/^[[:space:]]*$/d' "$run_dir/live/command_log.jsonl" | jq -c . >/dev/null 2>&1; then
+                printf '[OK] jsonl:live/command_log.jsonl\n'
+            else
+                printf '[FAIL] jsonl:live/command_log.jsonl\n'
+                failed=1
+            fi
+        fi
+        if [ -e "$run_dir/live/events.jsonl" ]; then
+            if sed '/^[[:space:]]*$/d' "$run_dir/live/events.jsonl" | jq -c . >/dev/null 2>&1; then
+                printf '[OK] jsonl:live/events.jsonl\n'
+            else
+                printf '[FAIL] jsonl:live/events.jsonl\n'
+                failed=1
+            fi
+        fi
+        if [ -e "$run_dir/live/status.json" ]; then
+            local final_status
+            final_status="$(jq -r '.status // empty' "$run_dir/live/status.json" 2>/dev/null || true)"
+            case "$final_status" in
+                success|failed|cancelled|timeout)
+                    printf '[OK] final_status:%s\n' "$final_status"
+                    ;;
+                *)
+                    printf '[FAIL] final_status:%s\n' "${final_status:-missing}"
+                    failed=1
+                    ;;
+            esac
+        fi
+    else
+        printf '[FAIL] jq:not-found - JSON/JSONL verification unavailable\n'
+        failed=1
+    fi
+    if [ -e "$run_dir/live/exit_code.txt" ]; then
+        printf '[OK] exit_code\n'
+    else
+        printf '[FAIL] exit_code missing\n'
+        failed=1
+    fi
+    if [ -e "$run_dir/live/slurm_job_id.txt" ]; then
+        printf '[OK] slurm_job_id\n'
+    else
+        printf '[FAIL] slurm_job_id missing\n'
+        failed=1
+    fi
+    return "$failed"
+}
+
+_auth_import_file() {
+    local host_path="$1" store_path="$2"
+    if [ ! -f "$host_path" ]; then
+        printf '[SKIP] %s - not found on host\n' "$host_path"
+        return 0
+    fi
+    mkdir -p "$(dirname "$store_path")"
+    cp "$host_path" "$store_path"
+    chmod 600 "$store_path"
+    printf '[IMPORTED] %s -> %s\n' "$host_path" "$store_path"
+}
+
+_auth_login_agent() {
+    local agent="$1"
+    local cmd
+    case "$agent" in
+        claude)
+            cmd="claude auth login"
+            ;;
+        codex)
+            cmd="codex login"
+            ;;
+        antigravity)
+            printf 'note: agy has no dedicated login subcommand.\n'
+            printf 'Starting agy interactively. Authenticate, then type /exit to quit.\n\n'
+            cmd="agy"
+            ;;
+        *)
+            printf '[FAIL] unknown agent: %s\n' "$agent" >&2
+            return 1
+            ;;
+    esac
+    printf '\n[auth login] %s\n' "$agent"
+    local cli
+    cli="$(printf '%s' "$cmd" | awk '{print $1}')"
+    if ! command -v "$cli" >/dev/null 2>&1; then
+        printf '[FAIL] CLI not found on host: %s\n' "$cli" >&2
+        return 1
+    fi
+    eval "$cmd"
+    printf '\n[auth import] syncing to store\n'
+    _auth_import_agent "$agent"
+}
+
+_auth_import_agent() {
+    local agent="$1"
+    local store_root
+    store_root="$(auth_store_root)/$agent"
+    case "$agent" in
+        claude)
+            _auth_import_file "$HOME/.claude/.credentials.json" "$store_root/.claude/.credentials.json"
+            _auth_import_file "$HOME/.claude.json" "$store_root/.claude.json"
+            ;;
+        codex)
+            _auth_import_file "$HOME/.codex/auth.json" "$store_root/.codex/auth.json"
+            ;;
+        antigravity)
+            _auth_import_file "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" \
+                "$store_root/.gemini/antigravity-cli/antigravity-oauth-token"
+            _auth_import_file "$HOME/.gemini/antigravity-cli/installation_id" \
+                "$store_root/.gemini/antigravity-cli/installation_id"
+            ;;
+        *)
+            printf '[FAIL] unknown agent: %s\n' "$agent" >&2
+            return 1
+            ;;
+    esac
+}
+
+_auth_status_agent() {
+    local agent="$1"
+    local store_root
+    store_root="$(auth_store_root)/$agent"
+    _show_status() {
+        local rel="$1"
+        local store_f="$store_root/$rel" host_f="$HOME/$rel"
+        local s h
+        [ -f "$store_f" ] && s="present" || s="missing"
+        [ -f "$host_f" ]  && h="present" || h="missing"
+        printf '  %-50s  store:%-8s  host:%s\n' "$rel" "$s" "$h"
+    }
+    printf '%s:\n' "$agent"
+    case "$agent" in
+        claude)
+            _show_status ".claude/.credentials.json"
+            _show_status ".claude.json"
+            ;;
+        codex)
+            _show_status ".codex/auth.json"
+            ;;
+        antigravity)
+            _show_status ".gemini/antigravity-cli/antigravity-oauth-token"
+            _show_status ".gemini/antigravity-cli/installation_id"
+            ;;
+    esac
+    unset -f _show_status
+}
+
+command_auth() {
+    local subcmd="${1:-}"
+    [ -n "$subcmd" ] || { printf 'usage: agentrun auth login|import|status|reset\n' >&2; exit 2; }
+    shift || true
+    local all_agents=("claude" "codex" "antigravity")
+    case "$subcmd" in
+        login)
+            local agent_arg="" do_all=0
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                    --agent) agent_arg="$2"; shift 2 ;;
+                    --all) do_all=1; shift ;;
+                    *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+                esac
+            done
+            if [ "$do_all" -eq 1 ]; then
+                for a in "${all_agents[@]}"; do _auth_login_agent "$a"; done
+            elif [ -n "$agent_arg" ]; then
+                _auth_login_agent "$agent_arg"
+            else
+                printf 'usage: agentrun auth login --agent NAME|--all\n' >&2; exit 2
+            fi
+            ;;
+        import)
+            local agent_arg="" do_all=0
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                    --agent) agent_arg="$2"; shift 2 ;;
+                    --all) do_all=1; shift ;;
+                    *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+                esac
+            done
+            if [ "$do_all" -eq 1 ]; then
+                for a in "${all_agents[@]}"; do _auth_import_agent "$a"; done
+            elif [ -n "$agent_arg" ]; then
+                _auth_import_agent "$agent_arg"
+            else
+                printf 'usage: agentrun auth import --agent NAME|--all\n' >&2; exit 2
+            fi
+            ;;
+        status)
+            local agent_arg=""
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                    --agent) agent_arg="$2"; shift 2 ;;
+                    *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+                esac
+            done
+            if [ -n "$agent_arg" ]; then
+                _auth_status_agent "$agent_arg"
+            else
+                for a in "${all_agents[@]}"; do _auth_status_agent "$a"; done
+            fi
+            ;;
+        reset)
+            local agent_arg=""
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                    --agent) agent_arg="$2"; shift 2 ;;
+                    *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+                esac
+            done
+            [ -n "$agent_arg" ] || { printf 'usage: agentrun auth reset --agent NAME\n' >&2; exit 2; }
+            local store_dir
+            store_dir="$(auth_store_root)/$agent_arg"
+            if [ -d "$store_dir" ]; then
+                rm -rf "$store_dir"
+                printf '[OK] auth store removed: %s\n' "$store_dir"
+            else
+                printf '[OK] auth store not found (nothing to reset): %s\n' "$store_dir"
+            fi
+            ;;
+        *)
+            printf 'unknown auth subcommand: %s\n' "$subcmd" >&2; exit 2
+            ;;
+    esac
+}
+
+main() {
+    local command="${1:-}"
+    [ -n "$command" ] || { usage; exit 2; }
+    shift || true
+    case "$command" in
+        agents) command_agents "$@" ;;
+        sync-claude) command_sync_claude "$@" ;;
+        sync-antigravity) command_sync_antigravity "$@" ;;
+        sync-codex) command_sync_codex "$@" ;;
+        validate) command_validate "$@" ;;
+        doctor) command_doctor "$@" ;;
+        dry-run)
+            [ "$#" -ge 1 ] && is_profile "$1" || { usage; exit 2; }
+            local mode="$1"; shift
+            command_dry_run "$mode" "$@"
+            ;;
+        assist|experiment|campaign|review|multi-review) command_prepare "$command" "$@" ;;
+        smoke-test) command_smoke_test "$@" ;;
+        init-goal) command_init_goal "$@" ;;
+        status) command_status "$@" ;;
+        logs) command_logs "$@" ;;
+        tail) command_logs --follow ;;
+        list-runs) command_list_runs "$@" ;;
+        open-run) command_open_run "$@" ;;
+        verify-run) command_verify_run "$@" ;;
+        auth) command_auth "$@" ;;
+        -h|--help|help) usage ;;
+        *) printf 'unknown command: %s\n' "$command" >&2; usage; exit 2 ;;
+    esac
+}
+
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] || main "$@"

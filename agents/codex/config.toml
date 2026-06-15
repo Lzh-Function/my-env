@@ -1,0 +1,19 @@
+[runtime]
+default_profile = "assist"
+run_directory = ".agent-runs"
+
+[safety]
+allow_git_push = false
+allow_direct_sbatch_from_capsule = false
+allow_pip = false
+
+[tui]
+  status_line = [
+    "model-with-reasoning",
+    "project-root",
+    "context-remaining",
+    "git-branch",
+    "five-hour-limit",
+    "weekly-limit",
+  ]
+
