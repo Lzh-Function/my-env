@@ -19,16 +19,17 @@ Usage:
   agentrun assist --submit [options] PROMPT # batch via sbatch (non-interactive)
   agentrun experiment|campaign|review|multi-review [options] PROMPT  # prepare, or batch with --submit
   agentrun smoke-test [--agent NAME]
+  agentrun init-goal
   agentrun status
   agentrun logs [--follow]
   agentrun tail
   agentrun list-runs
   agentrun open-run [RUN_DIR]
   agentrun verify-run [RUN_DIR|--run-id RUN_ID]
+  agentrun auth login --agent NAME|--all
   agentrun auth import --agent NAME|--all
   agentrun auth status [--agent NAME]
   agentrun auth reset --agent NAME
-  agentrun auth conflicts
 
 Options:
   --agent NAME        antigravity, claude, or codex
@@ -245,8 +246,6 @@ make_layout() {
     : > "$run_dir/artifacts/environment.txt"
     : > "$run_dir/artifacts/container.txt"
     : > "$run_dir/artifacts/data_manifest.txt"
-    : > "$run_dir/artifacts/auth_baseline.tsv"
-    : > "$run_dir/artifacts/auth_refresh_report.tsv"
     : > "$run_dir/artifacts/proposed_next.yaml"
     : > "$run_dir/artifacts/proposed_train.sbatch"
     : > "$run_dir/reviews/claude.md"
@@ -256,16 +255,11 @@ make_layout() {
     : > "$run_dir/reviews/summary.md"
     printf '{}\n' > "$run_dir/reviews/disagreements.json"
     : > "$run_dir/reviews/final_recommendation.md"
-    printf 'auth refresh check not run yet\n' > "$run_dir/live/auth_refresh_detected.txt"
     ln -sfn "$(basename "$run_dir")" "$(dirname "$run_dir")/latest"
 }
 
 auth_store_root() {
     printf '%s/.agentrun/auth' "$HOME"
-}
-
-auth_conflicts_root() {
-    printf '%s/.agentrun/auth-conflicts' "$HOME"
 }
 
 stage_auth_file() {
@@ -315,171 +309,6 @@ copy_auth_credentials() {
                 cp "$run_dir/container_config/settings.json" "$run_dir/home/.gemini/antigravity-cli/settings.json"
             ;;
     esac
-    write_auth_refresh_checker "$run_dir"
-    write_auth_baseline "$run_dir" "$agent"
-}
-
-hash_auth_file() {
-    local path="$1"
-    if [ ! -f "$path" ]; then
-        printf 'MISSING'
-        return 0
-    fi
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$path" | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$path" | awk '{print $1}'
-    else
-        cksum "$path" | awk '{print $1 ":" $2}'
-    fi
-}
-
-append_auth_baseline() {
-    local baseline="$1" agent="$2" rel="$3" store_path="$4" run_path="$5"
-    [ -f "$run_path" ] || return 0
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$agent" \
-        "$rel" \
-        "$store_path" \
-        "$run_path" \
-        "$(hash_auth_file "$store_path")" \
-        "$(hash_auth_file "$run_path")" >> "$baseline"
-}
-
-write_auth_baseline() {
-    local run_dir="$1" agent="$2"
-    local baseline="$run_dir/artifacts/auth_baseline.tsv"
-    local store_root
-    store_root="$(auth_store_root)"
-    printf 'agent\trelative_path\tstore_path\trun_path\tstore_hash_at_stage\trun_hash_at_stage\n' > "$baseline"
-    case "$agent" in
-        claude)
-            append_auth_baseline "$baseline" "$agent" ".claude/.credentials.json" \
-                "$store_root/claude/.claude/.credentials.json" \
-                "$run_dir/home/.claude/.credentials.json"
-            append_auth_baseline "$baseline" "$agent" ".claude.json" \
-                "$store_root/claude/.claude.json" \
-                "$run_dir/home/.claude.json"
-            ;;
-        codex)
-            append_auth_baseline "$baseline" "$agent" ".codex/auth.json" \
-                "$store_root/codex/.codex/auth.json" \
-                "$run_dir/home/.codex/auth.json"
-            ;;
-        antigravity)
-            append_auth_baseline "$baseline" "$agent" ".gemini/antigravity-cli/antigravity-oauth-token" \
-                "$store_root/antigravity/.gemini/antigravity-cli/antigravity-oauth-token" \
-                "$run_dir/home/.gemini/antigravity-cli/antigravity-oauth-token"
-            append_auth_baseline "$baseline" "$agent" ".gemini/antigravity-cli/installation_id" \
-                "$store_root/antigravity/.gemini/antigravity-cli/installation_id" \
-                "$run_dir/home/.gemini/antigravity-cli/installation_id"
-            ;;
-    esac
-}
-
-write_auth_refresh_checker() {
-    local run_dir="$1"
-    local run_dir_q conflicts_root_q run_id_q
-    run_dir_q="$(printf '%q' "$run_dir")"
-    conflicts_root_q="$(printf '%q' "$(auth_conflicts_root)")"
-    run_id_q="$(printf '%q' "$(basename "$run_dir")")"
-    cat > "$run_dir/auth_refresh_check.sh" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-RUN_DIR=$run_dir_q
-CONFLICTS_ROOT=$conflicts_root_q
-RUN_ID=$run_id_q
-
-hash_auth_file() {
-    local path="\$1"
-    if [ ! -f "\$path" ]; then
-        printf 'MISSING'
-        return 0
-    fi
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "\$path" | awk '{print \$1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "\$path" | awk '{print \$1}'
-    else
-        cksum "\$path" | awk '{print \$1 ":" \$2}'
-    fi
-}
-
-baseline="\$RUN_DIR/artifacts/auth_baseline.tsv"
-report="\$RUN_DIR/artifacts/auth_refresh_report.tsv"
-summary="\$RUN_DIR/live/auth_refresh_detected.txt"
-printf 'agent\trelative_path\trun_changed\tstore_changed\tpromoted\tconflict\tstore_path\trun_path\tstore_hash_at_stage\tstore_hash_now\trun_hash_at_stage\trun_hash_now\n' > "\$report"
-
-if [ ! -s "\$baseline" ]; then
-    printf 'no staged auth files found; auth refresh check skipped\n' > "\$summary"
-    exit 0
-fi
-
-exit_code="\$(cat "\$RUN_DIR/live/exit_code.txt" 2>/dev/null | tr -d '[:space:]')"
-
-checked=0
-run_changed_count=0
-promoted_count=0
-conflict_count=0
-while IFS=\$'\t' read -r agent rel store_path run_path store_hash_at_stage run_hash_at_stage; do
-    [ "\$agent" = "agent" ] && continue
-    [ -n "\$agent" ] || continue
-    checked=\$((checked + 1))
-    store_hash_now="\$(hash_auth_file "\$store_path")"
-    run_hash_now="\$(hash_auth_file "\$run_path")"
-    run_changed=0
-    store_changed=0
-    promoted=0
-    conflict=0
-    if [ "\$run_hash_now" != "\$run_hash_at_stage" ]; then
-        run_changed=1
-        run_changed_count=\$((run_changed_count + 1))
-    fi
-    if [ "\$store_hash_now" != "\$store_hash_at_stage" ]; then
-        store_changed=1
-    fi
-    if [ "\$run_changed" -eq 1 ]; then
-        if [ "\$exit_code" = "0" ] && [ "\$store_changed" -eq 0 ]; then
-            mkdir -p "\$(dirname "\$store_path")"
-            cp "\$run_path" "\$store_path"
-            chmod 600 "\$store_path"
-            promoted=1
-            promoted_count=\$((promoted_count + 1))
-        else
-            conflict_dir="\$CONFLICTS_ROOT/\$RUN_ID/\$agent/\$(dirname "\$rel")"
-            mkdir -p "\$conflict_dir"
-            cp "\$run_path" "\$CONFLICTS_ROOT/\$RUN_ID/\$agent/\$rel"
-            conflict=1
-            conflict_count=\$((conflict_count + 1))
-        fi
-    fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "\$agent" "\$rel" "\$run_changed" "\$store_changed" "\$promoted" "\$conflict" \
-        "\$store_path" "\$run_path" \
-        "\$store_hash_at_stage" "\$store_hash_now" \
-        "\$run_hash_at_stage" "\$run_hash_now" >> "\$report"
-done < "\$baseline"
-
-if [ "\$promoted_count" -gt 0 ] && [ "\$conflict_count" -eq 0 ]; then
-    printf 'AUTH_REFRESH_PROMOTED: %s auth file(s) promoted to store. See artifacts/auth_refresh_report.tsv.\n' "\$promoted_count" > "\$summary"
-elif [ "\$conflict_count" -gt 0 ] && [ "\$promoted_count" -eq 0 ]; then
-    printf 'AUTH_REFRESH_CONFLICT: %s auth file(s) could not be promoted (exit_code=%s or store changed). Saved to %s/%s/. See artifacts/auth_refresh_report.tsv.\n' "\$conflict_count" "\$exit_code" "\$CONFLICTS_ROOT" "\$RUN_ID" > "\$summary"
-elif [ "\$promoted_count" -gt 0 ] && [ "\$conflict_count" -gt 0 ]; then
-    printf 'AUTH_REFRESH_DETECTED: %s promoted, %s conflict(s) (exit_code=%s). Conflicts saved to %s/%s/. See artifacts/auth_refresh_report.tsv.\n' "\$promoted_count" "\$conflict_count" "\$exit_code" "\$CONFLICTS_ROOT" "\$RUN_ID" > "\$summary"
-elif [ "\$run_changed_count" -gt 0 ]; then
-    printf 'AUTH_REFRESH_DETECTED: %s auth file(s) changed but no action taken. See artifacts/auth_refresh_report.tsv.\n' "\$run_changed_count" > "\$summary"
-else
-    printf 'No auth refresh detected across %s auth file(s). See artifacts/auth_refresh_report.tsv.\n' "\$checked" > "\$summary"
-fi
-EOF
-    chmod +x "$run_dir/auth_refresh_check.sh"
-}
-
-run_auth_refresh_check() {
-    local run_dir="$1"
-    if [ -x "$run_dir/auth_refresh_check.sh" ]; then
-        bash "$run_dir/auth_refresh_check.sh" || true
-    fi
 }
 
 generate_container_config() {
@@ -563,6 +392,7 @@ home_config_mounts() {
             printf ' --bind %q:%q:ro' "$settings" "/home/sandbox/.claude/settings.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.claude/hooks"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/skills" "/home/sandbox/.claude/skills"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/statusline.sh" "/home/sandbox/.claude/statusline.sh"
             ;;
         codex)
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/requirements.toml" "/etc/codex/requirements.toml"
@@ -575,6 +405,7 @@ home_config_mounts() {
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/config/hooks.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.gemini/antigravity-cli/hooks"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/skills" "/home/sandbox/.gemini/antigravity-cli/skills"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/statusline.sh" "/home/sandbox/.gemini/antigravity-cli/statusline.sh"
             ;;
     esac
 }
@@ -583,7 +414,7 @@ write_prompt() {
     local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5"
     
     local prefix=""
-    if [ "$agent" = "antigravity" ] && { [ "$mode" = "experiment" ] || [ "$mode" = "campaign" ]; }; then
+    if [ "$mode" = "experiment" ] || [ "$mode" = "campaign" ]; then
         prefix="/goal "
     fi
 
@@ -614,7 +445,7 @@ Required final outputs:
 Host repo: $repo
 EOF
     if [ -n "${GOAL:-}" ]; then
-        printf '\nGoal file: %s\n' "$GOAL" >> "$path"
+        printf '\nGoal file: /runs/goal.yaml\n' >> "$path"
     fi
     if [ -n "${REVIEWERS:-}" ]; then
         printf '\nReviewers: %s\n' "$REVIEWERS" >> "$path"
@@ -693,8 +524,7 @@ EOF
 #SBATCH --error=$run_dir/live/slurm.err
 
 set -euo pipefail
-_auth_refresh_check() { [ -x $run_dir/auth_refresh_check.sh ] && bash $run_dir/auth_refresh_check.sh || true; }
-_cleanup_home() { _auth_refresh_check; rm -rf $run_dir/home; }
+_cleanup_home() { rm -rf $run_dir/home; }
 trap _cleanup_home EXIT
 printf '%s\n' "\${SLURM_JOB_ID:-}" > $run_dir/live/slurm_job_id.txt
 env | sort > $run_dir/artifacts/environment.txt
@@ -1569,13 +1399,12 @@ command_prepare() {
     printf 'prepared run: %s\n' "$run_dir"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         copy_auth_credentials "$run_dir" "$AGENT"
-        trap "run_auth_refresh_check $(printf '%q' "$run_dir"); rm -rf $(printf '%q' "$run_dir/home")" EXIT INT TERM
+        trap "rm -rf $(printf '%q' "$run_dir/home")" EXIT INT TERM
         local srun_args=("--time=$TIME_LIMIT" "--mem=$(profile_mem "$mode")" "--cpus-per-task=$(profile_cpus "$mode")" "--pty")
         [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
         [ "$GPUS" -gt 0 ] && srun_args+=("--gres=gpu:$GPUS")
         printf 'launching interactive session via srun %s\n' "${srun_args[*]}"
         srun "${srun_args[@]}" "$run_dir/apptainer_exec.sh" || true
-        run_auth_refresh_check "$run_dir"
         rm -rf "$run_dir/home"
         trap - EXIT INT TERM
         return 0
@@ -1647,6 +1476,16 @@ EOF
     if [ "$submit" -eq 1 ]; then
         sbatch "$run_dir/submit.sbatch"
     fi
+}
+
+command_init_goal() {
+    local dest="goal.yaml"
+    if [ -e "$dest" ]; then
+        printf 'error: %s already exists\n' "$dest" >&2
+        exit 2
+    fi
+    cp "$ROOT_DIR/templates/goal.yaml" "$dest"
+    printf 'created %s\n' "$dest"
 }
 
 command_status() {
@@ -1788,6 +1627,38 @@ _auth_import_file() {
     printf '[IMPORTED] %s -> %s\n' "$host_path" "$store_path"
 }
 
+_auth_login_agent() {
+    local agent="$1"
+    local cmd
+    case "$agent" in
+        claude)
+            cmd="claude auth login"
+            ;;
+        codex)
+            cmd="codex login"
+            ;;
+        antigravity)
+            printf 'note: agy has no dedicated login subcommand.\n'
+            printf 'Starting agy interactively. Authenticate, then type /exit to quit.\n\n'
+            cmd="agy"
+            ;;
+        *)
+            printf '[FAIL] unknown agent: %s\n' "$agent" >&2
+            return 1
+            ;;
+    esac
+    printf '\n[auth login] %s\n' "$agent"
+    local cli
+    cli="$(printf '%s' "$cmd" | awk '{print $1}')"
+    if ! command -v "$cli" >/dev/null 2>&1; then
+        printf '[FAIL] CLI not found on host: %s\n' "$cli" >&2
+        return 1
+    fi
+    eval "$cmd"
+    printf '\n[auth import] syncing to store\n'
+    _auth_import_agent "$agent"
+}
+
 _auth_import_agent() {
     local agent="$1"
     local store_root
@@ -1844,10 +1715,27 @@ _auth_status_agent() {
 
 command_auth() {
     local subcmd="${1:-}"
-    [ -n "$subcmd" ] || { printf 'usage: agentrun auth import|status|reset|conflicts\n' >&2; exit 2; }
+    [ -n "$subcmd" ] || { printf 'usage: agentrun auth login|import|status|reset\n' >&2; exit 2; }
     shift || true
     local all_agents=("claude" "codex" "antigravity")
     case "$subcmd" in
+        login)
+            local agent_arg="" do_all=0
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                    --agent) agent_arg="$2"; shift 2 ;;
+                    --all) do_all=1; shift ;;
+                    *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+                esac
+            done
+            if [ "$do_all" -eq 1 ]; then
+                for a in "${all_agents[@]}"; do _auth_login_agent "$a"; done
+            elif [ -n "$agent_arg" ]; then
+                _auth_login_agent "$agent_arg"
+            else
+                printf 'usage: agentrun auth login --agent NAME|--all\n' >&2; exit 2
+            fi
+            ;;
         import)
             local agent_arg="" do_all=0
             while [ "$#" -gt 0 ]; do
@@ -1897,25 +1785,6 @@ command_auth() {
                 printf '[OK] auth store not found (nothing to reset): %s\n' "$store_dir"
             fi
             ;;
-        conflicts)
-            local conflicts_root
-            conflicts_root="$(auth_conflicts_root)"
-            if [ ! -d "$conflicts_root" ]; then
-                printf 'no auth conflicts directory: %s\n' "$conflicts_root"
-                return 0
-            fi
-            local any=0
-            while IFS= read -r -d '' entry; do
-                any=1
-                local run_id
-                run_id="$(basename "$entry")"
-                printf '%s\n' "$run_id"
-                find "$entry" -type f | sort | while IFS= read -r f; do
-                    printf '  %s\n' "${f#$entry/}"
-                done
-            done < <(find "$conflicts_root" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
-            [ "$any" -eq 1 ] || printf 'no auth conflicts recorded\n'
-            ;;
         *)
             printf 'unknown auth subcommand: %s\n' "$subcmd" >&2; exit 2
             ;;
@@ -1940,6 +1809,7 @@ main() {
             ;;
         assist|experiment|campaign|review|multi-review) command_prepare "$command" "$@" ;;
         smoke-test) command_smoke_test "$@" ;;
+        init-goal) command_init_goal "$@" ;;
         status) command_status "$@" ;;
         logs) command_logs "$@" ;;
         tail) command_logs --follow ;;

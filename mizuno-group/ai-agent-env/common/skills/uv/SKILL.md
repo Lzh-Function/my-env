@@ -172,7 +172,7 @@ source .venv/bin/activate
 # Good
 uv run <command>
 ```
-- **except when .venv is not at current directory**, e.g., in a parent directory or subdirectory, then you can use `source path/to/.venv/bin/activate` to activate the environment.
+- **except when .venv is not at current directory**, e.g., in a parent directory or subdirectory, then you can just use `source path/to/.venv/bin/activate` to activate the environment.
 
 ## Documentation
 

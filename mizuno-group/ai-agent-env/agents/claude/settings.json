@@ -170,5 +170,10 @@
   "effortLevel": "high",
   "theme": "dark",
   "showTurnDuration": true,
-  "skipDangerousModePermissionPrompt": true
+  "skipDangerousModePermissionPrompt": true,
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh",
+    "padding": 1
+  }
 }

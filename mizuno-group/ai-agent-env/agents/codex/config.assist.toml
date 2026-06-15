@@ -17,3 +17,13 @@ required = [
   "artifacts/git_diff.patch",
   "artifacts/metrics.json",
 ]
+
+[tui]
+  status_line = [
+    "model-with-reasoning",
+    "project-root",
+    "context-remaining",
+    "git-branch",
+    "five-hour-limit",
+    "weekly-limit",
+  ]

@@ -39,22 +39,31 @@ agentrun doctor --agent <name>   # 使用する agent を指定する（例: cla
 
 ### 認証情報のセットアップ（初回必須）
 
-`agentrun` は各 agent の認証情報を `$HOME/.agentrun/auth/<agent>/` に管理します。
+`agentrun` は各 agent の認証情報を `$HOME/.agentrun/auth/<agent>/`（auth store）に管理します。
 
-インポートの前提として、**使用する agent CLI を host にインストールし、ログイン（認証）を済ませておく**必要があります。`auth import` は host 上の認証ファイルを store にコピーするため、元ファイルが存在しない場合はスキップされます。
+**推奨: `auth login`** を使うと、host 上での agent ログインと store へのインポートを一括で実行します。
 
-使用する agent だけをインポートする場合は `--agent NAME` を指定します。
+```bash
+agentrun auth login --agent claude
+agentrun auth login --agent codex
+agentrun auth login --agent antigravity   # agy を対話起動して認証後 /exit
+agentrun auth status
+```
+
+全 agent をまとめてログイン・インポートする場合:
+
+```bash
+agentrun auth login --all
+agentrun auth status
+```
+
+`auth login` が使用する host 側 CLI (`claude`, `codex`, `agy`) は `$PATH` に存在する必要があります。インストール先の例: `$HOME/.local/bin/`
+
+**既に host 側でログイン済みの場合** は `auth import` のみ実行します。
 
 ```bash
 agentrun auth import --agent claude
 agentrun auth status --agent claude
-```
-
-全 agent をまとめてインポートすることもできます。host に存在しないファイルは自動スキップされます。
-
-```bash
-agentrun auth import --all
-agentrun auth status
 ```
 
 `auth import` がコピーするファイルは以下の通りです。
@@ -69,29 +78,11 @@ antigravity $HOME/.gemini/antigravity-cli/antigravity-oauth-token
 
 以後のジョブは store から認証情報を staging します。host 側の元ファイルは参照されません（store に存在しない場合のみ fallback します）。
 
-OAuth token が agent 実行中に refresh された場合、`agentrun` は以下のルールで自動処理します。
-
-- ジョブが正常終了（exit code 0）かつ store が未変更 → store に昇格 (`AUTH_REFRESH_PROMOTED`)
-- ジョブが失敗、または store が別ジョブに更新済み → `$HOME/.agentrun/auth-conflicts/<run_id>/` に保存 (`AUTH_REFRESH_CONFLICT`)
-
-store の状態確認:
-
-```bash
-agentrun auth status
-agentrun auth status --agent codex
-```
-
-保存されたコンフリクトの確認:
-
-```bash
-agentrun auth conflicts
-```
-
 store をリセットして再インポートする場合:
 
 ```bash
 agentrun auth reset --agent codex
-agentrun auth import --agent codex
+agentrun auth login --agent codex
 ```
 
 Codex を対話式に起動する例:
@@ -385,6 +376,53 @@ agentrun assist --submit --agent codex --partition <partition> --repo . "Your pr
 
 agent が required artifacts を作らない場合、Slurm job が成功しても `verify-run` は失敗することがあります。特に `artifacts/report.md` は verify 対象です。
 
+## Goal ファイル
+
+`--goal` に渡す `goal.yaml` は、agent に与える目標の構造化定義です。
+
+### テンプレートの生成
+
+```bash
+agentrun init-goal
+```
+
+カレントディレクトリに `goal.yaml` を生成します。`goal.yaml` が既に存在する場合はエラーになります。テンプレートの実体は `templates/goal.yaml` です。
+
+生成されたファイルの主なフィールド:
+
+```yaml
+project: my-project          # run の識別名
+mode: experiment             # assist / experiment / campaign / review / multi-review
+goal:
+  objective: |               # エージェントへの目標説明（自由記述）
+    ...
+  success_criteria:          # 達成条件リスト（agent が参照する）
+    - ...
+budgets:
+  walltime: "01:00:00"
+  cpu_cores: 2
+  memory: 8G
+  max_trials: 1
+  max_disk_gb: 10
+outputs:
+  required:                  # verify-run が期待するパス
+    - artifacts/report.md
+    - artifacts/metrics.json
+    - live/command_log.jsonl
+```
+
+`agentrun` は `goal.yaml` の内容を validate しません。フィールドは agent が参照する情報であり、`outputs.required` は verify-run の期待値として使われます（現状は agentrun 固定の required list が優先されます）。
+
+### --goal の使い方
+
+`--goal` を指定すると、`goal.yaml` がコンテナ内の `/runs/goal.yaml` としてアクセスできます。agent はプロンプト内の `Goal file: /runs/goal.yaml` という記述を手がかりとしてファイルを読み込みます。
+
+```bash
+agentrun init-goal
+# goal.yaml を編集してから投入
+agentrun experiment --submit --agent codex --partition <partition> --goal goal.yaml "Run the goal"
+```
+
 ## Experiment / Campaign / Review / Multi-review
 
 これらは profile と expected artifacts を持つ single-agent batch run です。
@@ -453,7 +491,6 @@ live/slurm.out          Slurm stdout。submitted job の標準出力は主にこ
 live/slurm.err          Slurm stderr
 live/command_log.jsonl  command/hook 実行ログ用 JSONL。空でも異常とは限らない
 live/events.jsonl       run event 用 JSONL。空でも異常とは限らない
-live/auth_refresh_detected.txt auth file が run 中に更新されたかの要約
 live/exit_code.txt      Slurm job 内 command の exit code
 live/slurm_job_id.txt   Slurm job id。prepare-only では空のことがある
 ```
@@ -467,8 +504,6 @@ artifacts/metrics.json          metrics / summary metadata。初期値は {}
 artifacts/environment.txt       submitted job の environment dump
 artifacts/container.txt         apptainer version など container 情報
 artifacts/data_manifest.txt     入出力データの manifest 用。未使用なら空
-artifacts/auth_baseline.tsv     auth file copy 直後の hash 記録
-artifacts/auth_refresh_report.tsv job 終了時の auth file hash 比較結果
 artifacts/proposed_next.yaml    experiment/campaign の次アクション提案
 artifacts/proposed_train.sbatch campaign の training job 提案
 ```
@@ -491,7 +526,7 @@ reviews/final_recommendation.md   final recommendation
 
 初期作成直後や prepare-only run では、空ファイル、`{}`、`initialized` だけのファイルが多く残ります。これは異常ではありません。`--submit` した job が進むにつれて `live/` と `artifacts/` が更新されます。
 
-### Auth Refresh Detection と自動昇格
+### 認証ストアの仕組み
 
 agent auth file は `$HOME/.agentrun/auth/<agent>/`（store）から `<run_dir>/home/` に staging され、container には `/home/sandbox` として渡されます。host `$HOME` の auth file を直接 read/write mount する構成ではありません。store にファイルがない場合のみ host `$HOME` に fallback します。
 
@@ -505,21 +540,11 @@ antigravity $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity
             $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
 ```
 
-`agentrun` は staging 直後の store hash と run home hash を `artifacts/auth_baseline.tsv` に記録します。job 終了時に run home 側の hash を比較し、変化があれば以下のルールで処理します。
+各 agent CLI は `refresh_token` を持っているため、job 実行中に access token が期限切れになっても自動更新されます。token の期限が切れた・認証が失われた場合は、再ログインして store を更新します。
 
-```text
-exit code 0 かつ store が未変更  -> store に昇格 (AUTH_REFRESH_PROMOTED)
-それ以外                         -> $HOME/.agentrun/auth-conflicts/<run_id>/ に保存 (AUTH_REFRESH_CONFLICT)
+```bash
+agentrun auth login --agent NAME
 ```
-
-処理結果は以下に残ります。
-
-```text
-live/auth_refresh_detected.txt
-artifacts/auth_refresh_report.tsv
-```
-
-`AUTH_REFRESH_CONFLICT` が出た場合は `agentrun auth conflicts` でコンフリクトの内容を確認し、必要であれば手動で store に反映してください。
 
 `.agent-runs/latest` は最後に prepare された run を指します。未完了 run や prepared-only run を指す場合があります。
 
@@ -745,6 +770,20 @@ agentrun sync-antigravity
 agentrun validate
 ```
 
+### デフォルト Skill の解説
+
+`common/skills/` に含まれる skill とその役割を以下に示します。各 skill は `SKILL.md` として格納されており、フロントマター (`name:` / `description:`) によって agent がいつ参照すべきかを判断します。
+
+| skill | 説明 |
+| ----- | ---- |
+| `uv` | Python プロジェクト・パッケージ・スクリプトの管理に使う `uv` コマンドのガイドです。`uv add`/`uv run`/`uvx` の使い分けや、venv の作成・管理方法を説明します。 |
+| `agentrun-contract` | agentrun カプセル内で agent が書くべき出力ファイル・フォーマット・書き込みタイミングの一覧です。`live/status.json`・`artifacts/report.md` などの必須ファイルとモード別の追加要件、`verify-run` が何をチェックするかを記述します。 |
+| `git-worktree` | git worktree の基本操作と、agentrun の `git_worktree_auto_create.py` hook によるブランチ作成時の自動 worktree 生成の挙動を説明します。コンテナ内でのパス制約（sibling ディレクトリは bind されない）についても記述します。 |
+| `slurm` | カプセル内部から見える SLURM 環境変数・実行可能なコマンド（`squeue`/`sinfo`/`scontrol`）と、`sbatch`/`salloc` がブロックされる理由を説明します。代替手段として `artifacts/proposed_train.sbatch` を書く方法も記述します。 |
+| `ruff` | Python ファイルを編集した後の lint・format 手順です。`post_edit_format.py` hook はフォーマッタを自動実行しないため、`uvx ruff check --fix` と `uvx ruff format` を手動実行する必要があることを説明します。 |
+| `experiment-report` | `experiment`・`campaign`・`review`・`multi-review` 各モードで書くべきモード固有ファイルのスキーマです。`artifacts/proposed_next.yaml`・`artifacts/proposed_train.sbatch`・`reviews/review_findings.json`・`reviews/disagreements.json` などのフォーマットを記述します。 |
+| `pytest` | `uv run pytest` を使ったテスト実行パターンと、テスト結果を `/runs/live/stdout.log` および `artifacts/metrics.json` に記録する方法を説明します。システム Python がないコンテナ環境での注意点も含みます。 |
+
 ## Hooks Maintenance
 
 hook 実装は共通です。
@@ -857,11 +896,21 @@ auth store (`$HOME/.agentrun/auth/`) と host 両方にファイルが存在し�
 
 ```bash
 agentrun auth status
-agentrun auth import --all
-agentrun doctor --all
+agentrun auth login --agent NAME
+agentrun doctor --agent NAME
 ```
 
 auth file は repository に保存しません。store から `<run_dir>/home/` へ staging され、job 終了後に削除されます。
+
+### token が期限切れ・認証エラーが出る
+
+job の途中や次回実行時に認証エラーになった場合は、再ログインして store を更新します。
+
+```bash
+agentrun auth login --agent NAME
+```
+
+`auth login` は host CLI でのログイン（`claude auth login` / `codex login` / `agy` 対話起動）と store へのインポートを一括で実行します。
 
 ### `dry-run` の directory が存在しない
 
@@ -913,15 +962,16 @@ Codex の実効 hook 経路は `/etc/codex/requirements.toml` です。Claude �
 agentrun agents
 agentrun validate
 agentrun doctor [--agent NAME|--all]
+agentrun auth login --agent NAME|--all
 agentrun auth import --agent NAME|--all
 agentrun auth status [--agent NAME]
 agentrun auth reset --agent NAME
-agentrun auth conflicts
 agentrun dry-run MODE [options] PROMPT
 agentrun assist [options] PROMPT
 agentrun assist --submit [options] PROMPT
 agentrun experiment|campaign|review|multi-review [options] PROMPT
 agentrun smoke-test [--agent NAME] [--submit]
+agentrun init-goal
 agentrun sync-claude
 agentrun sync-codex
 agentrun sync-antigravity

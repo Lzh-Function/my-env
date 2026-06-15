@@ -15,5 +15,9 @@
   "theme": "dark",
   "language": "japanese",
   "spinnerTipsEnabled": false,
-  "showTurnDuration": true
+  "showTurnDuration": true,
+  "statusLine": {
+    "type": "command",
+    "command": "~/.gemini/antigravity-cli/statusline.sh"
+  }
 }

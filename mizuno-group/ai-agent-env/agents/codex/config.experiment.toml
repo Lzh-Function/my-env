@@ -20,3 +20,13 @@ required = [
   "artifacts/metrics.json",
   "artifacts/proposed_next.yaml",
 ]
+
+[tui]
+  status_line = [
+    "model-with-reasoning",
+    "project-root",
+    "context-remaining",
+    "git-branch",
+    "five-hour-limit",
+    "weekly-limit",
+  ]

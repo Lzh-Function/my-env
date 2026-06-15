@@ -38,16 +38,24 @@ srun --partition <partition> runtime/apptainer/build-images.sh --run agent   # a
 
 ### 認証情報のセットアップ（初回必須）
 
-インポートの前提として、**使用する agent CLI を host にインストールし、ログイン（認証）を済ませておく**必要があります。`auth import` は host 上の認証ファイルを agentrun の auth store にコピーするため、元ファイルが存在しない場合はスキップされます。
+使用する agent CLI を host にインストールした後、`auth login` でログインと store へのインポートを一括実行します。
 
 ```bash
-# 使用する agent だけをインポートする場合
+# 使用する agent ごとにログイン（ブラウザ / 対話認証）と store 登録をまとめて実行
+agentrun auth login --agent claude
+agentrun auth login --agent codex
+agentrun auth login --agent antigravity   # agy 対話起動 → 認証後 /exit
+
+# または全 agent を一括で
+agentrun auth login --all
+agentrun auth status
+```
+
+既に host 側でログイン済みの場合は `auth import` のみでも構いません。
+
+```bash
 agentrun auth import --agent claude
 agentrun auth status --agent claude
-
-# 全 agent をまとめてインポートする場合（host に存在しないファイルは自動スキップ）
-agentrun auth import --all
-agentrun auth status
 ```
 
 ### 動作確認
