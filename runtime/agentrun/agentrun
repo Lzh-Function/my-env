@@ -467,7 +467,12 @@ apptainer_command() {
     [ "$gpus" -gt 0 ] && nv=" --nv"
     local cmd
     cmd="$(agent_command "$agent" "$mode" "$launch")"
-    printf 'apptainer exec%s --containall --cleanenv --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q:ro' \
+    printf 'export APPTAINERENV_SLURM_JOB_ID="${SLURM_JOB_ID:-}"\n'
+    printf 'export APPTAINERENV_SLURMD_NODENAME="${SLURMD_NODENAME:-}"\n'
+    printf 'export APPTAINERENV_SLURM_CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-}"\n'
+    printf 'export APPTAINERENV_SLURM_MEM_PER_NODE="${SLURM_MEM_PER_NODE:-}"\n'
+    printf 'export APPTAINERENV_SLURM_GPUS="${SLURM_GPUS:-}"\n'
+    printf 'apptainer exec%s --containall --cleanenv --pwd /workspace --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q:ro' \
         "$nv" \
         "$run_dir/home" "/home/sandbox" \
         "$repo" "/workspace:rw" \
