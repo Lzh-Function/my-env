@@ -70,14 +70,14 @@ agentrun doctor --agent claude   # 使用する agent を指定する
 ### 実行例
 
 ```bash
-# 対話式 assist（TTY が必要）
-agentrun assist --agent codex --partition <partition> "Hello"
+# 対話式 assist（TTY が必要。PROMPT 不要 — agent 起動後にユーザーが指示を与える）
+agentrun assist --agent codex --partition <partition>
 
-# batch 投入（TTY 不要）
+# batch 投入（TTY 不要。PROMPT 必須）
 agentrun assist --submit --agent codex --partition <partition> "Hello"
 
 # dry-run（副作用なし、plan 表示のみ）
-agentrun dry-run assist --agent codex --partition <partition> --show-mounts "Hello"
+agentrun dry-run assist --agent codex --partition <partition> --show-mounts
 ```
 
 `--partition` は環境変数 `AGENTRUN_SLURM_PARTITION` でも指定できます。

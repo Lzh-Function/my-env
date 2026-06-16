@@ -15,7 +15,7 @@ Usage:
   agentrun validate
   agentrun doctor [--agent NAME|--all]
   agentrun dry-run MODE [options] PROMPT
-  agentrun assist [options] PROMPT          # interactive PTY session via srun --pty
+  agentrun assist [options] [PROMPT]        # interactive PTY session via srun --pty; PROMPT ignored if given
   agentrun assist --submit [options] PROMPT # batch via sbatch (non-interactive)
   agentrun experiment|campaign|review|multi-review [options] PROMPT  # prepare, or batch with --submit
   agentrun smoke-test [--agent NAME]
@@ -36,6 +36,8 @@ Options:
   --repo PATH         repository path, default: .
   --goal PATH         goal.yaml path
   --gpus N            GPU count, default: 0
+  --mem SIZE          memory (e.g. 16000M), default comes from the selected profile
+  --cpus N            CPU core count, default comes from the selected profile
   --time HH:MM:SS     walltime, default comes from the selected profile
   --partition NAME    Slurm partition, default: AGENTRUN_SLURM_PARTITION or cluster default
   --bind SRC:DST[:OPTIONS]  extra bind mount (repeatable); OPTIONS: ro|rw
@@ -127,8 +129,8 @@ profile_mem() {
 
 profile_time() {
     case "$1" in
-        experiment) printf '04:00:00\n' ;;
-        campaign) printf '04:00:00\n' ;;
+        experiment) printf '08:00:00\n' ;;
+        campaign) printf '08:00:00\n' ;;
         multi-review) printf '02:00:00\n' ;;
         *) printf '01:00:00\n' ;;
     esac
@@ -412,8 +414,25 @@ home_config_mounts() {
 }
 
 write_prompt() {
-    local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5"
-    
+    local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5" launch="${6:-batch}"
+
+    if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
+        cat > "$path" <<EOF
+You are running inside an HPC agent capsule.
+
+Mode: $mode
+Agent: $agent
+Workspace: /workspace
+Runs: /runs
+Scratch: /scratch
+Config: /home/sandbox/ai-agent-config
+Host repo: $repo
+
+Please follow the user's instructions.
+EOF
+        return 0
+    fi
+
     local prefix=""
     if [ "$mode" = "experiment" ] || [ "$mode" = "campaign" ]; then
         prefix="/goal "
@@ -494,15 +513,15 @@ apptainer_command() {
 write_plan() {
     local mode="$1" agent="$2" repo="$3" goal="$4" gpus="$5" time_limit="$6" prompt="$7" run_dir="$8" partition="${9:-}" launch="${10:-batch}"
     local cpus mem
-    cpus="$(profile_cpus "$mode")"
-    mem="$(profile_mem "$mode")"
+    cpus="${CPUS:-$(profile_cpus "$mode")}"
+    mem="${MEM:-$(profile_mem "$mode")}"
     repo="$(cd "$repo" && pwd)"
     make_layout "$run_dir"
     generate_container_config "$run_dir" "$agent" "$mode"
     if [ "$agent" = "codex" ]; then
         link_codex_shared_assets "$run_dir"
     fi
-    write_prompt "$run_dir/prompt.txt" "$mode" "$agent" "$repo" "$prompt"
+    write_prompt "$run_dir/prompt.txt" "$mode" "$agent" "$repo" "$prompt" "$launch"
     if [ -n "$goal" ]; then
         cp "$goal" "$run_dir/goal.yaml"
     else
@@ -1286,6 +1305,8 @@ parse_run_args() {
     REPO="."
     GOAL=""
     GPUS=0
+    MEM=""
+    CPUS=""
     TIME_LIMIT=""
     PARTITION="${AGENTRUN_SLURM_PARTITION:-}"
     SHOW_MOUNTS=0
@@ -1302,6 +1323,8 @@ parse_run_args() {
             --repo) REPO="$2"; shift 2 ;;
             --goal) GOAL="$2"; shift 2 ;;
             --gpus) GPUS="$2"; shift 2 ;;
+            --mem) MEM="$2"; shift 2 ;;
+            --cpus) CPUS="$2"; shift 2 ;;
             --time) TIME_LIMIT="$2"; shift 2 ;;
             --partition) PARTITION="$2"; shift 2 ;;
             --bind) EXTRA_BINDS+=("$2"); shift 2 ;;
@@ -1315,7 +1338,6 @@ parse_run_args() {
             *) PROMPT="${PROMPT:+$PROMPT }$1"; shift ;;
         esac
     done
-    [ -n "$PROMPT" ] || { printf 'missing prompt\n' >&2; exit 2; }
     local bind
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
         local src="${bind%%:*}"
@@ -1326,6 +1348,12 @@ parse_run_args() {
 command_dry_run() {
     local mode="$1"; shift
     parse_run_args "$@"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
+        [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
+        PROMPT=""
+    else
+        [ -n "$PROMPT" ] || { printf 'missing prompt\n' >&2; exit 2; }
+    fi
     local id run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
     REPO="$(cd "$REPO" && pwd)"
@@ -1337,14 +1365,14 @@ command_dry_run() {
             printf 'launch_method: sbatch\n'
             printf 'sbatch_args:'
             slurm_partition_args "$PARTITION"
-            printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
+            printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
             [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
             printf '\n'
         else
             printf 'launch_method: srun --pty (interactive)\n'
             printf 'slurm_command: srun'
             srun_partition_args "$PARTITION"
-            printf ' --time=%s --mem=%s --cpus-per-task=%s --pty' "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
+            printf ' --time=%s --mem=%s --cpus-per-task=%s --pty' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
             [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
             printf '\n'
         fi
@@ -1352,7 +1380,7 @@ command_dry_run() {
         printf 'launch_method: sbatch\n'
         printf 'sbatch_args:'
         slurm_partition_args "$PARTITION"
-        printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "$(profile_mem "$mode")" "$(profile_cpus "$mode")"
+        printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
         [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
         printf '\n'
     fi
@@ -1384,7 +1412,7 @@ command_dry_run() {
     printf '\n--- prompt.txt ---\n'
     local _ptmp
     _ptmp="$(mktemp)"
-    write_prompt "$_ptmp" "$mode" "$AGENT" "$REPO" "$PROMPT"
+    write_prompt "$_ptmp" "$mode" "$AGENT" "$REPO" "$PROMPT" "$launch"
     cat "$_ptmp"
     rm -f "$_ptmp"
     printf '\n--- expected artifacts ---\n'
@@ -1409,6 +1437,12 @@ command_dry_run() {
 command_prepare() {
     local mode="$1"; shift
     parse_run_args "$@"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
+        [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
+        PROMPT=""
+    else
+        [ -n "$PROMPT" ] || { printf 'missing prompt\n' >&2; exit 2; }
+    fi
     local id run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
     id="$(run_id "$mode" "$AGENT")"
@@ -1422,7 +1456,7 @@ command_prepare() {
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         copy_auth_credentials "$run_dir" "$AGENT"
         trap "rm -rf $(printf '%q' "$run_dir/home")" EXIT INT TERM
-        local srun_args=("--time=$TIME_LIMIT" "--mem=$(profile_mem "$mode")" "--cpus-per-task=$(profile_cpus "$mode")" "--pty")
+        local srun_args=("--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty")
         [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
         [ "$GPUS" -gt 0 ] && srun_args+=("--gres=gpu:$GPUS")
         printf 'launching interactive session via srun %s\n' "${srun_args[*]}"

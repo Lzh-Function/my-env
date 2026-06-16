@@ -88,8 +88,8 @@ agentrun auth login --agent codex
 Codex を対話式に起動する例:
 
 ```bash
-agentrun dry-run assist --agent codex --partition <partition> --show-mounts "Hello"
-agentrun assist --agent codex --partition <partition> "Hello"
+agentrun dry-run assist --agent codex --partition <partition> --show-mounts
+agentrun assist --agent codex --partition <partition>
 ```
 
 TTY が不要な batch 実行にする場合:
@@ -102,7 +102,7 @@ agentrun assist --submit --agent codex --partition <partition> "Hello"
 
 ```bash
 export AGENTRUN_SLURM_PARTITION=<partition>
-agentrun assist --agent codex "Hello"
+agentrun assist --agent codex
 ```
 
 `AGENTRUN_SLURM_PARTITION` も `--partition` も指定しない場合、`agentrun` は partition 指定を Slurm に渡しません。その場合は cluster 側の default partition に従います。
@@ -113,15 +113,15 @@ agentrun assist --agent codex "Hello"
 assist        01:00:00
 review        01:00:00
 multi-review  02:00:00
-experiment    04:00:00
-campaign      04:00:00
+experiment    08:00:00
+campaign      08:00:00
 smoke-test    00:10:00
 ```
 
 時間を変える場合は `--time HH:MM:SS` を指定します。
 
 ```bash
-agentrun assist --agent codex --partition <partition> --time 02:00:00 "Hello"
+agentrun assist --agent codex --partition <partition> --time 02:00:00
 ```
 
 ### 任意ディレクトリで実行した場合の挙動
@@ -132,7 +132,7 @@ agentrun assist --agent codex --partition <partition> --time 02:00:00 "Hello"
 
 ```bash
 cd /path/to/my-project
-agentrun assist --agent codex --partition <partition> "Hello"
+agentrun assist --agent codex --partition <partition>
 ```
 
 主な対応関係は以下です。
@@ -150,7 +150,7 @@ host: <ai-agent-env repository>                   -> container: /home/sandbox/ai
 
 ```bash
 cd /path/to/run-ledger
-agentrun assist --agent codex --partition <partition> --repo /path/to/my-project "Hello"
+agentrun assist --agent codex --partition <partition> --repo /path/to/my-project
 ```
 
 この場合:
@@ -320,7 +320,7 @@ store にも host にも存在しない場合のみ `[FAIL]` になります。s
 ## Dry Run
 
 ```bash
-agentrun dry-run assist --agent codex --partition <partition> --show-mounts "Hello"
+agentrun dry-run assist --agent codex --partition <partition> --show-mounts
 ```
 
 `dry-run` は agent を起動せず、以下を表示します。
@@ -344,15 +344,17 @@ agentrun dry-run assist --agent codex --partition <partition> --show-mounts "Hel
 対話式 assist:
 
 ```bash
-agentrun assist --agent codex --partition <partition> --repo . "Your prompt"
+agentrun assist --agent codex --partition <partition> --repo .
 ```
+
+PROMPT は不要です。agent は「ユーザーの指示に従ってください」という最小限の初期コンテキストで起動し、その後はユーザーがインタラクティブに指示を与えます。PROMPT を指定した場合は無視され、警告が表示されます。
 
 挙動:
 
 - `srun --pty` を使う
 - run directory を作成する
 - auth を run home に stage する
-- Apptainer 内で interactive agent CLI を起動する
+- Apptainer 内で interactive agent CLI を起動する（初期プロンプトは最小システムコンテキストのみ）
 - 終了時に `<run_dir>/home/` を削除する
 
 TTY が必要です。TTY のない環境では `assist --submit` を使います。
@@ -473,7 +475,7 @@ multi-review  live/status.json, reviews/*.md, reviews/disagreements.json, review
 
 ```text
 capsule.yaml        run id, mode, agent, repo, goal などの run metadata
-prompt.txt          agent CLI に渡す最終 prompt
+prompt.txt          agent CLI に渡す初期プロンプト（interactive assist は最小システムコンテキストのみ）
 goal.yaml           --goal 指定があればその copy。未指定なら mode/agent だけの最小 metadata
 apptainer_exec.sh   container を起動する実コマンド
 submit.sbatch       sbatch 用 script。--submit 時はこれを投入する
@@ -967,7 +969,7 @@ agentrun auth import --agent NAME|--all
 agentrun auth status [--agent NAME]
 agentrun auth reset --agent NAME
 agentrun dry-run MODE [options] PROMPT
-agentrun assist [options] PROMPT
+agentrun assist [options] [PROMPT]
 agentrun assist --submit [options] PROMPT
 agentrun experiment|campaign|review|multi-review [options] PROMPT
 agentrun smoke-test [--agent NAME] [--submit]
@@ -990,6 +992,8 @@ agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 --repo PATH               /workspace に mount する repository。default: .
 --goal PATH               goal.yaml
 --gpus N                  GPU count。default: 0
+--mem SIZE                メモリ量（例: 16000M）。省略時は profile default
+--cpus N                  CPU コア数。省略時は profile default
 --time HH:MM:SS           walltime override。省略時は profile default
 --partition NAME          Slurm partition。省略時は AGENTRUN_SLURM_PARTITION、未設定なら cluster default
 --bind SRC:DST[:OPTIONS]  追加 bind mount（複数指定可）。OPTIONS: ro|rw
