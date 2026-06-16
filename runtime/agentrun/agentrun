@@ -33,17 +33,18 @@ Usage:
 
 Options:
   --agent NAME        antigravity, claude, or codex
-  --repo PATH        repository path, default: .
-  --goal PATH        goal.yaml path
-  --gpus N           GPU count, default: 0
-  --time HH:MM:SS    walltime, default comes from the selected profile
-  --partition NAME   Slurm partition, default: AGENTRUN_SLURM_PARTITION or cluster default
-  --reviewers LIST   reviewer agents
-  --target-diff PATH review target diff
+  --repo PATH         repository path, default: .
+  --goal PATH         goal.yaml path
+  --gpus N            GPU count, default: 0
+  --time HH:MM:SS     walltime, default comes from the selected profile
+  --partition NAME    Slurm partition, default: AGENTRUN_SLURM_PARTITION or cluster default
+  --bind SRC:DST[:OPTIONS]  extra bind mount (repeatable); OPTIONS: ro|rw
+  --reviewers LIST    reviewer agents
+  --target-diff PATH  review target diff
   --target-report PATH review target report
-  --agents LIST      multi-review agents
-  --show-mounts      print mount plan in dry-run
-  --submit           submit prepared run with sbatch
+  --agents LIST       multi-review agents
+  --show-mounts       print mount plan in dry-run
+  --submit            submit prepared run with sbatch
 USAGE
 }
 
@@ -482,6 +483,11 @@ apptainer_command() {
         "$ROOT_DIR" "/home/sandbox/ai-agent-config"
     auth_mounts "$agent"
     home_config_mounts "$agent" "$run_dir" "$mode"
+    local bind
+    for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
+        local src="${bind%%:*}" rest="${bind#*:}"
+        printf ' --bind %q:%s' "$src" "$rest"
+    done
     printf ' %q bash -l -c %q\n' "$image" "$cmd"
 }
 
@@ -1289,6 +1295,7 @@ parse_run_args() {
     TARGET_REPORT=""
     REQUESTED_AGENTS=""
     PROMPT=""
+    EXTRA_BINDS=()
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --agent) AGENT="$2"; shift 2 ;;
@@ -1297,6 +1304,7 @@ parse_run_args() {
             --gpus) GPUS="$2"; shift 2 ;;
             --time) TIME_LIMIT="$2"; shift 2 ;;
             --partition) PARTITION="$2"; shift 2 ;;
+            --bind) EXTRA_BINDS+=("$2"); shift 2 ;;
             --show-mounts) SHOW_MOUNTS=1; shift ;;
             --reviewers) REVIEWERS="$2"; shift 2 ;;
             --target-diff) TARGET_DIFF="$2"; shift 2 ;;
@@ -1308,6 +1316,11 @@ parse_run_args() {
         esac
     done
     [ -n "$PROMPT" ] || { printf 'missing prompt\n' >&2; exit 2; }
+    local bind
+    for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
+        local src="${bind%%:*}"
+        [ -e "$src" ] || { printf 'bind source does not exist: %s\n' "$src" >&2; exit 2; }
+    done
 }
 
 command_dry_run() {
@@ -1356,6 +1369,10 @@ command_dry_run() {
     printf '  %s/scratch:/scratch:rw\n' "$run_dir"
     printf '  %s/cache:/cache:rw\n' "$run_dir"
     printf '  %s:/home/sandbox/ai-agent-config:ro\n' "$ROOT_DIR"
+    local bind
+    for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
+        printf '  %s\n' "$bind"
+    done
     if [ "$SHOW_MOUNTS" -eq 1 ]; then
         auth_mounts "$AGENT"
         printf '\n'

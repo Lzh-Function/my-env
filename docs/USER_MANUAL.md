@@ -986,16 +986,17 @@ agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 主要 option:
 
 ```text
---agent NAME        antigravity, claude, codex
---repo PATH         /workspace に mount する repository。default: .
---goal PATH         goal.yaml
---gpus N            GPU count。default: 0
---time HH:MM:SS     walltime override。省略時は profile default
---partition NAME    Slurm partition。省略時は AGENTRUN_SLURM_PARTITION、未設定なら cluster default
---reviewers LIST    prompt に追記される reviewer list
---target-diff PATH  prompt に追記される review target diff
---target-report PATH prompt に追記される review target report
---agents LIST       prompt に追記される requested agents
---show-mounts       dry-run で agent 固有 mount も表示
---submit            prepare 後に sbatch する
+--agent NAME              antigravity, claude, codex
+--repo PATH               /workspace に mount する repository。default: .
+--goal PATH               goal.yaml
+--gpus N                  GPU count。default: 0
+--time HH:MM:SS           walltime override。省略時は profile default
+--partition NAME          Slurm partition。省略時は AGENTRUN_SLURM_PARTITION、未設定なら cluster default
+--bind SRC:DST[:OPTIONS]  追加 bind mount（複数指定可）。OPTIONS: ro|rw
+--reviewers LIST          prompt に追記される reviewer list
+--target-diff PATH        prompt に追記される review target diff
+--target-report PATH      prompt に追記される review target report
+--agents LIST             prompt に追記される requested agents
+--show-mounts             dry-run で agent 固有 mount も表示
+--submit                  prepare 後に sbatch する
 ```
