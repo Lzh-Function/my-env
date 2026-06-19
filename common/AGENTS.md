@@ -32,7 +32,8 @@ These rules apply to Antigravity, Claude Code, Codex, and any future agent launc
 - Write live state under `/runs/live`.
 - Write final outputs under `/runs/artifacts`.
 - Required live outputs: `status.json`, `heartbeat.txt`, `stdout.log`, `stderr.log`, `command_log.jsonl`.
-- Required final outputs: `report.md`, `git_diff.patch`, `metrics.json`.
+- Required final outputs: `report.md`, `git_diff.patch`, `metrics.json`, `run_title.txt`.
+- `run_title.txt`: write a ~5-word summary of what you accomplished (single line, lowercase, e.g. `trained cifar baseline model`).
 - The `status` field in `status.json` must be one of: `"success"`, `"failed"`, `"cancelled"`, `"timeout"`. Use `"success"` when all required outputs are written without error.
 
 # BASE GUIDELINES

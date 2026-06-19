@@ -251,6 +251,7 @@ make_layout() {
     : > "$run_dir/artifacts/data_manifest.txt"
     : > "$run_dir/artifacts/proposed_next.yaml"
     : > "$run_dir/artifacts/proposed_train.sbatch"
+    : > "$run_dir/artifacts/run_title.txt"
     : > "$run_dir/reviews/claude.md"
     : > "$run_dir/reviews/codex.md"
     : > "$run_dir/reviews/antigravity.md"
@@ -461,6 +462,9 @@ Required final outputs:
 - /runs/artifacts/report.md
 - /runs/artifacts/git_diff.patch
 - /runs/artifacts/metrics.json
+- /runs/artifacts/run_title.txt
+
+Run title: At the very end, write a ~5-word summary of what you accomplished (single line, lowercase, e.g. "trained cifar baseline model") to /runs/artifacts/run_title.txt.
 
 Host repo: $repo
 EOF
@@ -512,10 +516,12 @@ apptainer_command() {
 
 write_plan() {
     local mode="$1" agent="$2" repo="$3" goal="$4" gpus="$5" time_limit="$6" prompt="$7" run_dir="$8" partition="${9:-}" launch="${10:-batch}"
-    local cpus mem
+    local cpus mem _runs_dir _run_base
     cpus="${CPUS:-$(profile_cpus "$mode")}"
     mem="${MEM:-$(profile_mem "$mode")}"
     repo="$(cd "$repo" && pwd)"
+    _runs_dir="$(dirname "$run_dir")"
+    _run_base="$(basename "$run_dir")"
     make_layout "$run_dir"
     generate_container_config "$run_dir" "$agent" "$mode"
     if [ "$agent" = "codex" ]; then
@@ -568,6 +574,15 @@ if [ "\$rc" -eq 0 ]; then
     printf '{"status":"success","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\${SLURM_JOB_ID:-}" > $run_dir/live/status.json
 else
     printf '{"status":"failed","exit_code":"%s","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\$rc" "\${SLURM_JOB_ID:-}" > $run_dir/live/status.json
+fi
+if [ -f "$run_dir/artifacts/run_title.txt" ]; then
+    _title="\$(tr ' ' '-' < "$run_dir/artifacts/run_title.txt" | tr -cd 'a-zA-Z0-9_-')"
+    if [ -n "\$_title" ]; then
+        rm -rf "$run_dir/home"
+        trap - EXIT
+        mv "$run_dir" "$_runs_dir/${_run_base}_\${_title}"
+        ln -sfn "${_run_base}_\${_title}" "$_runs_dir/latest"
+    fi
 fi
 exit "\$rc"
 EOF

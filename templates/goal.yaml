@@ -15,8 +15,8 @@ goal:
     Describe what the agent should accomplish in plain language.
     Be specific: include the repository, the task, and any constraints.
   success_criteria:
-    - artifacts/report.md is written with findings
-    - artifacts/metrics.json contains a result summary
+    - runs/artifacts/report.md is written with findings
+    - runs/artifacts/metrics.json contains a result summary
 
 budgets:
   walltime: "01:00:00"
@@ -27,6 +27,6 @@ budgets:
 
 outputs:
   required:
-    - artifacts/report.md
-    - artifacts/metrics.json
-    - live/command_log.jsonl
+    - runs/artifacts/report.md
+    - runs/artifacts/metrics.json
+    - runs/live/command_log.jsonl

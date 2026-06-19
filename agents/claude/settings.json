@@ -171,6 +171,7 @@
   "theme": "dark",
   "showTurnDuration": true,
   "skipDangerousModePermissionPrompt": true,
+  "remoteControlAtStartup": true,
   "statusLine": {
     "type": "command",
     "command": "~/.claude/statusline.sh",
