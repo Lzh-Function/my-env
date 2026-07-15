@@ -212,13 +212,16 @@ cat >> "$BRC" <<'BASH'
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
-# zj: 毎回ユニークな名前で新規セッションを起動(前回状態を引き継がない)
+# zellij work env
 zj() {
   case "$1" in
-    py)  cd ~/workspace/Python-Work && zellij --layout py  --session "py-$(date +%s)"  ;;
-    tex) cd ~/workspace/LaTeX-Work  && zellij --layout tex --session "tex-$(date +%s)" ;;
+    py)  cd ~/workspace/Python-Work && zellij --layout py  attach --create "py-$(date +%s)"  ;;
+    tex) cd ~/workspace/LaTeX-Work  && zellij --layout tex attach --create "tex-$(date +%s)" ;;
     *)   zellij "$@" ;;
   esac
+}
+zjdel() {
+  zellij kill-all-sessions
 }
 # ---------------------------------------------------------------------------
 BASH
