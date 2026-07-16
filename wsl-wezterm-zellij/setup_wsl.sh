@@ -3,8 +3,10 @@
 #  WSL(Ubuntu)側セットアップ  ── まっさらな WSL から zj py まで一気通貫
 #
 #  役割分担:
-#    - 設定ファイル(.bashrc / nvim / zellij)は chezmoi(my-env リポジトリ)が展開
-#    - このスクリプトは「ツール導入 + Docker + chezmoi apply + workspace + build」
+#    - 設定ファイル(.bashrc / nvim / zellij / Dockerfile / compose.yml)は chezmoi(my-env リポジトリ)が展開
+#    - Neovim / Zellij は Python-Work・LaTeX-Work の各コンテナ内にも入っており、
+#      `zj py` / `zj tex` はホストではなくコンテナの中で編集・実行する(plain だけホスト実行)
+#    - このスクリプトは「ツール導入 + Docker + chezmoi apply + uv 初期化 + build」
 #
 #  非対話性: sudo パスワードと、SSH 鍵未登録時の GitHub 登録待ち以外は無人。
 #
@@ -127,7 +129,7 @@ sourceDir = "$HOME/.local/share/chezmoi/$SOURCE_SUB"
 EOF
 echo "source-path = $(chezmoi source-path)"
 
-log "chezmoi apply(Linux では wezterm 以外=.bashrc / nvim / zellij を展開)"
+log "chezmoi apply(Linux では wezterm 以外=.bashrc / nvim / zellij / workspace 下の Dockerfile 等を展開)"
 chezmoi apply
 
 # apply 後に配置された .bashrc の PATH 等を今のシェルにも反映
@@ -153,69 +155,20 @@ chmod +x "$HOME/.local/bin/pdfview"
 log "Neovim プラグインを同期(LSP/treesitter は初回 zj py 起動時に自動完了)"
 nvim --headless "+Lazy! sync" +qa 2>/dev/null || warn "Lazy sync で警告。続行します。"
 
-# --- 10. workspace とプロジェクトファイル ----------------------------------
-log "作業ディレクトリとプロジェクトファイルを作成"
-mkdir -p "$PYDIR" "$TEXDIR"
-
-cat > "$PYDIR/Dockerfile" <<'DOCKER'
-# syntax=docker/dockerfile:1
-FROM python:3.13.14-slim
-COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/
-ENV UV_PYTHON_PREFERENCE=only-system \
-    UV_LINK_MODE=copy
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /workspace/Python-Work
-CMD ["sleep", "infinity"]
-DOCKER
-
-cat > "$PYDIR/compose.yml" <<'YAML'
-services:
-  app:
-    build:
-      context: .
-    working_dir: /workspace/Python-Work
-    volumes:
-      - ${HOME}/workspace/Python-Work:/workspace/Python-Work
-    tty: true
-    stdin_open: true
-YAML
-
-printf '.venv\n.git\n__pycache__\n*.pyc\n' > "$PYDIR/.dockerignore"
-
-cat > "$TEXDIR/Dockerfile" <<'DOCKER'
-FROM texlive/texlive:latest
-WORKDIR /workspace/LaTeX-Work
-CMD ["sleep", "infinity"]
-DOCKER
-
-cat > "$TEXDIR/compose.yml" <<'YAML'
-services:
-  tex:
-    build:
-      context: .
-    working_dir: /workspace/LaTeX-Work
-    volumes:
-      - ${HOME}/workspace/LaTeX-Work:/workspace/LaTeX-Work
-    tty: true
-    stdin_open: true
-YAML
-
-printf '$pdf_mode = 4;\n$lualatex = "lualatex %%O %%S";\n' > "$TEXDIR/.latexmkrc"
-
-# --- 11. Docker ビルド + uv 初期化 -----------------------------------------
+# --- 10. Docker ビルド + uv 初期化 -----------------------------------------
+# Dockerfile / compose.yml / .dockerignore / .latexmkrc は chezmoi apply(手順7)で
+# 既に $PYDIR / $TEXDIR に展開済み(このリポジトリの workspace/ 以下が source)。
 docker version >/dev/null 2>&1 || die "docker が使えません(手順2の起動/権限を確認)。"
 
 log "Python コンテナをビルド"
 ( cd "$PYDIR" && docker compose build && docker compose up -d )
 
 log "コンテナ内で uv 初期化(.venv 生成)"
-( cd "$PYDIR" && docker compose exec -T app bash -lc '
+( cd "$PYDIR" && docker compose exec -T py bash -lc '
     cd /workspace/Python-Work
     [ -f pyproject.toml ] || uv init --bare 2>/dev/null || uv init --name py-app
     uv add numpy pandas scikit-learn
-' ) || warn "uv 初期化で警告。後で: cd ~/workspace/Python-Work && docker compose exec app uv add numpy pandas scikit-learn"
+' ) || warn "uv 初期化で警告。後で: cd ~/workspace/Python-Work && docker compose exec py uv add numpy pandas scikit-learn"
 
 log "LaTeX(texlive)コンテナをビルド(イメージが大きいので初回は時間がかかります)"
 ( cd "$TEXDIR" && docker compose build && docker compose up -d )
@@ -230,10 +183,11 @@ cat <<'DONE'
 
   その後:
 
-      zj py     # work タブ(上/左=nvim・下/右=コンテナ内シェル)+ monitor タブ(btop)
-      zj tex    # LaTeX プロジェクト(サブフォルダ運用: latexmk -pvc -cd <文書名>/main.tex)
+      zj py     # コンテナに入り、コンテナ内 zellij で work タブ(nvim+shell)+ monitor タブ(btop)
+      zj tex    # 同上、LaTeX-Work コンテナ側(latexmk -pvc -cd <文書名>/main.tex)
+      zj        # plain レイアウト(ホスト側 nvim、コンテナなしの軽い編集用)
 
-  初回 zj py 起動時に LazyVim が LSP と treesitter を自動インストールします
-  (1回だけ時間がかかります)。
+  初回 zj py / zj tex 起動時に、コンテナ内の LazyVim が LSP と treesitter を
+  自動インストールします(1回だけ時間がかかります)。
 
 DONE

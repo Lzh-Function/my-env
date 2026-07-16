@@ -1,0 +1,298 @@
+# ~/.bashrc: executed by bash(1) for non-login shells.
+# see /usr/share/doc/bash/examples/startup-files (in the package bash-doc)
+# for examples
+
+# If not running interactively, don't do anything
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+# don't put duplicate lines or lines starting with space in the history.
+# See bash(1) for more options
+HISTCONTROL=ignoreboth
+
+# append to the history file, don't overwrite it
+shopt -s histappend
+
+# for setting history length see HISTSIZE and HISTFILESIZE in bash(1)
+HISTSIZE=1000
+HISTFILESIZE=2000
+
+# check the window size after each command and, if necessary,
+# update the values of LINES and COLUMNS.
+shopt -s checkwinsize
+
+# If set, the pattern "**" used in a pathname expansion context will
+# match all files and zero or more directories and subdirectories.
+#shopt -s globstar
+
+# make less more friendly for non-text input files, see lesspipe(1)
+[ -x /usr/bin/lesspipe ] && eval "$(SHELL=/bin/sh lesspipe)"
+
+# set variable identifying the chroot you work in (used in the prompt below)
+if [ -z "${debian_chroot:-}" ] && [ -r /etc/debian_chroot ]; then
+    debian_chroot=$(cat /etc/debian_chroot)
+fi
+
+# set a fancy prompt (non-color, unless we know we "want" color)
+case "$TERM" in
+    xterm-color|*-256color) color_prompt=yes;;
+esac
+
+# uncomment for a colored prompt, if the terminal has the capability; turned
+# off by default to not distract the user: the focus in a terminal window
+# should be on the output of commands, not on the prompt
+#force_color_prompt=yes
+
+if [ -n "$force_color_prompt" ]; then
+    if [ -x /usr/bin/tput ] && tput setaf 1 >&/dev/null; then
+	# We have color support; assume it's compliant with Ecma-48
+	# (ISO/IEC-6429). (Lack of such support is extremely rare, and such
+	# a case would tend to support setf rather than setaf.)
+	color_prompt=yes
+    else
+	color_prompt=
+    fi
+fi
+
+if [ "$color_prompt" = yes ]; then
+    PS1='${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+else
+    PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w\$ '
+fi
+unset color_prompt force_color_prompt
+
+# If this is an xterm set the title to user@host:dir
+case "$TERM" in
+xterm*|rxvt*)
+    PS1="\[\e]0;${debian_chroot:+($debian_chroot)}\u@\h: \w\a\]$PS1"
+    ;;
+*)
+    ;;
+esac
+
+# enable color support of ls and also add handy aliases
+if [ -x /usr/bin/dircolors ]; then
+    test -r ~/.dircolors && eval "$(dircolors -b ~/.dircolors)" || eval "$(dircolors -b)"
+    alias ls='ls --color=auto'
+    #alias dir='dir --color=auto'
+    #alias vdir='vdir --color=auto'
+
+    alias grep='grep --color=auto'
+    alias fgrep='fgrep --color=auto'
+    alias egrep='egrep --color=auto'
+fi
+
+# colored GCC warnings and errors
+#export GCC_COLORS='error=01;31:warning=01;35:note=01;36:caret=01;32:locus=01:quote=01'
+
+# some more ls aliases
+alias ll='ls -alF'
+alias la='ls -A'
+alias l='ls -CF'
+
+# Add an "alert" alias for long running commands.  Use like so:
+#   sleep 10; alert
+alias alert='notify-send --urgency=low -i "$([ $? = 0 ] && echo terminal || echo error)" "$(history|tail -n1|sed -e '\''s/^\s*[0-9]\+\s*//;s/[;&|]\s*alert$//'\'')"'
+
+# Alias definitions.
+# You may want to put all your additions into a separate file like
+# ~/.bash_aliases, instead of adding them here directly.
+# See /usr/share/doc/bash-doc/examples in the bash-doc package.
+
+if [ -f ~/.bash_aliases ]; then
+    . ~/.bash_aliases
+fi
+
+# enable programmable completion features (you don't need to enable
+# this, if it's already enabled in /etc/bash.bashrc and /etc/profile
+# sources /etc/bash.bashrc).
+if ! shopt -oq posix; then
+  if [ -f /usr/share/bash-completion/bash_completion ]; then
+    . /usr/share/bash-completion/bash_completion
+  elif [ -f /etc/bash_completion ]; then
+    . /etc/bash_completion
+  fi
+fi
+. "$HOME/.cargo/env"
+
+# setup-wsl-dev:bashrc -------------------------------------------------------
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+# zellij work env
+{{- if env "WSL_DISTRO_NAME" }}
+# WSL host: py/tex run Neovim + Zellij *inside* the project container (see workspace/*/Dockerfile).
+# "" (plain): host-side Zellij + host-side Neovim, for quick edits without a container.
+#
+# Optional agent tab: zj [py|tex|] [claude|codex|both]
+#   - py/tex: agent tab is 3rd tab (after work, monitor); runs via the container's
+#     /host-home bind mount (HOME override) to reuse the WSL host's claude/codex
+#     auth, config and skills instead of re-authenticating inside the container.
+#   - plain: agent tab is 2nd tab (after edit); runs claude/codex directly on the host.
+#   - "both": agent tab is split horizontally, top 50% claude / bottom 50% codex.
+#   - The layout (incl. agent tab) is only used when *creating* a session; if a
+#     same-named session is already running, zj just reattaches to it as-is
+#     (same as the base zj/zjdel behavior) -- zjdel first if you need to change agents.
+_zj_layout() {
+  local mode="$1" agent="$2"
+  local home_prefix="" claude_bin="claude" codex_bin="codex" home_env=""
+  if [ "$mode" = "py" ] || [ "$mode" = "tex" ]; then
+    # Container mounts the WSL host's $HOME at the same absolute path (see
+    # workspace/*/compose.yml), since claude/codex are symlinks with absolute
+    # targets back into $HOME -- a remapped path would leave them dangling.
+    home_prefix="$HOME"
+    claude_bin="$home_prefix/.local/bin/claude"
+    codex_bin="$home_prefix/.local/bin/codex"
+    home_env="HOME=$home_prefix "
+  fi
+
+  local agent_tab=""
+  case "$agent" in
+    claude)
+      agent_tab="    tab name=\"agent\" {
+        pane name=\"claude\" {
+            command \"bash\"
+            args \"-c\" \"${home_env}exec ${claude_bin}\"
+        }
+    }"
+      ;;
+    codex)
+      agent_tab="    tab name=\"agent\" {
+        pane name=\"codex\" {
+            command \"bash\"
+            args \"-c\" \"${home_env}exec ${codex_bin}\"
+        }
+    }"
+      ;;
+    both)
+      agent_tab="    tab name=\"agent\" {
+        pane split_direction=\"horizontal\" {
+            pane size=\"50%\" name=\"claude\" {
+                command \"bash\"
+                args \"-c\" \"${home_env}exec ${claude_bin}\"
+            }
+            pane size=\"50%\" name=\"codex\" {
+                command \"bash\"
+                args \"-c\" \"${home_env}exec ${codex_bin}\"
+            }
+        }
+    }"
+      ;;
+  esac
+
+  case "$mode" in
+    py|tex)
+      cat <<KDL
+layout {
+    default_tab_template {
+        children
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+    tab name="work" {
+        pane split_direction="horizontal" {
+            pane size="75%" name="editor" {
+                command "nvim"
+            }
+            pane name="shell" {
+                command "bash"
+            }
+        }
+    }
+    tab name="monitor" {
+        pane name="btop" {
+            command "btop"
+        }
+    }
+$agent_tab
+}
+KDL
+      ;;
+    "")
+      cat <<KDL
+layout {
+    default_tab_template {
+        children
+        pane size=1 borderless=true {
+            plugin location="zellij:compact-bar"
+        }
+    }
+    tab name="edit" {
+        pane split_direction="horizontal" {
+            pane size="75%" name="editor" {
+                command "bash"
+                args "-c" "nvim"
+            }
+            pane size="25%" name="shell"
+        }
+    }
+$agent_tab
+}
+KDL
+      ;;
+  esac
+}
+zj() {
+  local mode="$1" agent="$2"
+  case "$mode" in
+    py|tex|"") ;;
+    claude|codex|both) agent="$mode"; mode="" ;;
+    *) zellij "$@"; return ;;
+  esac
+  case "$agent" in
+    ""|claude|codex|both) ;;
+    *) echo "usage: zj [py|tex] [claude|codex|both]" >&2; return 1 ;;
+  esac
+
+  case "$mode" in
+    py)
+      cd ~/workspace/Python-Work || return
+      docker compose up -d || return
+      if [ -n "$agent" ]; then
+        docker compose exec -it py zellij --layout-string "$(_zj_layout py "$agent")" attach --create py
+      else
+        docker compose exec -it py zellij --layout py attach --create py
+      fi
+      ;;
+    tex)
+      cd ~/workspace/LaTeX-Work || return
+      docker compose up -d || return
+      if [ -n "$agent" ]; then
+        docker compose exec -it tex zellij --layout-string "$(_zj_layout tex "$agent")" attach --create tex
+      else
+        docker compose exec -it tex zellij --layout tex attach --create tex
+      fi
+      ;;
+    "")
+      if [ -n "$agent" ]; then
+        zellij --layout-string "$(_zj_layout "" "$agent")" attach --create plain
+      else
+        zellij --layout plain attach --create plain
+      fi
+      ;;
+  esac
+}
+zjdel() {
+  case "$1" in
+    py)  (cd ~/workspace/Python-Work && docker compose exec -it py zellij kill-all-sessions -y) ;;
+    tex) (cd ~/workspace/LaTeX-Work  && docker compose exec -it tex zellij kill-all-sessions -y) ;;
+    "")  zellij kill-all-sessions -y ;;
+    *)   echo "usage: zjdel [py|tex]" >&2; return 1 ;;
+  esac
+}
+{{- else }}
+# Plain SSH server (no Docker/workspace here): host-side Zellij + Neovim only.
+zj() {
+  case "$1" in
+    "") zellij --layout plain attach --create plain ;;
+    *)   zellij "$@" ;;
+  esac
+}
+zjdel() {
+  zellij kill-all-sessions -y
+}
+{{- end }}
+# ---------------------------------------------------------------------------

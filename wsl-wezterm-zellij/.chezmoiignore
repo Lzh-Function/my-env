@@ -1,6 +1,13 @@
 {{- if eq .chezmoi.os "windows" }}
 *
-!dot_wezterm.lua
+!.wezterm.lua
 {{- else if eq .chezmoi.os "linux" }}
-dot_wezterm.lua
+.wezterm.lua
+README.md
+setup_windows.ps1
+setup_wsl.sh
+setup_ssh.sh
+{{- if not (env "WSL_DISTRO_NAME") }}
+workspace
+{{- end }}
 {{- end }}

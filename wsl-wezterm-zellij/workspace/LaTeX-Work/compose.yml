@@ -1,0 +1,22 @@
+services:
+  tex:
+    build:
+      context: .
+    working_dir: /workspace/LaTeX-Work
+    volumes:
+      - ${HOME}/workspace/LaTeX-Work:/workspace/LaTeX-Work
+      - ${HOME}/.config/nvim:/root/.config/nvim
+      - nvim-data:/root/.local/share/nvim
+      - nvim-state:/root/.local/state/nvim
+      - nvim-cache:/root/.cache/nvim
+      # WSL host $HOME (rw, same path both sides -- claude/codex are symlinks with
+      # absolute targets back into $HOME, so the path must match exactly) so that
+      # `zj tex claude|codex|both` reuses the host's auth/config/skills as-is.
+      - ${HOME}:${HOME}
+    tty: true
+    stdin_open: true
+
+volumes:
+  nvim-data:
+  nvim-state:
+  nvim-cache:
