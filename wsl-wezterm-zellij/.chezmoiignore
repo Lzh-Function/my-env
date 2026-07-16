@@ -1,7 +1,7 @@
 {{- if eq .chezmoi.os "windows" }}
 *
 !.wezterm.lua
-!wezterm.lua
+!dot_wezterm.lua
 {{- else if eq .chezmoi.os "linux" }}
 .wezterm.lua
 {{- end }}
