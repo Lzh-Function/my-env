@@ -1,0 +1,4 @@
+theme "catppuccin-mocha"
+pane_frames false
+copy_command "clip.exe"          // WSL → Windows クリップボード
+session_serialization false      // 前回のペイン状態を復元しない(復元事故の防止)
