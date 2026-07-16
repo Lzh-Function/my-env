@@ -12,18 +12,20 @@
 2. [`zellij.md`](./zellij.md): Zellij(ターミナルマルチプレクサ)編。ウィンドウ・タブ・ペイン管理
 3. [`lazyvim.md`](./lazyvim.md): LazyVim(エディタ)編。モード・移動・検索・LSP・Git
 4. [`workflows.md`](./workflows.md): 両方を組み合わせた「この環境ならでは」の一連の作業例
+5. [`editing.md`](./editing.md): コピペ・カーソルジャンプ・複数ファイル編集の実戦テクニック
+   (データサイエンス/深層学習/創薬研究のコードを例に)
 
 次に用途別(何を書く・書きたいか):
 
-5. [`python.md`](./python.md): `zj py`でのPython開発(uv・テスト・デバッグ・matplotlib)
-6. [`markdown.md`](./markdown.md): READMEやメモなどMarkdown執筆
-7. [`latex.md`](./latex.md): `zj tex`でのLaTeX執筆・コンパイル・エラー対処
-8. [`overleaf.md`](./overleaf.md): OverleafのWebエディタとGitHub経由で同期する
-9. [`config-files.md`](./config-files.md): `pyproject.toml`/`Dockerfile`/`.bashrc`などの
-   設定ファイル編集(TOML・Docker・dotfile)
+6. [`python.md`](./python.md): `zj py`でのPython開発(uv・テスト・デバッグ・matplotlib)
+7. [`markdown.md`](./markdown.md): READMEやメモなどMarkdown執筆
+8. [`latex.md`](./latex.md): `zj tex`でのLaTeX執筆・コンパイル・エラー対処
+9. [`overleaf.md`](./overleaf.md): OverleafのWebエディタとGitHub経由で同期する
+10. [`config-files.md`](./config-files.md): `pyproject.toml`/`Dockerfile`/`.bashrc`などの
+    設定ファイル編集(TOML・Docker・dotfile)
 
 急いでいるなら、まず`zellij.md`の「最初にこれだけ覚える」と`lazyvim.md`の「最初にこれだけ覚える」
-だけ読んで、あとは自分がやりたい作業(5〜9)のページと、困ったときにこのマニュアルを検索する
+だけ読んで、あとは自分がやりたい作業(5〜10)のページと、困ったときにこのマニュアルを検索する
 使い方でも十分。
 
 ## 大前提: 2つのツールは役割がまったく違う
