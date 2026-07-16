@@ -1,5 +1,8 @@
 # WSL2-WezTerm-Zellij環境
 
+> VSCodeからの乗り換えでLazyVim/Zellijの操作に迷ったら、[`docs/`](./docs/README.md)に
+> シチュエーション別の実践マニュアル(日本語)がある。
+
 ## Quick Start
 
 `chezmoi apply`済み・Dockerイメージもビルド済みならこれだけ:

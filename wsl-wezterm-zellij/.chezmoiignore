@@ -4,6 +4,7 @@
 {{- else if eq .chezmoi.os "linux" }}
 .wezterm.lua
 README.md
+docs
 setup_windows.ps1
 setup_wsl.sh
 setup_ssh.sh
