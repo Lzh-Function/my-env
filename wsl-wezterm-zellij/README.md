@@ -226,9 +226,13 @@ $ rm -rf ~/.config/nvim/.git
 
 # nvim起動、設定インポート
 $ nvim
-# :LazyExtraを実行 → lang.python と lang.tex を xキーで有効化
+# :LazyExtrasを実行 → lang.python / lang.tex / lang.markdown / lang.toml /
+#                     lang.docker / util.dot を x キーで有効化
 # qでquit
 ```
+(この手動手順の代わりに`chezmoi apply`すれば、`dot_config/nvim/lazyvim.json`に
+書かれた同じ組み合わせが自動で展開される。`setup_wsl.sh`経由ならこちらが実行される。)
+
 これはホスト(WSL本体)側のNeovim/Zellijのセットアップで、`plain`レイアウト
 (コンテナなしでさっと編集する用途)のために必要。Python-Work・LaTeX-Workで実際に
 編集・実行するときのNeovim/Zellijは、後述のDockerコンテナの中に別途入っている。\

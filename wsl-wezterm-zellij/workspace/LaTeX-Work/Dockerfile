@@ -13,6 +13,15 @@ RUN curl -Lo /tmp/nvim.tar.gz \
     && ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim \
     && rm /tmp/nvim.tar.gz
 
+# lazygit: LazyVim auto-enables <leader>gg/<leader>gG once this is on PATH, no config needed
+RUN LAZYGIT_VERSION="$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" \
+        | grep -Po '"tag_name": "v\K[^"]*')" \
+    && curl -Lo /tmp/lazygit.tar.gz \
+        "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz" \
+    && tar xf /tmp/lazygit.tar.gz -C /tmp lazygit \
+    && install /tmp/lazygit /usr/local/bin/lazygit \
+    && rm /tmp/lazygit.tar.gz /tmp/lazygit
+
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH

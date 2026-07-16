@@ -210,9 +210,31 @@ Neovim自体にも画面分割機能がある(Zellijのペイン分割とは別�
 
 ## Git連携
 
-`<space>g*`(グローバル、プロジェクト全体向け)と`<space>gh*`(バッファローカル、
-今開いているファイルの変更行=hunk向け)の2系統がある。gitsigns由来のバッファローカル系は
-**Gitリポジトリ内のファイルを開いているときだけ**効く。
+3系統ある: **lazygit**(コミット・ブランチ・stageなど本格操作、VSCodeのSource Control
+パネルに一番近い)、**gitsigns系**(`<space>gh*`、今のファイルの変更行=hunkをその場で
+ちょいちょい触る用)、そして素の`git`コマンド(shellペインから直接)。
+
+### lazygit(`<space>gg`): メインで使うならこれ
+
+この環境にはlazygitがプリインストールされている(ホストWSL・Python-Work/LaTeX-Work
+コンテナすべて)。LazyVimは`lazygit`がPATH上にあると自動で`<space>gg`を有効化する
+仕組みなので、追加設定なしでそのまま使える。
+
+| したいこと(VSCodeの操作) | LazyVimでの操作 |
+|---|---|
+| Source Control パネルを開く | `<space>gg`(Lazygit, Root Dir) |
+| カレントディレクトリ基準で開く | `<space>gG`(Lazygit, cwd) |
+
+`<space>gg`を押すとlazygitのフルスクリーンTUIがフローティングウィンドウで開く。ファイル一覧
+から`Space`でステージ/アンステージ、`c`でコミット、`P`でpush、`p`でpull、`b`でブランチ一覧、
+`Esc`または`q`で閉じてNeovimに戻る、というのが基本の流れ。VSCodeのSource Controlパネルの
+操作感にかなり近く、コミット単位のグラフ表示やインタラクティブなステージングもできるので、
+**日常のコミット・ブランチ操作はまずこれを使えばよい**。
+
+### gitsigns系(`<space>gh*`): エディタ上でその場確認・部分ステージ
+
+ファイルを編集しながら「この数行だけステージしたい」「この行、誰がいつ変更した?」を
+その場でサッと確認したいときに使う。**Gitリポジトリ内のファイルを開いているときだけ**効く。
 
 | したいこと(VSCodeの操作) | LazyVimでの操作 |
 |---|---|
@@ -230,10 +252,14 @@ Neovim自体にも画面分割機能がある(Zellijのペイン分割とは別�
 | 変更差分をインラインでプレビュー | `<space>ghp`(Preview Hunk Inline) |
 | ファイル全体の差分を見る | `<space>ghd`(Diff This) |
 
-`lazygit`コマンド自体はこの環境にインストールされていないので、`<space>gg`のような
-lazygit連携キーは無効。上記のGit系キーバインドで日常的な差分確認は十分にまかなえる。
-本格的なGit操作(コミット・ブランチ管理)は、隣のshellペインで素直に`git`コマンドを
-打つのが確実。
+### 使い分けの目安
+
+- **「今書いてるファイルの、この数行だけ確認/ステージしたい」** → gitsigns(`<space>gh*`)。
+  エディタを離れずその場で完結する
+- **「コミットしたい・ブランチを切りたい・履歴を追いたい」** → lazygit(`<space>gg`)。
+  VSCodeのSource Controlパネルに近い一覧性で操作できる
+- **細かいオプション付きの操作**(`git rebase -i`など) → 隣のshellペインで素直に`git`
+  コマンドを打つのが確実
 
 ## 設定変更・拡張機能管理
 
@@ -295,5 +321,6 @@ Vimに「マルチカーソル」という概念はそのままは無いが、�
 | `Ctrl+Z` / `Ctrl+Shift+Z` | `u` / `Ctrl+r` |
 | `Ctrl+/`(コメント) | `gcc`(行) / `gc`(選択範囲) |
 | サイドバー(Explorer) | `<space>e` |
-| Source Control | `<space>gs` |
+| Source Control(本格操作) | `<space>gg`(lazygit) |
+| Source Control(その場確認) | `<space>gs` / `<space>gh*`(gitsigns) |
 | 拡張機能パネル | `:Lazy` |

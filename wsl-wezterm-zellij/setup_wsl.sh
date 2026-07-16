@@ -93,6 +93,21 @@ if ! command -v nvim >/dev/null 2>&1; then
     rm -rf "$tmp"
 fi
 
+# --- 4.5. lazygit(GitHub release tarball)-----------------------------------
+# LazyVimは lazygit が PATH 上にあれば <leader>gg / <leader>gG を自動で有効化する
+# (~/.local/share/nvim/lazy/LazyVim/lua/lazyvim/config/keymaps.lua)。設定側の変更は不要。
+if ! command -v lazygit >/dev/null 2>&1; then
+    log "lazygit をインストール"
+    LAZYGIT_VERSION="$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" \
+        | grep -Po '"tag_name": "v\K[^"]*')"
+    tmp="$(mktemp -d)"
+    curl -Lo "$tmp/lazygit.tar.gz" \
+        "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
+    tar xf "$tmp/lazygit.tar.gz" -C "$tmp" lazygit
+    install "$tmp/lazygit" "$HOME/.local/bin/lazygit"
+    rm -rf "$tmp"
+fi
+
 # --- 5. chezmoi(snap)------------------------------------------------------
 if ! command -v chezmoi >/dev/null 2>&1; then
     log "chezmoi を snap でインストール"

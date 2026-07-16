@@ -6,13 +6,25 @@
 
 ## 読む順番
 
+まず基礎(ツールの動かし方):
+
 1. **このページ**: VSCode用語 ↔ LazyVim/Zellij用語の対応表(まずここで頭を整理する)
 2. [`zellij.md`](./zellij.md): Zellij(ターミナルマルチプレクサ)編。ウィンドウ・タブ・ペイン管理
 3. [`lazyvim.md`](./lazyvim.md): LazyVim(エディタ)編。モード・移動・検索・LSP・Git
 4. [`workflows.md`](./workflows.md): 両方を組み合わせた「この環境ならでは」の一連の作業例
 
+次に用途別(何を書く・書きたいか):
+
+5. [`python.md`](./python.md): `zj py`でのPython開発(uv・テスト・デバッグ・matplotlib)
+6. [`markdown.md`](./markdown.md): READMEやメモなどMarkdown執筆
+7. [`latex.md`](./latex.md): `zj tex`でのLaTeX執筆・コンパイル・エラー対処
+8. [`overleaf.md`](./overleaf.md): OverleafのWebエディタとGitHub経由で同期する
+9. [`config-files.md`](./config-files.md): `pyproject.toml`/`Dockerfile`/`.bashrc`などの
+   設定ファイル編集(TOML・Docker・dotfile)
+
 急いでいるなら、まず`zellij.md`の「最初にこれだけ覚える」と`lazyvim.md`の「最初にこれだけ覚える」
-だけ読んで、あとは困ったときにこのマニュアルを検索する使い方でも十分。
+だけ読んで、あとは自分がやりたい作業(5〜9)のページと、困ったときにこのマニュアルを検索する
+使い方でも十分。
 
 ## 大前提: 2つのツールは役割がまったく違う
 
@@ -44,7 +56,7 @@ VSCodeは「エディタ」と「統合ターミナル」と「ウィンドウ�
 | ファイルエクスプローラー | **Explorer (Snacks)**(`<space>e`) | |
 | ファイルを名前で開く(`Ctrl+P`) | **Find Files**(`<space><space>` or `<space>ff`) | |
 | 全体検索(`Ctrl+Shift+F`) | **Grep**(`<space>sg`) | |
-| Source Control パネル | **Git Status**(`<space>gs`) | Snacksのgit連携 |
+| Source Control パネル | **lazygit**(`<space>gg`) | コミット・ブランチなど本格操作はこちら |
 | 拡張機能パネル | `:Lazy`(プラグイン管理) / `:Mason`(LSP・ツール管理) | |
 | settings.json | `~/.config/nvim/lua/config/options.lua` など | Luaで書く |
 | ワークスペース切り替え | Zellij **タブ切り替え**、または`zj`/`zj py`/`zj tex`の使い分け | |

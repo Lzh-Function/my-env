@@ -15,14 +15,16 @@ VSCode + Dev Containers拡張機能でやっていたことの、この環境で
    `:e sample.py`のように`:e ファイル名`で新規ファイルを開ける
 5. `i`で挿入モードに入り、コードを書く。書き終えたら`Esc` → `:w`で保存
 6. `Alt+l`(または`Alt+右矢印`)でshellペインに移動
-7. `python sample.py`のように実行して結果を確認
+7. `uv run sample.py`のように実行して結果を確認(素の`python`コマンドだと
+   プロジェクトの依存関係(numpy/pandasなど)が見えないので注意)
 8. `Alt+h`でnvimペインに戻って続きを編集
 
 途中でコンテナの負荷(pip install中など)を見たいときは`Alt+o`で`monitor`タブに移動して
 `btop`を確認、`Alt+i`で`work`タブに戻る。
 
 パッケージを追加したいときは、shellペインで`uv add パッケージ名`を実行する
-(`../README.md`の「Python作業環境セットアップ」参照)。
+(`../README.md`の「Python作業環境セットアップ」参照)。テスト・デバッグ・グラフの
+確認方法など、より詳しい状況別ガイドは[`python.md`](./python.md)を参照。
 
 ## 2. LaTeXで新しい章を書いてPDFを確認するまで
 
@@ -38,6 +40,10 @@ VSCode + Dev Containers拡張機能でやっていたことの、この環境で
    - **`zj tex`(コンテナ内)からはこの機能は使えない**(`../README.md`の既知の制約参照)。
      生成された`main.pdf`をWindows Explorer(`\\wsl.localhost\...`経由)や
      `\mnt\c`配下のパスで直接開くか、SumatraPDFを手動で起動して確認する
+
+コンパイルエラーの読み方、複数ファイル構成、参考文献など、より詳しい状況別ガイドは
+[`latex.md`](./latex.md)を参照。Overleafと同期しながら書きたい場合は
+[`overleaf.md`](./overleaf.md)を参照。
 
 ## 3. コンテナ内でエラーが起きたときのトラブルシュート
 
@@ -111,15 +117,24 @@ zj              # plainレイアウト。コンテナなしでホストのnvim+s
 
 `<space>ff`で目的のファイルを開いて編集するだけ。このセッションだけホストの
 `copy_command "clip.exe"`が有効なので、選択したテキストがWindows側のクリップボードにも
-届く。
+届く。READMEやメモなどMarkdownを書くのも同じく`zj`で十分
+([`markdown.md`](./markdown.md)参照)。
 
 ## 7. Gitでコミットするまでの一連の流れ
 
-1. `<space>gs`(Git Status)で変更点を確認(VSCodeのSource Controlパネル相当)
-2. 個別の差分は`<space>gd`(hunk単位)で確認
-3. コミット自体はGUI相当の機能が薄いので、shellペイン(`Alt+l`)で素直に
-   `git add`・`git commit`・`git push`を打つのが確実
-4. pushしたあと、再度`<space>gs`で状態がきれいになったか確認
+`<space>gg`でlazygitを開くのが一番早い(VSCodeのSource Controlパネル相当。ホストWSL・
+`zj py`・`zj tex`のどのコンテナでもプリインストール済み)。
+
+1. `<space>gg`でlazygitのTUIを開く
+2. ファイル一覧から変更点を確認、`Space`でステージ(全部なら`a`)
+3. `c`でコミットメッセージを入力してコミット
+4. `P`でpush(初回のupstream未設定などは画面の指示に従う)
+5. `Esc`または`q`で閉じてNeovimに戻る
+
+エディタから離れず、変更行(hunk)単位でサッと確認・部分ステージしたいだけなら
+`<space>gs`(Git Status)・`<space>ghs`(Stage Hunk)などgitsigns系のキーでも完結できる
+(`lazyvim.md`の「Git連携」参照)。込み入った操作(`git rebase -i`など)は
+shellペイン(`Alt+l`)で素直に`git`コマンドを打つのが確実。
 
 ## 8. 新しいマシンでゼロから始めるとき
 
