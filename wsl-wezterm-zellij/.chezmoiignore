@@ -1,0 +1,6 @@
+{{- if eq .chezmoi.os "windows" }}
+*
+!dot_wezterm.lua
+{{- else if eq .chezmoi.os "linux" }}
+dot_wezterm.lua
+{{- end }}
