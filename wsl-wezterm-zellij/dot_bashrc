@@ -126,6 +126,7 @@ zj() {
   case "$1" in
     py)  cd ~/workspace/Python-Work && zellij --layout py  attach --create "py-$(date +%s)"  ;;
     tex) cd ~/workspace/LaTeX-Work  && zellij --layout tex attach --create "tex-$(date +%s)" ;;
+    "") zellij --layout plain attach --create "plain-$(date +%s)" ;;
     *)   zellij "$@" ;;
   esac
 }
