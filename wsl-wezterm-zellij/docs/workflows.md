@@ -78,7 +78,7 @@ zj py        # レイアウト通りに作り直す(nvimの中身=ファイル�
 
 ## 4. Claude Code / Codexに実装を手伝ってもらいながら編集する
 
-事前準備(初回のみ、ホスト側で): `../README.md`のTutorial「8. Claude Code / Codexの導入」を
+事前準備(初回のみ、ホスト側で): `../README.md`の「セットアップ → Claude Code / Codexの導入」を
 参照し、`claude`/`codex`のインストールとログインを済ませておく。
 
 ```
@@ -140,9 +140,9 @@ shellペイン(`Alt+l`)で素直に`git`コマンドを打つのが確実。
 
 このマニュアル自体を読む前の話だが、位置づけとして記載しておく。
 
-- Windows側のセットアップ: `../README.md`のTutorial 1〜2、または`setup_windows.ps1`
-- WSL側のセットアップ: 同Tutorial 3〜7、または`setup_wsl.sh`
-- SSHサーバー(Dockerなし)でこの環境だけ欲しい場合: Tutorial 9、`setup_ssh.sh`
+- WSL側のセットアップ: `../README.md`の「セットアップ → WSLホスト」、`setup_wsl.sh`
+- Windows側のセットアップ: 同「セットアップ → Windows」、`setup_windows.ps1`
+- SSHサーバー(Dockerなし)でこの環境だけ欲しい場合: 同「セットアップ → SSHサーバー」、`setup_ssh.sh`
 
 セットアップが終わったら`zj`/`zj py`/`zj tex`のいずれかを打つところからが、この
 マニュアルの出番になる。

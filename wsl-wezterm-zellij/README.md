@@ -3,16 +3,142 @@
 > VSCodeからの乗り換えでLazyVim/Zellijの操作に迷ったら、[`docs/`](./docs/README.md)に
 > シチュエーション別の実践マニュアル(日本語)がある。
 
+## VScodeでよくね？
+ただでさえwslの起動はメモリ食うのに、VScodeを被せて起動したときのリソース消費が激しい。スペックが足りないノートPCにおいてマルチタスクするためにも、軽量でありながらVScode-likeなターミナル環境を求めて採用。\
+用途はPython-WorkとLaTeX-Workを想定。
+
+## この環境のポイント
+
+- **軽い**: WezTermはただのターミナルなので、VSCode(+WSL Remote)より圧倒的にメモリを食わない。GUIはWezTerm一枚、あとは全部ターミナルの中で完結する。
+- **設定は全部chezmoiで一元管理**: `.bashrc`・Neovim(LazyVim)・Zellij・WezTerm・各プロジェクトの`Dockerfile`/`compose.yml`まで、このリポジトリ1つがソース。新しいPCでも下記のセットアップだけで同じ環境が復元できる。
+- **編集・実行はコンテナの中で完結**: Python-Work・LaTeX-Workそれぞれ専用のDockerコンテナに、NeovimとZellijを直接インストールしてある。ホストのWSLを汚さず、プロジェクトごとに独立した言語ツールチェーン(uv/pyright、texlive/texlab)の上でLSPも含めて動く。
+- **それでも「コンテナなしでさっと編集」もできる**: `zj`(引数なし)だけはホスト側のNeovim/Zellijで動く`plain`レイアウト。ちょっとした設定ファイルを見るだけなら、コンテナを起動する必要はない。
+- **セッション名は固定・再接続前提**: `zj py`/`zj tex`は毎回タイムスタンプ付きの新規セッションを作るのではなく、`py`/`tex`という固定名のセッションに`attach --create`する。既にセッションが動いていればそれに繋ぎ直すだけ。
+- **Zellijでタブ・ペイン管理、WezTermはタブバーなしの軽量フロントエンドに徹する**: 多重化はZellijに任せ、WezTerm側は`enable_tab_bar = false`・OpenGLフロントエンド・アニメ最小限で低スペック機でも軽快に。
+- **同じリポジトリで素のSSHサーバー(Ubuntu)もサポート**: `dot_bashrc`・Zellij設定をchezmoiテンプレート化し、`env "WSL_DISTRO_NAME"`の有無でWSLホストか素のLinuxかを自動判定。Docker/`workspace`はWSL側にしか展開されず、SSHサーバー側は`zj`(plainレイアウト)だけのシンプルな構成になる。
+- **Claude Code / Codexをagentタブとして統合(WSLホスト限定)**: `zj [py|tex|] [claude|codex|both]`で、レイアウトに専用タブを1枚追加してエージェントを起動できる。コンテナ側はWSLホストの`$HOME`をそのままbind mountして`HOME`環境変数を上書きするだけなので、コンテナ内に別途インストールし直したり再ログインしたりする必要がない(詳細は「アーキテクチャ」参照)。
+
+## セットアップ
+
+流れはどの対象でも同じ: **①このリポジトリをclone → ②chezmoi.tomlでsourceDirをこの
+サブディレクトリ(`wsl-wezterm-zellij/`)に固定 → ③該当するsetupスクリプトを実行**。
+
+このリポジトリ("my-env")は複数の環境プロファイルを将来的に共存させられるように、
+chezmoiのsourceDirを明示的にサブディレクトリへ固定する構成になっている
+(`chezmoi init`だけだとリポジトリ直下を丸ごとsourceとして扱おうとしてしまう)。
+
+**前提**: このリポジトリはprivateなので、cloneする前にSSH鍵をGitHubに登録しておくこと。
+
+```bash
+ssh-keygen -t ed25519 -C "$(whoami)@$(hostname)"
+cat ~/.ssh/id_ed25519.pub
+# 表示された公開鍵を GitHub → Settings → SSH and GPG keys → New SSH key に登録
+```
+(登録済みなら不要。)
+
+### WSLホスト(Windows PC上のWSL2)
+
+前提: WSL2 + Ubuntuが起動していること。まっさらな場合は先に:
+
+```powershell
+wsl --shutdown
+wsl -l -v                    # ディストリビューションの確認
+wsl --unregister Ubuntu      # 既存環境を消す場合のみ
+wsl --install Ubuntu
+```
+
+WSL上のUbuntuシェルで:
+
+```bash
+sudo apt-get update && sudo apt-get install -y git   # git が無ければ
+
+git clone git@github.com:Lzh-Function/my-env.git ~/.local/share/chezmoi
+mkdir -p ~/.config/chezmoi
+cat > ~/.config/chezmoi/chezmoi.toml <<'EOF'
+sourceDir = "~/.local/share/chezmoi/wsl-wezterm-zellij"
+EOF
+
+bash ~/.local/share/chezmoi/wsl-wezterm-zellij/setup_wsl.sh
+```
+
+`setup_wsl.sh`が以降すべて非対話で行う: 基本パッケージ・Docker・Rust/Zellij・Neovim・
+lazygit・chezmoi本体(snap)のインストールから`chezmoi apply`、Python/LaTeX両コンテナの
+ビルドまで。sudoパスワードの入力以外は操作不要(SSH鍵は上で登録済みなので、
+スクリプト内の確認もそのまま素通りする)。完了後は`source ~/.bashrc`してから
+`zj py`/`zj tex`が使える(詳しくは下記「Quick Start」)。
+
+Claude Code / Codexのagentタブを使いたい場合は、追加で「Claude Code / Codexの導入」
+(下記)を行う。
+
+### Windows(WezTerm)
+
+WSLホストのセットアップを先に済ませておくと、リポジトリは
+`\\wsl.localhost\Ubuntu\home\<ユーザー名>\.local\share\chezmoi\wsl-wezterm-zellij\`
+としてWindows側からもそのまま参照できるので、これが一番早い。
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+& "\\wsl.localhost\Ubuntu\home\<ユーザー名>\.local\share\chezmoi\wsl-wezterm-zellij\setup_windows.ps1"
+```
+
+`setup_windows.ps1`がwinget経由でWezTerm・Nerd Font・SumatraPDF・chezmoi・Gitを導入し、
+`chezmoi init`でこのリポジトリを取得(sourceDirは同じくこのサブディレクトリに固定)、
+`.wezterm.lua`だけを展開する(`.chezmoiignore`によりWindows側はwezterm設定以外は
+無視される)。WSLを経由せず単体で実行する場合は、Windows側にも別途SSH鍵の登録が必要
+(スクリプト完了時のメッセージ参照)。
+
+### SSHサーバー(WSLではない素のUbuntu)
+
+Docker無しで、Zellij + LazyVimの編集環境だけが欲しい場合。WSLホストと同じ流れ:
+
+```bash
+sudo apt-get update && sudo apt-get install -y git   # git が無ければ
+
+git clone git@github.com:Lzh-Function/my-env.git ~/.local/share/chezmoi
+mkdir -p ~/.config/chezmoi
+cat > ~/.config/chezmoi/chezmoi.toml <<'EOF'
+sourceDir = "~/.local/share/chezmoi/wsl-wezterm-zellij"
+EOF
+
+bash ~/.local/share/chezmoi/wsl-wezterm-zellij/setup_ssh.sh
+```
+
+`chezmoi apply`実行時に`env WSL_DISTRO_NAME`が立っていない(=WSLではない)と自動判定され、
+Docker関連やWindows向けファイルは展開されず、`zj`(plainレイアウトのみ)が使える構成になる
+(詳細は「アーキテクチャ」参照)。
+
+### Claude Code / Codexの導入(任意、agentタブを使うなら)
+
+`zj [py|tex|] [claude|codex|both]`のagentタブは、WSLホストの`~/.local/bin/claude`・
+`~/.local/bin/codex`を(コンテナの場合はbind mount経由で)そのまま実行する仕組みなので、
+**先にホスト側へ本体をインストール・ログインしておく必要がある**。`setup_wsl.sh`は
+これを自動化しない(ログインがブラウザ経由の対話操作になるため)。
+
+```bash
+# Claude Code(公式インストーラ)
+curl -fsSL https://claude.ai/install.sh | bash
+
+# Codex CLI(npm経由。Node/npmはsetup_wsl.shで導入済み)
+npm install -g @openai/codex
+```
+
+インストール後、**一度ホスト側で直接**`claude`・`codex`を実行してログイン(ブラウザでの
+OAuth認証など)を済ませておく。`~/.claude`・`~/.claude.json`・`~/.codex`に認証情報が
+保存され、agentタブはこれをそのまま再利用するので、コンテナ内で再ログインする必要はない。
+
+この手順を省いても`zj py`/`zj tex`/`zj`(エージェント無指定)は今まで通り使える。
+agentタブを使おうとした時だけ、`claude: No such file or directory`のようなエラーになる。
+
 ## Quick Start
 
-`chezmoi apply`済み・Dockerイメージもビルド済みならこれだけ:
+セットアップ済みならこれだけ:
 
 ```
 zj          # ホスト側 Neovim + Zellij(plain: コンテナなしでさっと編集)
 zj py       # Python-Work コンテナに入って編集・実行(nvim + shell、monitorタブにbtop)
 zj tex      # LaTeX-Work コンテナに入って編集・実行(同上)
 
-zj py claude    # ↑に加えてagentタブ(3番目)でClaude Codeを起動 (要: 事前にclaude/codexを導入・ログイン。Tutorial 8)
+zj py claude    # ↑に加えてagentタブ(3番目)でClaude Codeを起動(要: 事前にclaude/codexを導入・ログイン)
 zj tex codex    # ↑に加えてagentタブ(3番目)でCodexを起動
 zj py both      # agentタブを上下split(上50%=claude、下50%=codex)
 zj claude       # plainレイアウト + agentタブ(2番目)でホスト上のclaudeを起動
@@ -27,25 +153,22 @@ zjdel tex   # LaTeX-Work コンテナ内のセッションをリセット
 (常に`--layout`付きで作り直すので、壊れた状態が復元されることはない)。
 
 素のUbuntu(SSHサーバー、WSLではない)にこのリポジトリを適用した場合は`zj`(`plain`レイアウト)
-のみが使える。`zj py`/`zj tex`はDocker前提なのでそもそも定義されない(後述)。
+のみが使える。`zj py`/`zj tex`はDocker前提なのでそもそも定義されない。
 
-初回セットアップがまだなら下の「Tutorial」を参照
-(WSL: `setup_wsl.sh` / Windows: `setup_windows.ps1` / SSHサーバー: `setup_ssh.sh`で自動化済み)。
+`Python-Work`ディレクトリ直下は`.venv/pyproject.toml/uv.lock/Dockerfile/compose.yml/.dockerignore`
+が置かれる構成。`Dockerfile`/`compose.yml`/`.dockerignore`はこのリポジトリの
+`workspace/Python-Work/`がソースなので手で書く必要はなく、`pyproject.toml`/`uv.lock`だけは
+`uv init`/`uv add`でプロジェクトごとに生成される(chezmoi管理外)。
 
-## VScodeでよくね？
-ただでさえwslの起動はメモリ食うのに、VScodeを被せて起動したときのリソース消費が激しい。スペックが足りないノートPCにおいてマルチタスクするためにも、軽量でありながらVScode-likeなターミナル環境を求めて採用。\
-用途はPython-WorkとLaTeX-Workを想定。
+`LaTeX-Work`は複数文書をサブフォルダで管理する想定(`~/workspace/LaTeX-Work/<文書名>/main.tex`)。
+`latexmk -pvc -cd <文書名>/main.tex`のようにビルドする(詳しくは
+[`docs/latex.md`](./docs/latex.md))。
 
-## この環境のポイント
-
-- **軽い**: WezTermはただのターミナルなので、VSCode(+WSL Remote)より圧倒的にメモリを食わない。GUIはWezTerm一枚、あとは全部ターミナルの中で完結する。
-- **設定は全部chezmoiで一元管理**: `.bashrc`・Neovim(LazyVim)・Zellij・WezTerm・各プロジェクトの`Dockerfile`/`compose.yml`まで、このリポジトリ1つがソース。新しいPCでも`chezmoi init && chezmoi apply`だけで同じ環境が復元できる。
-- **編集・実行はコンテナの中で完結**: Python-Work・LaTeX-Workそれぞれ専用のDockerコンテナに、NeovimとZellijを直接インストールしてある。ホストのWSLを汚さず、プロジェクトごとに独立した言語ツールチェーン(uv/pyright、texlive/texlab)の上でLSPも含めて動く。
-- **それでも「コンテナなしでさっと編集」もできる**: `zj`(引数なし)だけはホスト側のNeovim/Zellijで動く`plain`レイアウト。ちょっとした設定ファイルを見るだけなら、コンテナを起動する必要はない。
-- **セッション名は固定・再接続前提**: `zj py`/`zj tex`は毎回タイムスタンプ付きの新規セッションを作るのではなく、`py`/`tex`という固定名のセッションに`attach --create`する。既にセッションが動いていればそれに繋ぎ直すだけ。
-- **Zellijでタブ・ペイン管理、WezTermはタブバーなしの軽量フロントエンドに徹する**: 多重化はZellijに任せ、WezTerm側は`enable_tab_bar = false`・OpenGLフロントエンド・アニメ最小限で低スペック機でも軽快に。
-- **同じリポジトリで素のSSHサーバー(Ubuntu)もサポート**: `dot_bashrc`・Zellij設定をchezmoiテンプレート化し、`env "WSL_DISTRO_NAME"`の有無でWSLホストか素のLinuxかを自動判定。Docker/`workspace`はWSL側にしか展開されず、SSHサーバー側は`zj`(plainレイアウト)だけのシンプルな構成になる。
-- **Claude Code / Codexをagentタブとして統合(WSLホスト限定)**: `zj [py|tex|] [claude|codex|both]`で、レイアウトに専用タブを1枚追加してエージェントを起動できる。コンテナ側はWSLホストの`$HOME`をそのままbind mountして`HOME`環境変数を上書きするだけなので、コンテナ内に別途インストールし直したり再ログインしたりする必要がない(詳細は「アーキテクチャ」参照)。
+コンテナ内のNeovimはホストの`~/.config/nvim`をそのままbind mountして使うので、
+LazyVimの設定は1箇所を編集するだけでホスト・コンテナ両方に反映される。
+LSP/treesitter/pluginの実体(`~/.local/share/nvim`など)はDocker named volumeに
+入るので、`docker compose build`でイメージを作り直してもプラグインの再インストールは
+基本的に走らない。
 
 ## アーキテクチャ
 
@@ -91,9 +214,6 @@ Zellijの設定はホスト用(`dot_config/zellij/`)とコンテナ用(`workspac
 
 ### エージェントタブ(`zj [py|tex|] [claude|codex|both]`、WSLホスト限定)
 
-**前提**: `claude`/`codex`本体のインストールとログインをホスト側で先に済ませておくこと
-(Tutorial「8. Claude Code / Codexの導入」参照)。`setup_wsl.sh`はこれを自動化しない。
-
 `dot_bashrc.tmpl`の`_zj_layout()`が、モード(`py`/`tex`/plain)とエージェント指定に応じて
 Zellijのレイアウトを**その場でKDL文字列として組み立て**、`zellij --layout-string`で渡す
 (エージェント無指定のときは今まで通り静的な`.kdl`ファイルを使うので、既存の`zj py`/
@@ -129,20 +249,21 @@ bind mountは関与しない。
 wsl-wezterm-zellij/
 ├── .chezmoiignore              # 適用対象の切り替え
 │                                  - Windows: wezterm設定のみ
-│                                  - Linux共通: wezterm・README・setup系スクリプトは除外
+│                                  - Linux共通: wezterm・README・docs・setup系スクリプトは除外
 │                                  - Linuxかつ非WSL(SSHサーバー): workspace/ も除外
 ├── dot_bashrc.tmpl               # → ~/.bashrc (zj / zjdel 関数。WSL/SSHで内容が変わるテンプレート。
 │                                    WSL版のみ _zj_layout() でagentタブ付きレイアウトを動的生成)
 ├── dot_wezterm.lua               # → ~/.wezterm.lua (Windows側)
 ├── dot_config/
-│   ├── nvim/                     # → ~/.config/nvim (LazyVim)
+│   ├── nvim/                     # → ~/.config/nvim (LazyVim。lang.python/tex/markdown/toml/
+│   │                                docker、util.dotのextrasを有効化)
 │   └── zellij/
 │       ├── config.kdl.tmpl        # ホスト用(WSLのみclip.exe連携。SSHサーバーでは無し)
 │       └── layouts/
 │           └── plain.kdl           # コンテナなし・ホスト編集用レイアウト(WSL/SSH共通)
 ├── workspace/                    # WSLホストにのみ展開される(SSHサーバーでは丸ごと除外)
 │   ├── Python-Work/
-│   │   ├── Dockerfile         # Neovim/Zellij/uv 込みのPythonイメージ
+│   │   ├── Dockerfile         # Neovim/Zellij/uv/lazygit 込みのPythonイメージ
 │   │   ├── compose.yml        # サービス名: py。${HOME}:${HOME}でWSLホームをbind mount
 │   │   │                        (agentタブがclaude/codexをホストと同じ認証で動かすため)
 │   │   ├── dot_dockerignore   # → .dockerignore
@@ -150,12 +271,13 @@ wsl-wezterm-zellij/
 │   │       ├── config.kdl
 │   │       └── layouts/py.kdl
 │   └── LaTeX-Work/
-│       ├── Dockerfile         # Neovim/Zellij/texlive 込みのLaTeXイメージ
+│       ├── Dockerfile         # Neovim/Zellij/texlive/lazygit 込みのLaTeXイメージ
 │       ├── compose.yml        # サービス名: tex
 │       ├── dot_latexmkrc      # → .latexmkrc
 │       └── zellij/
 │           ├── config.kdl
 │           └── layouts/tex.kdl
+├── docs/                      # VSCodeユーザー向け実践マニュアル(chezmoi管理外)
 ├── setup_wsl.sh               # WSLホスト側の非対話セットアップ
 ├── setup_ssh.sh               # 素のUbuntu(SSHサーバー)側の非対話セットアップ
 └── setup_windows.ps1          # Windows側のセットアップ(WezTermなど)
@@ -165,197 +287,15 @@ wsl-wezterm-zellij/
 `~/workspace/LaTeX-Work`に展開される。`Dockerfile`や`compose.yml`をこのリポジトリで
 管理しているので、セットアップスクリプト側でheredocを生成する必要がなくなっている。
 
-
-## Tutorial
-
-### 1. WSL2のクリーンインストール
-きったねえWSL2環境をまっさらにしてからもう一回作りましょう。\
-```
-@powershell
-$ wsl --shutdown
-$ wsl -l -v  # ディストリビューションの確認
-$ wsl --unregister ubuntu # たぶんubuntu
-
-# 終わったら「アプリと機能」からUbuntuをアンインストール
-$ wsl --install ubunutu # 多分ubuntu　(wsl -l -oで確認可能)
-```
-
-### 2. WezTermのインストール
-```
-@powershell
-$ winget install wez.wezterm
-
-# Nerd Font
-$ winget install -e --id DEVCOM.JetBrainsMonoNerdFont
-
-# .luaファイル
-$ New-Item -Path "$env:USERPROFILE\.wezterm.lua" -ItemType File -Force
-$ notepad "$env:USERPROFILE\.wezterm.lua"
-
-# .wezterm.luaの内容をコピペ
-```
-ここまでで、WezTermを開くと自動でWSLが起動するように。\
-`setup_windows.ps1`を使えば、この手順(+ chezmoiでの`.wezterm.lua`展開)は自動化されている。
-
-### 3. WSL側でのセットアップ
-```
-$ sudo apt update
-
-# リソース監視のためのbtop
-$ sudo apt install -y btop git curl build-essential
-
-# uv
-$ curl -LsSf https://astral.sh/uv/install.sh | sh
-$ source $HOME/.local/bin/env
-
-# Zellijのためのrust
-$ curl https://sh.rustup.rs -sSf | sh
-$ . "$HOME/.cargo/env"
-
-# Zellij
-$ cargo install zellij
-
-# NeoVim
-$ curl -LO https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz
-$ sudo tar xzf nvim-linux-x86_64.tar.gz -C /opt
-$ sudo ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim
-
-# LazyVimによってNeoVimを進化させる
-$ git clone https://github.com/LazyVim/starter ~/.config/nvim
-$ rm -rf ~/.config/nvim/.git
-
-# nvim起動、設定インポート
-$ nvim
-# :LazyExtrasを実行 → lang.python / lang.tex / lang.markdown / lang.toml /
-#                     lang.docker / util.dot を x キーで有効化
-# qでquit
-```
-(この手動手順の代わりに`chezmoi apply`すれば、`dot_config/nvim/lazyvim.json`に
-書かれた同じ組み合わせが自動で展開される。`setup_wsl.sh`経由ならこちらが実行される。)
-
-これはホスト(WSL本体)側のNeovim/Zellijのセットアップで、`plain`レイアウト
-(コンテナなしでさっと編集する用途)のために必要。Python-Work・LaTeX-Workで実際に
-編集・実行するときのNeovim/Zellijは、後述のDockerコンテナの中に別途入っている。\
-`setup_wsl.sh`を使えばこの手順は自動化されている。
-
-### 4. workspace用意（ご自由に）
-```
-$ mkdir ~/workspace
-$ cd ~/workspace
-$ mkdir Python-Work
-$ mkdir LaTeX-Work
-```
-`setup_wsl.sh`経由なら、`chezmoi apply`がこのディレクトリと`Dockerfile`/`compose.yml`を
-自動的に作成する。
-
-### 5. dockerを入れよう
-```
-# https://docs.docker.com/engine/install/ubuntu/
-$ sudo apt update
-$ sudo apt install ca-certificates curl
-$ sudo install -m 0755 -d /etc/apt/keyrings
-$ sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-$ sudo chmod a+r /etc/apt/keyrings/docker.asc
-$ sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/ubuntu
-Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
-Components: stable
-Architectures: $(dpkg --print-architecture)
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
-$ sudo apt update
-$ sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-# このままだと使用権限が通らないので権限変更
-$ sudo chmod 666 /var/run/docker.sock
-```
-
-### 6. Python作業環境セットアップ
-`Python-Work`ディレクトリ直下に`.venv/pyproject.toml/uv.lock/Dockerfile/compose.yml/.dockerignore`が置かれる構成です。\
-`Dockerfile`/`compose.yml`/`.dockerignore`はこのリポジトリの`workspace/Python-Work/`が
-ソースなので、手で書く必要はない。`pyproject.toml`/`uv.lock`だけは`uv init`/`uv add`で
-プロジェクトごとに生成される(chezmoi管理外)。
-
-### 7. コンテナの中で編集・実行する
-
-`zj py`・`zj tex`を叩くと、`docker compose up -d`でコンテナを起こしたあと
-`docker compose exec`でそのままコンテナの中に入り、コンテナ内にインストール済みの
-Zellijが固定名のセッション(`py`/`tex`)にアタッチ(なければ作成)する。
-
-| コマンド | どこで動く | セッション名 | レイアウト |
-|---|---|---|---|
-| `zj` | ホスト(WSL)のZellij + Neovim | `plain` | nvim + shell の2ペイン |
-| `zj py` | Python-Work コンテナの中のZellij + Neovim(サービス名`py`) | `py` | work タブ = nvim+shell(bash)、monitor タブ = btop |
-| `zj tex` | LaTeX-Work コンテナの中のZellij + Neovim(サービス名`tex`) | `tex` | 同上 |
-| `zjdel [py\|tex]` | 対応するZellijサーバーで`kill-all-sessions -y`を実行 | - | - |
-
-同じ`zj`系コマンドを何度実行しても、既存セッションがあればそれに再接続するだけ
-(重複してセッションが増えることはない)。セッションを壊してしまったら
-`zjdel`(または`zjdel py`/`zjdel tex`)→ 同じ`zj`系コマンドで、レイアウト通りの
-まっさらな状態に作り直せる。
-
-`zj [py|tex|] [claude|codex|both]`のように2つ目の引数を付けると、Claude Code /
-Codexを動かすagentタブが追加される。詳しくは「アーキテクチャ」の
-「エージェントタブ」を参照。
-
-コンテナ内のNeovimはホストの`~/.config/nvim`をそのままbind mountして使うので、
-LazyVimの設定は1箇所を編集するだけでホスト・コンテナ両方に反映される。
-LSP/treesitter/pluginの実体(`~/.local/share/nvim`など)はDocker named volumeに
-入るので、`docker compose build`でイメージを作り直してもプラグインの再インストールは
-基本的に走らない。
-
-### 8. Claude Code / Codexの導入(エージェントタブを使うなら)
-
-`zj [py|tex|] [claude|codex|both]`のagentタブは、WSLホストの`~/.local/bin/claude`・
-`~/.local/bin/codex`を(コンテナの場合はbind mount経由で)そのまま実行する仕組みなので、
-**先にホスト側へ本体をインストール・ログインしておく必要がある**。`setup_wsl.sh`は
-これを自動インストールしない(ログインがブラウザ経由の対話操作になるため)。
-
-```
-# Claude Code(公式インストーラ。~/.local/share/claude 配下に入り、
-# ~/.local/bin/claude にシンボリックリンクが張られる)
-$ curl -fsSL https://claude.ai/install.sh | bash
-
-# Codex CLI(npm経由。Node/npmはsetup_wsl.shで導入済み)
-$ npm install -g @openai/codex
-```
-(コマンド名やインストール手順は変わることがあるので、最新情報は各公式サイトも確認。)
-
-インストール後、**一度ホスト側で直接**`claude`・`codex`を実行してログイン(ブラウザでの
-OAuth認証など)を済ませておく。`~/.claude`・`~/.claude.json`・`~/.codex`に認証情報が
-保存され、agentタブはこれをそのまま再利用するので、コンテナ内で再ログインする必要はない。
-plainレイアウトのagentタブ(`zj claude`など)はホストで直接ログイン済みのものをそのまま
-使うだけなので、追加設定は不要。
-
-この手順を省いても`zj py`/`zj tex`/`zj`(エージェント無指定)は今まで通り使える。
-agentタブを使おうとした時だけ、`claude: No such file or directory`のようなエラーになる。
-
-### 9. SSHサーバー(WSLではない素のUbuntu)向けセットアップ
-
-Docker無しで、Zellij + LazyVimの編集環境だけをリモートのUbuntuサーバーに入れたい場合。
-
-```
-$ bash setup_ssh.sh
-```
-
-`setup_wsl.sh`からDocker関連の手順(手順2・10相当)と`pdfview`まわり(手順8相当)を
-丸ごと省いた版。やることは: 基本パッケージ → Rust/cargoでZellij → Neovim(tarball)
-→ chezmoi(公式インストーラ、snap不要) → SSH鍵/GitHub認証 → `chezmoi init && chezmoi apply`
-→ Neovimプラグイン同期、のみ。
-
-`chezmoi apply`時に`env WSL_DISTRO_NAME`が立っていない(=WSLではない)と自動判定され、
-`.wezterm.lua`・`workspace/`(Docker関連)は展開されず、`~/.bashrc`の`zj`/`zjdel`も
-`plain`レイアウトだけを持つ版になる。セットアップ後は`zj`だけを使う(`zj py`/`zj tex`は
-このホストには存在しない)。
-
-### 既知の制約
+## 既知の制約
 
 - **クリップボード**: ホストのZellij設定(`copy_command "clip.exe"`)はWSL⇔Windowsの
   interopを使ってWindowsクリップボードにコピーする機能だが、コンテナの中や素のSSH
   サーバーからは`clip.exe`を呼べない。そのためコンテナ用・SSHサーバー用のZellij設定
   ではこの行を(テンプレートの条件分岐で)外してあり、コピーはWezTerm/ターミナル側の
-  マウス選択などに頼る形になる。
+  マウス選択などに頼る形になる。Neovim自身がマウスを捕捉する(`mouse=a`)ため、
+  素のドラッグ選択ではなくShift+ドラッグでターミナル側の選択に切り替える必要がある
+  (詳しくは[`docs/editing.md`](./docs/editing.md))。
 - **PDFプレビュー(`<leader>v`)**: `~/.local/bin/pdfview`(SumatraPDF起動用)は
   WSLのinterop前提のスクリプトなので、ホスト側Neovim(`plain`レイアウト)からは
   動くが、コンテナ内Neovim(`zj tex`)やSSHサーバー上のNeovimからはそのままでは

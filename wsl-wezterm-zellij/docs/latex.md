@@ -50,7 +50,7 @@ latexmk -pvc -cd main.tex
 `-pvc`(preview continuously)を付けると、ファイルを保存するたびに自動で再ビルドされる
 状態でシェルが張り付く(Ctrl+Cで止まるまで動き続ける)。書いては保存、を繰り返す執筆中は
 これを1枚のペインで動かしっぱなしにしておくと便利。このリポジトリの`.latexmkrc`は
-`README.md`のTutorialで案内している`latexmk -pvc -cd <文書名>/main.tex`
+`README.md`のQuick Startで案内している`latexmk -pvc -cd <文書名>/main.tex`
 (サブフォルダ運用)を前提にしている。
 
 ### 「コンパイルエラーが出た。何を見ればいい?」(VSCodeの赤い波線が無い代わりに)

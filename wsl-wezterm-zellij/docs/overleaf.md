@@ -54,7 +54,7 @@ Overleafの Account Settings から GitHub アカウントを接続する。組�
 
 ### 3. このリポジトリの`~/workspace/LaTeX-Work`にclone(WSL側)
 
-`README.md`のTutorialで案内している「サブフォルダ運用」(`<文書名>/main.tex`)に
+`README.md`のQuick Startで案内している「サブフォルダ運用」(`<文書名>/main.tex`)に
 合わせて、GitHubリポジトリを`LaTeX-Work`の下にサブフォルダとしてcloneする。
 GitHub用のSSH鍵は`setup_wsl.sh`のセットアップで既に登録済みのはず(同じ鍵がその
 GitHubアカウントでも使えるように、GitHub側で鍵を登録しておくこと)。
