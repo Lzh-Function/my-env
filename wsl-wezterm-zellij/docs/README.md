@@ -79,8 +79,10 @@ VSCodeは「エディタ」と「統合ターミナル」と「ウィンドウ�
 
 ## この環境ならではの固有事情
 
-- `zj` / `zj py` / `zj tex` / `zjdel` はこのリポジトリ独自のコマンド。標準のZellijコマンドではない
-  (`../README.md`のQuick Start参照)
+- `zj` / `zj py` / `zj tex` / `zjdel` / `zjdoctor` はこのリポジトリ独自のコマンド。標準の
+  Zellijコマンドではない(`../README.md`のQuick Start参照)
 - `zj py claude` / `zj tex codex` / `zj py both` でClaude Code・Codexをagentタブとして起動できる
+- 環境がおかしいと思ったら`zjdoctor`でひとまず状態を確認できる
+  ([`zellij.md`](./zellij.md)の「`zjdel`しても直らない」参照)
 - Neovimの設定はホストとコンテナで共有されているので、`~/.config/nvim`をどちらで編集しても
   もう片方にすぐ反映される

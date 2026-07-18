@@ -146,6 +146,8 @@ zj claude       # plainレイアウト + agentタブ(2番目)でホスト上のc
 zjdel       # ホストの Zellij セッションをリセット
 zjdel py    # Python-Work コンテナ内のセッションをリセット
 zjdel tex   # LaTeX-Work コンテナ内のセッションをリセット
+
+zjdoctor    # 環境ヘルスチェック(chezmoi diff・Lazy/Mason・Docker・コンテナ状態などを一括確認)
 ```
 
 `zj`系はセッション名を固定(`plain`/`py`/`tex`)しているので、同じコマンドを打ち直すと
