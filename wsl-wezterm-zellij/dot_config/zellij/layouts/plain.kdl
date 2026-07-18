@@ -5,11 +5,13 @@ layout {
             plugin location="zellij:status-bar"
         }
     }
-    pane split_direction="horizontal" {
-        pane size="75%" name="editor" {
-            command "bash"
-            args "-c" "nvim"
+    tab name="edit" {
+        pane split_direction="horizontal" {
+            pane size="75%" name="editor" {
+                command "bash"
+                args "-c" "nvim"
+            }
+            pane size="25%" name="shell"
         }
-        pane size="25%" name="shell"
     }
 }
