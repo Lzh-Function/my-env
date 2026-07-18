@@ -14,18 +14,20 @@
 4. [`workflows.md`](./workflows.md): 両方を組み合わせた「この環境ならでは」の一連の作業例
 5. [`editing.md`](./editing.md): コピペ・カーソルジャンプ・複数ファイル編集の実戦テクニック
    (データサイエンス/深層学習/創薬研究のコードを例に)
+6. [`explorer.md`](./explorer.md): Explorer(`<space>e`)でのディレクトリ移動
+   (親ディレクトリへ戻る・別ディレクトリへジャンプする、など)
 
 次に用途別(何を書く・書きたいか):
 
-6. [`python.md`](./python.md): `zj py`でのPython開発(uv・テスト・デバッグ・matplotlib)
-7. [`markdown.md`](./markdown.md): READMEやメモなどMarkdown執筆
-8. [`latex.md`](./latex.md): `zj tex`でのLaTeX執筆・コンパイル・エラー対処
-9. [`overleaf.md`](./overleaf.md): OverleafのWebエディタとGitHub経由で同期する
-10. [`config-files.md`](./config-files.md): `pyproject.toml`/`Dockerfile`/`.bashrc`などの
+7. [`python.md`](./python.md): `zj py`でのPython開発(uv・テスト・デバッグ・matplotlib)
+8. [`markdown.md`](./markdown.md): READMEやメモなどMarkdown執筆
+9. [`latex.md`](./latex.md): `zj tex`でのLaTeX執筆・コンパイル・エラー対処
+10. [`overleaf.md`](./overleaf.md): OverleafのWebエディタとGitHub経由で同期する
+11. [`config-files.md`](./config-files.md): `pyproject.toml`/`Dockerfile`/`.bashrc`などの
     設定ファイル編集(TOML・Docker・dotfile)
 
 急いでいるなら、まず`zellij.md`の「最初にこれだけ覚える」と`lazyvim.md`の「最初にこれだけ覚える」
-だけ読んで、あとは自分がやりたい作業(5〜10)のページと、困ったときにこのマニュアルを検索する
+だけ読んで、あとは自分がやりたい作業(5〜11)のページと、困ったときにこのマニュアルを検索する
 使い方でも十分。
 
 ## 大前提: 2つのツールは役割がまったく違う
@@ -55,7 +57,7 @@ VSCodeは「エディタ」と「統合ターミナル」と「ウィンドウ�
 | 統合ターミナル(`Ctrl+@`) | Zellij の **shellペイン** | nvimの隣に最初から用意されている |
 | エディタタブ(開いているファイル1つ1つ) | Neovimの **バッファ** | ★最重要の勘違いポイント。下記参照 |
 | コマンドパレット(`Ctrl+Shift+P`) | **which-key**(`<space>`を押して少し待つ) | LazyVimの心臓部。下記参照 |
-| ファイルエクスプローラー | **Explorer (Snacks)**(`<space>e`) | |
+| ファイルエクスプローラー | **Explorer (Snacks)**(`<space>e`) | 詳細は[`explorer.md`](./explorer.md) |
 | ファイルを名前で開く(`Ctrl+P`) | **Find Files**(`<space><space>` or `<space>ff`) | |
 | 全体検索(`Ctrl+Shift+F`) | **Grep**(`<space>sg`) | |
 | Source Control パネル | **lazygit**(`<space>gg`) | コミット・ブランチなど本格操作はこちら |

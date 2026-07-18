@@ -173,7 +173,9 @@ Neovim自体にも画面分割機能がある(Zellijのペイン分割とは別�
 | Undo履歴をツリーで見る | `<space>su`(Undotree) |
 
 `<space>e`のExplorerはVSCodeのサイドバーとほぼ同じ感覚で、矢印キー(または`j`/`k`)で
-移動、`Enter`でファイルを開く/フォルダを展開できる。
+移動、`Enter`でファイルを開く/フォルダを展開できる。ただし「常駐サイドバーではなく
+ファイルを選ぶと閉じるピッカー」という点や、親ディレクトリへの移動・別ディレクトリへの
+ジャンプの仕方は[`explorer.md`](./explorer.md)で詳しく扱っている。
 
 ## LSP(コード補完・定義ジャンプなど)
 
@@ -323,7 +325,7 @@ Vimに「マルチカーソル」という概念はそのままは無いが、�
 | マウスオーバーで型情報 | `K` |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | `u` / `Ctrl+r` |
 | `Ctrl+/`(コメント) | `gcc`(行) / `gc`(選択範囲) |
-| サイドバー(Explorer) | `<space>e` |
+| サイドバー(Explorer) | `<space>e`(詳細は[`explorer.md`](./explorer.md)) |
 | Source Control(本格操作) | `<space>gg`(lazygit) |
 | Source Control(その場確認) | `<space>gs` / `<space>gh*`(gitsigns) |
 | 拡張機能パネル | `:Lazy` |
