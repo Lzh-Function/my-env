@@ -115,6 +115,20 @@ chezmoiの対象外にしてあり、`zj`/`zjdel`/`zjdoctor`本体は`~/.config/
 二重に追記されない)。WSLホスト側は今まで通り`~/.bashrc`ごとchezmoiが全体を管理する
 (フルインストール前提のため)。
 
+**sudoが使えないユーザーでもよい**: `setup_ssh.sh`はsudoが無くても止まらない。
+Neovim/Rust/Zellij/chezmoi/lazygitはいずれも`~/.local`・`~/.cargo`配下に入るので
+元々sudo不要。`sudo`が使えるかどうかを起動時に自動判定し、使えなければ
+`apt-get install`はスキップして、代わりに何が足りないかだけを報告する:
+
+- **無いと進められないもの**(`git`・`curl`)が本当に無ければそこで停止し、
+  root権限のあるユーザーに`sudo apt-get install -y <pkg>`を頼むよう案内する
+- **無くても致命的ではないが劣化するもの**(`ripgrep`・`fd-find`・`nodejs`・`npm`・
+  `unzip`、および`cargo install zellij`に必要なCコンパイラ)は警告だけ出して続行する
+
+root権限のあるユーザーに何を頼めばいいか事前に知りたい場合は、まず
+`setup_ssh.sh`を(sudo無しユーザーで)一度実行してみれば、不足しているパッケージ名が
+そのまま`sudo apt-get install -y ...`の形で表示される。
+
 ### Claude Code / Codexの導入(任意、agentタブを使うなら)
 
 `zj [py|tex|] [claude|codex|both]`のagentタブは、WSLホストの`~/.local/bin/claude`・

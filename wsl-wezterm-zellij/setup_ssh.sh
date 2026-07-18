@@ -14,7 +14,15 @@
 #      展開されない(このスクリプトもDockerには一切触れない)
 #    - このスクリプトは「ツール導入 + chezmoi apply + ~/.bashrc への1行追記」のみ
 #
-#  非対話性: sudo パスワードと、SSH 鍵未登録時の GitHub 登録待ち以外は無人。
+#  sudoは必須ではない: 使えれば不足パッケージを自動導入する。使えない場合は
+#  スキップし、それでも無いと困るコマンド(git/curl)が本当に無ければそこで
+#  停止、"あると良い"程度のもの(ripgrep/fd/node/npm/unzip)は警告だけ出して
+#  続行する(root権限のある人に該当パッケージだけ入れてもらえば解決する)。
+#  Neovim/Zellij/chezmoiはいずれも ~/.local 配下・~/.cargo 配下に入るので、
+#  これらの導入自体にsudoは元々不要。
+#
+#  非対話性: (sudoが使える場合の)sudoパスワードと、SSH 鍵未登録時の GitHub
+#  登録待ち以外は無人。
 #
 #  使い方:
 #     bash setup_ssh.sh
@@ -28,25 +36,57 @@ log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[warn] %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[error] %s\033[0m\n' "$*" >&2; exit 1; }
 
-# --- 0. sudo 認証を維持 -----------------------------------------------------
+# --- 0. 事前チェック(sudoは無くてもよい)------------------------------------
 log "事前チェック"
-command -v sudo >/dev/null || die "sudo が見つかりません。"
-sudo -v || die "sudo 認証に失敗。"
-( while true; do sudo -n true; sleep 50; kill -0 "$$" 2>/dev/null || exit; done ) 2>/dev/null &
-trap 'kill %1 2>/dev/null || true' EXIT
+HAS_SUDO=false
+if command -v sudo >/dev/null 2>&1 && sudo -v 2>/dev/null; then
+    HAS_SUDO=true
+    ( while true; do sudo -n true; sleep 50; kill -0 "$$" 2>/dev/null || exit; done ) 2>/dev/null &
+    trap 'kill %1 2>/dev/null || true' EXIT
+    log "sudo が使えます(不足パッケージがあれば自動導入します)"
+else
+    warn "sudo が使えません。パッケージの自動導入はスキップします。"
+    warn "'手順1'で不足パッケージが表示されたら、root権限のあるユーザーにそれだけ入れてもらってください。"
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 
-# --- 1. 基本パッケージ ------------------------------------------------------
-log "基本パッケージのインストール"
-sudo apt-get update -y
-sudo apt-get install -y --no-install-recommends \
-    ca-certificates curl git build-essential \
-    btop ripgrep fd-find nodejs npm unzip
-mkdir -p "$HOME/.local/bin"
-[[ -e "$HOME/.local/bin/fd" ]] || ln -s "$(command -v fdfind)" "$HOME/.local/bin/fd" 2>/dev/null || true
+# --- 1. 基本パッケージ(sudoがあれば自動導入、無ければ不足分を警告のみ)------
+if $HAS_SUDO; then
+    log "基本パッケージのインストール"
+    sudo apt-get update -y
+    sudo apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential \
+        ripgrep fd-find nodejs npm unzip
+else
+    log "パッケージの充足チェック(sudo無しのため導入はスキップ)"
+fi
 
-# --- 2. Rust(rustup)+ cargo + Zellij --------------------------------------
+# git/curl は無いとこのスクリプト自体が進められない(chezmoi cloneやダウンロードに必須)
+for cmd in git curl; do
+    command -v "$cmd" >/dev/null 2>&1 \
+        || die "$cmd が見つかりません。root権限のあるユーザーに 'sudo apt-get install -y $cmd' を頼んでください。"
+done
+
+# 以下は無くても致命的ではないが、LazyVimの体験が落ちるもの。無ければ警告のみで続行。
+missing_pkgs=()
+command -v rg      >/dev/null 2>&1 || missing_pkgs+=("ripgrep")
+command -v fdfind   >/dev/null 2>&1 || missing_pkgs+=("fd-find")
+command -v node     >/dev/null 2>&1 || missing_pkgs+=("nodejs")
+command -v npm      >/dev/null 2>&1 || missing_pkgs+=("npm")
+command -v unzip    >/dev/null 2>&1 || missing_pkgs+=("unzip")
+if [ "${#missing_pkgs[@]}" -gt 0 ]; then
+    warn "以下が見つかりません(LazyVimの検索/一部LSPの導入が制限されます)。"
+    warn "root権限のあるユーザーに次を頼むと解決します:"
+    warn "  sudo apt-get install -y ${missing_pkgs[*]}"
+fi
+
+mkdir -p "$HOME/.local/bin"
+if command -v fdfind >/dev/null 2>&1 && [[ ! -e "$HOME/.local/bin/fd" ]]; then
+    ln -s "$(command -v fdfind)" "$HOME/.local/bin/fd" 2>/dev/null || true
+fi
+
+# --- 2. Rust(rustup)+ cargo + Zellij(いずれも ~/.cargo 配下、sudo不要)-----
 if ! command -v cargo >/dev/null 2>&1; then
     log "Rust(rustup)を非対話インストール"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -55,18 +95,23 @@ fi
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 if ! command -v zellij >/dev/null 2>&1; then
+    if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
+        warn "Cコンパイラが見つかりません。'cargo install zellij' が失敗する可能性があります。"
+        warn "root権限のあるユーザーに 'sudo apt-get install -y build-essential' を頼んでください。"
+    fi
     log "Zellij を cargo でインストール(コンパイルに数分)"
     cargo install zellij --locked
 fi
 
-# --- 3. Neovim(tarball)----------------------------------------------------
+# --- 3. Neovim(tarball、~/.local 配下に展開。sudo不要)----------------------
 if ! command -v nvim >/dev/null 2>&1; then
     log "Neovim をインストール"
     tmp="$(mktemp -d)"
     curl -Lo "$tmp/nvim.tar.gz" \
         https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz
-    sudo tar xzf "$tmp/nvim.tar.gz" -C /opt
-    sudo ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim
+    mkdir -p "$HOME/.local/opt"
+    tar xzf "$tmp/nvim.tar.gz" -C "$HOME/.local/opt"
+    ln -sf "$HOME/.local/opt/nvim-linux-x86_64/bin/nvim" "$HOME/.local/bin/nvim"
     rm -rf "$tmp"
 fi
 
