@@ -1,0 +1,308 @@
+# ~/.config/zj/zjrc.sh -- zj / zjdel / zjdoctor and their supporting PATH setup.
+#
+# This file is always fully managed by chezmoi (it's ours alone, nothing pre-existing
+# to clobber). On the WSL host it's sourced from the chezmoi-managed ~/.bashrc. On a
+# plain SSH server, ~/.bashrc is intentionally left untouched by chezmoi -- setup_ssh.sh
+# appends a single idempotent line to source this file instead, so an existing,
+# hand-customized ~/.bashrc on a non-fresh machine never gets overwritten.
+
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+# zjdoctor: health-check for this environment (shared by WSL host and SSH server).
+# Read-only except for a `Lazy sync` pass, which only installs plugins that are
+# missing per the current lazyvim.json -- never removes or downgrades anything.
+_zjd_section() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+_zjd_ok()      { printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
+_zjd_warn()    { printf '  \033[1;33m!\033[0m %s\n' "$*"; }
+_zjd_ng()      { printf '  \033[1;31m✗\033[0m %s\n' "$*"; }
+
+_zjdoctor_common() {
+  _zjd_section "chezmoi"
+  if command -v chezmoi >/dev/null 2>&1; then
+    if [ -z "$(chezmoi diff 2>/dev/null)" ]; then
+      _zjd_ok "chezmoi diff: 差分なし"
+    else
+      _zjd_warn "chezmoi diff: 差分あり('chezmoi diff'で確認、'chezmoi apply'で反映)"
+    fi
+  else
+    _zjd_ng "chezmoi が見つかりません"
+  fi
+
+  _zjd_section "ホストの基本ツール"
+  local cmd
+  for cmd in nvim zellij git; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      _zjd_ok "$cmd: $("$cmd" --version 2>&1 | head -1)"
+    else
+      _zjd_ng "$cmd が見つかりません"
+    fi
+  done
+
+  _zjd_section "Neovim (LazyVim / Mason)"
+  if nvim --headless "+Lazy! sync" +qa >/tmp/zjdoctor_lazy.log 2>&1; then
+    _zjd_ok "Lazy sync: 完了(不足プラグインがあれば自動導入されました)"
+  else
+    _zjd_warn "Lazy sync: 警告あり(/tmp/zjdoctor_lazy.log を確認)"
+  fi
+  local mason_dir="$HOME/.local/share/nvim/mason/packages" tool
+  for tool in pyright texlab marksman taplo dockerfile-language-server \
+              docker-compose-language-service hadolint bash-language-server shellcheck; do
+    if [ -d "$mason_dir/$tool" ]; then
+      _zjd_ok "mason: $tool"
+    else
+      _zjd_warn "mason: $tool が未インストール(nvim内で :Mason から導入可能)"
+    fi
+  done
+
+  _zjd_section "ホストの Zellij セッション"
+  local sessions
+  sessions="$(zellij list-sessions 2>&1)"
+  if echo "$sessions" | grep -q "No active"; then
+    _zjd_ok "アクティブなセッションなし"
+  else
+    echo "$sessions" | sed 's/^/  /'
+  fi
+}
+
+# Checks one project container: is it running, does it have lazygit, any zellij
+# sessions inside. $1=workspace dir name (e.g. Python-Work), $2=compose service name.
+_zjdoctor_container_check() {
+  local dir="$1" svc="$2"
+  _zjd_section "$dir (service: $svc)"
+  if [ ! -d "$HOME/workspace/$dir" ]; then
+    _zjd_warn "$HOME/workspace/$dir が見つかりません(chezmoi apply未実施?)"
+    return
+  fi
+  if ! (cd "$HOME/workspace/$dir" && docker compose ps --status running --services 2>/dev/null | grep -qx "$svc"); then
+    _zjd_warn "コンテナ停止中('zj $svc' で起動します)"
+    return
+  fi
+  _zjd_ok "コンテナ起動中"
+  if (cd "$HOME/workspace/$dir" && docker compose exec -T "$svc" bash -lc 'command -v lazygit') >/dev/null 2>&1; then
+    _zjd_ok "lazygit(コンテナ内): 導入済み"
+  else
+    _zjd_warn "lazygit(コンテナ内)が見つかりません(docker compose build で再ビルドが必要かも)"
+  fi
+  local csessions
+  csessions="$(cd "$HOME/workspace/$dir" && docker compose exec -T "$svc" zellij list-sessions 2>&1)"
+  if echo "$csessions" | grep -q "No active"; then
+    _zjd_ok "アクティブなセッションなし"
+  else
+    echo "$csessions" | sed 's/^/  /'
+  fi
+}
+
+# zellij work env
+{{- if env "WSL_DISTRO_NAME" }}
+# WSL host: py/tex run Neovim + Zellij *inside* the project container (see workspace/*/Dockerfile).
+# "" (plain): host-side Zellij + host-side Neovim, for quick edits without a container.
+#
+# Optional agent tab: zj [py|tex|] [claude|codex|both]
+#   - py/tex: agent tab is 3rd tab (after work, monitor); runs via the container's
+#     /host-home bind mount (HOME override) to reuse the WSL host's claude/codex
+#     auth, config and skills instead of re-authenticating inside the container.
+#   - plain: agent tab is 2nd tab (after edit); runs claude/codex directly on the host.
+#   - "both": agent tab is split horizontally, top 50% claude / bottom 50% codex.
+#   - The layout (incl. agent tab) is only used when *creating* a session; if a
+#     same-named session is already running, zj just reattaches to it as-is
+#     (same as the base zj/zjdel behavior) -- zjdel first if you need to change agents.
+_zj_layout() {
+  local mode="$1" agent="$2"
+  local home_prefix="" claude_bin="claude" codex_bin="codex" home_env=""
+  if [ "$mode" = "py" ] || [ "$mode" = "tex" ]; then
+    # Container mounts the WSL host's $HOME at the same absolute path (see
+    # workspace/*/compose.yml), since claude/codex are symlinks with absolute
+    # targets back into $HOME -- a remapped path would leave them dangling.
+    home_prefix="$HOME"
+    claude_bin="$home_prefix/.local/bin/claude"
+    codex_bin="$home_prefix/.local/bin/codex"
+    home_env="HOME=$home_prefix "
+  fi
+
+  local agent_tab=""
+  case "$agent" in
+    claude)
+      agent_tab="    tab name=\"agent\" {
+        pane name=\"claude\" {
+            command \"bash\"
+            args \"-c\" \"${home_env}exec ${claude_bin}\"
+        }
+    }"
+      ;;
+    codex)
+      agent_tab="    tab name=\"agent\" {
+        pane name=\"codex\" {
+            command \"bash\"
+            args \"-c\" \"${home_env}exec ${codex_bin}\"
+        }
+    }"
+      ;;
+    both)
+      agent_tab="    tab name=\"agent\" {
+        pane split_direction=\"horizontal\" {
+            pane size=\"50%\" name=\"claude\" {
+                command \"bash\"
+                args \"-c\" \"${home_env}exec ${claude_bin}\"
+            }
+            pane size=\"50%\" name=\"codex\" {
+                command \"bash\"
+                args \"-c\" \"${home_env}exec ${codex_bin}\"
+            }
+        }
+    }"
+      ;;
+  esac
+
+  case "$mode" in
+    py|tex)
+      cat <<KDL
+layout {
+    default_tab_template {
+        children
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+    tab name="work" {
+        pane split_direction="horizontal" {
+            pane size="75%" name="editor" {
+                command "nvim"
+            }
+            pane name="shell" {
+                command "bash"
+            }
+        }
+    }
+    tab name="monitor" {
+        pane name="btop" {
+            command "btop"
+        }
+    }
+$agent_tab
+}
+KDL
+      ;;
+    "")
+      cat <<KDL
+layout {
+    default_tab_template {
+        children
+        pane size=1 borderless=true {
+            plugin location="zellij:compact-bar"
+        }
+    }
+    tab name="edit" {
+        pane split_direction="horizontal" {
+            pane size="75%" name="editor" {
+                command "bash"
+                args "-c" "nvim"
+            }
+            pane size="25%" name="shell"
+        }
+    }
+$agent_tab
+}
+KDL
+      ;;
+  esac
+}
+zj() {
+  local mode="$1" agent="$2"
+  case "$mode" in
+    py|tex|"") ;;
+    claude|codex|both) agent="$mode"; mode="" ;;
+    *) zellij "$@"; return ;;
+  esac
+  case "$agent" in
+    ""|claude|codex|both) ;;
+    *) echo "usage: zj [py|tex] [claude|codex|both]" >&2; return 1 ;;
+  esac
+
+  case "$mode" in
+    py)
+      cd ~/workspace/Python-Work || return
+      docker compose up -d || return
+      if [ -n "$agent" ]; then
+        docker compose exec -it py zellij --layout-string "$(_zj_layout py "$agent")" attach --create py
+      else
+        docker compose exec -it py zellij --layout py attach --create py
+      fi
+      ;;
+    tex)
+      cd ~/workspace/LaTeX-Work || return
+      docker compose up -d || return
+      if [ -n "$agent" ]; then
+        docker compose exec -it tex zellij --layout-string "$(_zj_layout tex "$agent")" attach --create tex
+      else
+        docker compose exec -it tex zellij --layout tex attach --create tex
+      fi
+      ;;
+    "")
+      if [ -n "$agent" ]; then
+        zellij --layout-string "$(_zj_layout "" "$agent")" attach --create plain
+      else
+        zellij --layout plain attach --create plain
+      fi
+      ;;
+  esac
+}
+zjdel() {
+  case "$1" in
+    py)  (cd ~/workspace/Python-Work && docker compose exec -it py zellij kill-all-sessions -y) ;;
+    tex) (cd ~/workspace/LaTeX-Work  && docker compose exec -it tex zellij kill-all-sessions -y) ;;
+    "")  zellij kill-all-sessions -y ;;
+    *)   echo "usage: zjdel [py|tex]" >&2; return 1 ;;
+  esac
+}
+zjdoctor() {
+  _zjdoctor_common
+
+  _zjd_section "Docker"
+  if command -v docker >/dev/null 2>&1; then
+    _zjd_ok "docker: $(docker --version)"
+  else
+    _zjd_ng "docker が見つかりません"
+    return 1
+  fi
+  if docker version >/dev/null 2>&1; then
+    _zjd_ok "docker daemon: 応答あり"
+  else
+    _zjd_ng "docker daemon に接続できません(起動確認 / 権限確認)"
+    return 1
+  fi
+  if command -v lazygit >/dev/null 2>&1; then
+    _zjd_ok "lazygit(ホスト): $(lazygit --version 2>&1 | head -1)"
+  else
+    _zjd_warn "lazygit(ホスト)が見つかりません"
+  fi
+
+  _zjd_section "Claude Code / Codex(agentタブ、任意)"
+  local cmd
+  for cmd in claude codex; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      _zjd_ok "$cmd: 導入済み"
+    else
+      _zjd_warn "$cmd: 未導入(agentタブを使わないなら問題なし)"
+    fi
+  done
+
+  _zjdoctor_container_check "Python-Work" "py"
+  _zjdoctor_container_check "LaTeX-Work" "tex"
+}
+{{- else }}
+# Plain SSH server (no Docker/workspace here): host-side Zellij + Neovim only.
+zj() {
+  case "$1" in
+    "") zellij --layout plain attach --create plain ;;
+    *)   zellij "$@" ;;
+  esac
+}
+zjdel() {
+  zellij kill-all-sessions -y
+}
+zjdoctor() {
+  _zjdoctor_common
+  echo "(SSHサーバー環境のため、Docker / agentタブ関連のチェックはスキップしています)"
+}
+{{- end }}

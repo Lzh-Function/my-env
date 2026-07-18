@@ -4,11 +4,15 @@
 #  ── まっさらな Ubuntu から zj (plainレイアウト) まで一気通貫
 #
 #  役割分担:
-#    - 設定ファイル(.bashrc / nvim / zellij)は chezmoi(my-env リポジトリ)が展開
+#    - 設定ファイル(nvim / zellij / zjrc.sh)は chezmoi(my-env リポジトリ)が展開
+#    - ~/.bashrc 自体はchezmoiの対象外(.chezmoiignore)。このホストは「まっさら」
+#      とは限らず、既存の ~/.bashrc を上書きしたくないため、chezmoi apply後に
+#      zj/zjdel/zjdoctorを読み込む1行だけを本スクリプトが冪等に追記する
+#      (既に追記済みなら何もしない)
 #    - Docker/workspace(Python-Work・LaTeX-Work)は WSL専用。.chezmoiignore が
 #      env WSL_DISTRO_NAME の有無を見て自動判定するので、このホストには一切
 #      展開されない(このスクリプトもDockerには一切触れない)
-#    - このスクリプトは「ツール導入 + chezmoi apply」のみ
+#    - このスクリプトは「ツール導入 + chezmoi apply + ~/.bashrc への1行追記」のみ
 #
 #  非対話性: sudo パスワードと、SSH 鍵未登録時の GitHub 登録待ち以外は無人。
 #
@@ -102,11 +106,26 @@ sourceDir = "$HOME/.local/share/chezmoi/$SOURCE_SUB"
 EOF
 echo "source-path = $(chezmoi source-path)"
 
-log "chezmoi apply(SSHサーバーとして判定: WSL_DISTRO_NAME 未設定なので .bashrc / nvim / zellij のみ展開、Docker/workspace は対象外)"
+log "chezmoi apply(SSHサーバーとして判定: WSL_DISTRO_NAME 未設定なので nvim / zellij / zjrc.sh のみ展開。~/.bashrc自体・Docker/workspaceは対象外)"
 chezmoi apply
 
 [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+# --- 6.5. ~/.bashrc に zj/zjdel/zjdoctorの読み込み行だけ追記 ----------------
+# ~/.bashrc自体はchezmoiの対象外なので、既存の内容(このホストが「まっさら」
+# ではなく既に手元で使われていた場合の独自設定など)を一切上書きしない。
+ZJRC_SOURCE_LINE='[ -f "$HOME/.config/zj/zjrc.sh" ] && . "$HOME/.config/zj/zjrc.sh"'
+touch "$HOME/.bashrc"
+if grep -qxF "$ZJRC_SOURCE_LINE" "$HOME/.bashrc"; then
+    log "~/.bashrc は既に zjrc.sh を読み込み済み(追記不要)"
+else
+    log "~/.bashrc に zj / zjdel / zjdoctor の読み込み行を追記(既存の内容はそのまま残す)"
+    {
+        printf '\n# my-env: zj / zjdel / zjdoctor ------------------------------------------\n'
+        printf '%s\n' "$ZJRC_SOURCE_LINE"
+    } >> "$HOME/.bashrc"
+fi
 
 # --- 7. Neovim プラグイン同期(headless)-----------------------------------
 log "Neovim プラグインを同期(LSP/treesitterは初回 zj 起動時に自動完了)"

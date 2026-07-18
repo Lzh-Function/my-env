@@ -10,5 +10,6 @@ setup_wsl.sh
 setup_ssh.sh
 {{- if not (env "WSL_DISTRO_NAME") }}
 workspace
+.bashrc
 {{- end }}
 {{- end }}

@@ -107,6 +107,14 @@ bash ~/.local/share/chezmoi/wsl-wezterm-zellij/setup_ssh.sh
 Docker関連やWindows向けファイルは展開されず、`zj`(plainレイアウトのみ)が使える構成になる
 (詳細は「アーキテクチャ」参照)。
 
+**既存の`~/.bashrc`は上書きされない**: SSHサーバーは「まっさら」とは限らず、既に
+手元で使っていたサーバーに後からこの環境を足すケースを想定している。`~/.bashrc`自体は
+chezmoiの対象外にしてあり、`zj`/`zjdel`/`zjdoctor`本体は`~/.config/zj/zjrc.sh`
+(常にchezmoi管理)に分離。`setup_ssh.sh`が`chezmoi apply`のあと、この`zjrc.sh`を
+読み込む1行だけを`~/.bashrc`に**冪等に追記**する(既存の内容はそのまま、再実行しても
+二重に追記されない)。WSLホスト側は今まで通り`~/.bashrc`ごとchezmoiが全体を管理する
+(フルインストール前提のため)。
+
 ### Claude Code / Codexの導入(任意、agentタブを使うなら)
 
 `zj [py|tex|] [claude|codex|both]`のagentタブは、WSLホストの`~/.local/bin/claude`・
@@ -252,13 +260,19 @@ wsl-wezterm-zellij/
 ├── .chezmoiignore              # 適用対象の切り替え
 │                                  - Windows: wezterm設定のみ
 │                                  - Linux共通: wezterm・README・docs・setup系スクリプトは除外
-│                                  - Linuxかつ非WSL(SSHサーバー): workspace/ も除外
-├── dot_bashrc.tmpl               # → ~/.bashrc (zj / zjdel 関数。WSL/SSHで内容が変わるテンプレート。
-│                                    WSL版のみ _zj_layout() でagentタブ付きレイアウトを動的生成)
+│                                  - Linuxかつ非WSL(SSHサーバー): workspace/ と .bashrc 自体も除外
+│                                    (既存の~/.bashrcを上書きしないため。下記zjrc.sh参照)
+├── dot_bashrc.tmpl               # → ~/.bashrc (WSLのみchezmoiが全体を管理。中身は
+│                                    ~/.config/zj/zjrc.sh を読み込む1行のみ)
 ├── dot_wezterm.lua               # → ~/.wezterm.lua (Windows側)
 ├── dot_config/
 │   ├── nvim/                     # → ~/.config/nvim (LazyVim。lang.python/tex/markdown/toml/
 │   │                                docker、util.dotのextrasを有効化)
+│   ├── zj/
+│   │   └── zjrc.sh.tmpl           # → ~/.config/zj/zjrc.sh (zj/zjdel/zjdoctor本体。WSL/SSHで
+│   │                                 内容が変わるテンプレート。WSL版のみ_zj_layout()で
+│   │                                 agentタブ付きレイアウトを動的生成。WSL/SSHどちらでも
+│   │                                 chezmoiが常にフル管理 ── ユーザーの既存ファイルではないため)
 │   └── zellij/
 │       ├── config.kdl.tmpl        # ホスト用(WSLのみclip.exe連携。SSHサーバーでは無し)
 │       └── layouts/
