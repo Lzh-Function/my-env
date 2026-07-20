@@ -1,4 +1,4 @@
-<#
+﻿<#
 =============================================================================
  Windows 側セットアップ (PowerShell)
  WezTerm + Nerd Font + SumatraPDF + chezmoi を入れ、my-env リポジトリを
@@ -40,7 +40,9 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
             [System.Environment]::GetEnvironmentVariable('Path','User')
 
 # chezmoi のパス解決(PATH に出ていない場合のフォールバック)
-$chezmoi = (Get-Command chezmoi -ErrorAction SilentlyContinue)?.Source
+# Windows PowerShell 5.1(?. 非対応)でも動くよう、null条件演算子は使わない
+$chezmoiCmd = Get-Command chezmoi -ErrorAction SilentlyContinue
+$chezmoi = if ($chezmoiCmd) { $chezmoiCmd.Source } else { $null }
 if (-not $chezmoi) { $chezmoi = "$env:LOCALAPPDATA\Microsoft\WinGet\Links\chezmoi.exe" }
 if (-not (Test-Path $chezmoi)) { throw "chezmoi が見つかりません。新しい PowerShell を開いて再実行してください。" }
 
