@@ -56,7 +56,7 @@ $cfgDir = "$env:USERPROFILE\.config\chezmoi"
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
 $srcPath = "$env:USERPROFILE/.local/share/chezmoi/$SourceSub"
 @"
-sourceDir = "$srcPath"
+sourceDir = '$srcPath'
 "@ | Set-Content -Path "$cfgDir\chezmoi.toml" -Encoding utf8
 
 # 念のため source-path を確認表示
