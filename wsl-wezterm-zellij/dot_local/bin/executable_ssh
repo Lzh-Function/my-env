@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# WSL側では ssh を丸ごとWindows純正のssh.exeへ委譲する。Windows側の
+# ~/.ssh(鍵・known_hosts・config)とssh-agentをそのまま使うのが目的で、
+# WSL側に別の鍵を持たない(git clone時のssh認証もこれ経由になる)。
+# ~/.local/bin は PATH上で /usr/bin より前に来るため、WSL標準の ssh より
+# 優先してこちらが呼ばれる(zjrc.sh.tmpl のPATH設定を参照)。
+exec ssh.exe "$@"

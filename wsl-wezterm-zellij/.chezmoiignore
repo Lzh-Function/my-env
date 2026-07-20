@@ -11,5 +11,6 @@ setup_ssh.sh
 {{- if not (env "WSL_DISTRO_NAME") }}
 workspace
 .bashrc
+.local/bin/ssh
 {{- end }}
 {{- end }}
