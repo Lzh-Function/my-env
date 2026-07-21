@@ -22,10 +22,9 @@ $RepoUrl   = 'git@github.com:Lzh-Function/my-env.git'
 $SourceSub = 'wsl-wezterm-zellij'   # chezmoi の source root にするサブディレクトリ
 
 # --- 1. winget で各種インストール ------------------------------------------
-Info 'winget でインストール(WezTerm / JetBrainsMono Nerd Font / SumatraPDF / chezmoi / Git)'
+Info 'winget でインストール(WezTerm / SumatraPDF / chezmoi / Git)'
 $pkgs = @(
     'wez.wezterm',
-    'DEVCOM.JetBrainsMonoNerdFont',
     'SumatraPDF.SumatraPDF',
     'twpayne.chezmoi',
     'Git.Git'
@@ -38,6 +37,25 @@ foreach ($p in $pkgs) {
 # winget で入れた実行ファイルを今のセッションの PATH に反映
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path','User')
+
+# --- 1.5. フォント(Moralerspace Neon、winget未配布のためGitHub releaseから直接)-----
+# 日本語グリフ・Nerd Fontアイコンとも標準搭載(合成元Monaspaceのtexture healing込み)。
+# ユーザー単位でのインストールなので管理者権限は不要。バージョン番号が変わったら
+# 下のURLも合わせて更新すること: https://github.com/yuru7/moralerspace/releases/latest
+Info 'フォント(Moralerspace Neon)をインストール'
+$fontZip = "$env:TEMP\Moralerspace.zip"
+$fontDir = "$env:TEMP\Moralerspace"
+Invoke-WebRequest -Uri 'https://github.com/yuru7/moralerspace/releases/latest/download/Moralerspace_v2.0.0.zip' -OutFile $fontZip
+Expand-Archive -Path $fontZip -DestinationPath $fontDir -Force
+
+$userFontDir = "$env:LOCALAPPDATA\Microsoft\Windows\Fonts"
+New-Item -ItemType Directory -Force -Path $userFontDir | Out-Null
+Get-ChildItem -Path "$fontDir\*" -Recurse -Include "MoralerspaceNeon-*.ttf" | ForEach-Object {
+    Copy-Item $_.FullName -Destination $userFontDir -Force
+    New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts' `
+        -Name "$($_.BaseName) (TrueType)" -Value $_.Name -PropertyType String -Force | Out-Null
+}
+Remove-Item $fontZip, $fontDir -Recurse -Force
 
 # chezmoi のパス解決(PATH に出ていない場合のフォールバック)
 # Windows PowerShell 5.1(?. 非対応)でも動くよう、null条件演算子は使わない

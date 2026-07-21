@@ -8,8 +8,8 @@ config.default_domain = 'WSL:Ubuntu'
 -- config.default_prog = { 'C:\\Windows\\System32\\wsl.exe', '--distribution', 'Ubuntu', '--cd', '~' }
 
 -- フォント(Nerd Font 必須)
-config.font = wezterm.font 'JetBrainsMono Nerd Font Mono'
-config.font_size = 10.0
+config.font = wezterm.font 'Moralerspace Neon'
+config.font_size = 11.0
 
 -- 透過設定
 config.window_background_opacity = 0.9

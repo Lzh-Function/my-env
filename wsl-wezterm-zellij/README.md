@@ -60,9 +60,12 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 & "$env:USERPROFILE\.local\share\chezmoi\wsl-wezterm-zellij\setup_windows.ps1"
 ```
 
-`setup_windows.ps1`がwinget経由でWezTerm・Nerd Font・SumatraPDF・chezmoi・Gitを導入し、
-`chezmoi init`(既にcloneされているので実質no-op)→`chezmoi apply`で`.wezterm.lua`を
-展開する(`.chezmoiignore`によりWindows側はwezterm設定以外は無視される)。
+`setup_windows.ps1`がwinget経由でWezTerm・SumatraPDF・chezmoi・Gitを導入し、続けて
+フォント([Moralerspace](https://github.com/yuru7/moralerspace) Neon。日本語グリフ・
+Nerd Fontアイコンとも標準搭載)をGitHub releaseから取得してユーザー単位でインストール
+(管理者権限不要。winget未配布のためこのフォントだけは直接ダウンロードする方式)、
+最後に`chezmoi init`(既にcloneされているので実質no-op)→`chezmoi apply`で
+`.wezterm.lua`を展開する(`.chezmoiignore`によりWindows側はwezterm設定以外は無視される)。
 
 WezTermだけ単体で使いたい(WSLホストのセットアップはしない)場合もここまでで完了。
 
