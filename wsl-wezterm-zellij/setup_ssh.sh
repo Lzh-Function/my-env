@@ -57,7 +57,7 @@ if $HAS_SUDO; then
     sudo apt-get update -y
     sudo apt-get install -y --no-install-recommends \
         ca-certificates curl git build-essential \
-        ripgrep fd-find nodejs npm unzip
+        btop ripgrep fd-find nodejs npm unzip
 else
     log "パッケージの充足チェック(sudo無しのため導入はスキップ)"
 fi
@@ -70,6 +70,7 @@ done
 
 # 以下は無くても致命的ではないが、LazyVimの体験が落ちるもの。無ければ警告のみで続行。
 missing_pkgs=()
+command -v btop     >/dev/null 2>&1 || missing_pkgs+=("btop")
 command -v rg      >/dev/null 2>&1 || missing_pkgs+=("ripgrep")
 command -v fdfind   >/dev/null 2>&1 || missing_pkgs+=("fd-find")
 command -v node     >/dev/null 2>&1 || missing_pkgs+=("nodejs")
@@ -112,6 +113,21 @@ if ! command -v nvim >/dev/null 2>&1; then
     mkdir -p "$HOME/.local/opt"
     tar xzf "$tmp/nvim.tar.gz" -C "$HOME/.local/opt"
     ln -sf "$HOME/.local/opt/nvim-linux-x86_64/bin/nvim" "$HOME/.local/bin/nvim"
+    rm -rf "$tmp"
+fi
+
+# --- 3.5. lazygit(GitHub release tarball、~/.local 配下、sudo不要)---------
+# LazyVimは lazygit が PATH 上にあれば <leader>gg / <leader>gG を自動で有効化する
+# (~/.local/share/nvim/lazy/LazyVim/lua/lazyvim/config/keymaps.lua)。設定側の変更は不要。
+if ! command -v lazygit >/dev/null 2>&1; then
+    log "lazygit をインストール"
+    LAZYGIT_VERSION="$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" \
+        | grep -Po '"tag_name": "v\K[^"]*')"
+    tmp="$(mktemp -d)"
+    curl -Lo "$tmp/lazygit.tar.gz" \
+        "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
+    tar xf "$tmp/lazygit.tar.gz" -C "$tmp" lazygit
+    install "$tmp/lazygit" "$HOME/.local/bin/lazygit"
     rm -rf "$tmp"
 fi
 

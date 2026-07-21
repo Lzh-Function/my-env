@@ -123,7 +123,7 @@ zj              # plainレイアウト。コンテナなしでホストのnvim+s
 ## 7. Gitでコミットするまでの一連の流れ
 
 `<space>gg`でlazygitを開くのが一番早い(VSCodeのSource Controlパネル相当。ホストWSL・
-`zj py`・`zj tex`のどのコンテナでもプリインストール済み)。
+SSHサーバー・`zj py`・`zj tex`のどのコンテナでもプリインストール済み)。
 
 1. `<space>gg`でlazygitのTUIを開く
 2. ファイル一覧から変更点を確認、`Space`でステージ(全部なら`a`)

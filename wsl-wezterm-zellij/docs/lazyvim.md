@@ -215,14 +215,15 @@ Neovim自体にも画面分割機能がある(Zellijのペイン分割とは別�
 
 ## Git連携
 
-3系統ある: **lazygit**(コミット・ブランチ・stageなど本格操作、VSCodeのSource Control
-パネルに一番近い)、**gitsigns系**(`<space>gh*`、今のファイルの変更行=hunkをその場で
+4系統ある: **lazygit**(コミット・ブランチ・stageなど本格操作、VSCodeのSource Control
+パネルに一番近い)、**Snacksのgitピッカー**(`<space>gs`/`<space>gd`など、変更ファイルを
+リストで一覧する用)、**gitsigns系**(`<space>gh*`、今のファイルの変更行=hunkをその場で
 ちょいちょい触る用)、そして素の`git`コマンド(shellペインから直接)。
 
 ### lazygit(`<space>gg`): メインで使うならこれ
 
-この環境にはlazygitがプリインストールされている(ホストWSL・Python-Work/LaTeX-Work
-コンテナすべて)。LazyVimは`lazygit`がPATH上にあると自動で`<space>gg`を有効化する
+この環境にはlazygitがプリインストールされている(ホストWSL・SSHサーバー・
+Python-Work/LaTeX-Workコンテナすべて)。LazyVimは`lazygit`がPATH上にあると自動で`<space>gg`を有効化する
 仕組みなので、追加設定なしでそのまま使える。
 
 | したいこと(VSCodeの操作) | LazyVimでの操作 |
@@ -236,6 +237,46 @@ Neovim自体にも画面分割機能がある(Zellijのペイン分割とは別�
 操作感にかなり近く、コミット単位のグラフ表示やインタラクティブなステージングもできるので、
 **日常のコミット・ブランチ操作はまずこれを使えばよい**。
 
+**「Root Dir」がどう決まるか**: `<space>gg`は**今フォーカスしているバッファのファイル**
+から上方向に`.git`を探して、そのリポジトリを開く。複数のリポジトリをまとめた
+`~/work/`のような(それ自体はgit管理外の)ディレクトリでNeovimを起動した直後など、
+**ファイルを1つも開いていない状態**だと探す起点が無く、Neovim自身のカレントディレクトリ
+(`:pwd`)にフォールバックしてしまう。それがgitリポジトリでなければlazygitは対象外の
+状態で開いてしまう。対処は2通り:
+
+- 対象リポジトリ内のファイルを1つ開いてから`<space>gg`を押す(その時点のバッファを
+  基準に再判定されるので、それだけで正しいリポジトリが開く)
+- 先にExplorerの**`Ctrl+c`**(対象ディレクトリにカーソルを合わせて押す。`tcd`相当。
+  [`explorer.md`](./explorer.md)の「ディレクトリを移動する」参照)でNeovimの
+  カレントディレクトリ自体をそのリポジトリへ移してから`<space>gg`(または明示的に
+  cwd版の`<space>gG`)を押す
+
+### Snacksのgitピッカー(`<space>gs`/`<space>gd`など): 変更ファイルを一覧で見る
+
+lazygitのフルスクリーンTUIを開かずに、変更のあったファイルをリストで一覧・ジャンプ
+したいときに使う。
+
+| したいこと(VSCodeの操作) | LazyVimでの操作 |
+|---|---|
+| Source Control パネル(変更点一覧) | `<space>gs`(Git Status) |
+| 差分を見る(hunk単位、プロジェクト全体) | `<space>gd`(Git Diff hunks) |
+| originとの差分 | `<space>gD` |
+| stashを見る | `<space>gS`(Git Stash。gitsignsの`<space>ghS`とは別物、下記参照) |
+
+**要注意: これらは`<space>gg`と違い、Neovimのカレントディレクトリ(`:pwd`)しか見ない。**
+今どのファイルを開いているか(フォーカスしているバッファ)は一切考慮されない
+(`<space>gg`のような「開いているファイルから自動で探す」機能が無い)。つまり
+`work/project-a/main.py`を開いている状態でも、Neovim自身のカレントディレクトリが
+まだ`work/`(gitリポジトリではない場所)のままなら、`<space>gs`は**「No results found」**
+になる ── バグではなく、`work/`自体がgitリポジトリではないので正しく「対象なし」と
+返している(実機で動作確認済み)。
+
+**対処**: 先にExplorerの**`Ctrl+c`**で対象リポジトリへNeovimのカレントディレクトリを
+移しておく([`explorer.md`](./explorer.md)参照。コマンドラインから直接`:tcd <パス>`でも同じ)。
+一度移しておけば、以降`<space>gs`・`<space>gd`・`<space>gG`(cwd版)・
+`<space>gg`(バッファ未フォーカス時のフォールバック)すべてがそのリポジトリを見る
+ようになる。
+
 ### gitsigns系(`<space>gh*`): エディタ上でその場確認・部分ステージ
 
 ファイルを編集しながら「この数行だけステージしたい」「この行、誰がいつ変更した?」を
@@ -243,10 +284,6 @@ Neovim自体にも画面分割機能がある(Zellijのペイン分割とは別�
 
 | したいこと(VSCodeの操作) | LazyVimでの操作 |
 |---|---|
-| Source Control パネル(変更点一覧) | `<space>gs`(Git Status) |
-| 差分を見る(hunk単位、プロジェクト全体) | `<space>gd`(Git Diff hunks) |
-| originとの差分 | `<space>gD` |
-| stashを見る | `<space>gS` |
 | 次/前の変更行(hunk)にジャンプ | `]h` / `[h` |
 | 最初/最後の変更行にジャンプ | `[H` / `]H` |
 | その行のBlame(誰がいつ変更したか) | `<space>ghb`(Blame Line) |
@@ -265,6 +302,9 @@ Neovim自体にも画面分割機能がある(Zellijのペイン分割とは別�
   VSCodeのSource Controlパネルに近い一覧性で操作できる
 - **細かいオプション付きの操作**(`git rebase -i`など) → 隣のshellペインで素直に`git`
   コマンドを打つのが確実
+- **複数リポジトリをまとめたディレクトリ(`~/work/`など)で作業していて、git系の
+  キーが効かない/空になる** → Explorerの`Ctrl+c`で対象リポジトリへカレントディレクトリを
+  移してから使う。詳しくは上記「Root Dirがどう決まるか」「Snacksのgitピッカー」参照
 
 ## 設定変更・拡張機能管理
 
@@ -327,5 +367,5 @@ Vimに「マルチカーソル」という概念はそのままは無いが、�
 | `Ctrl+/`(コメント) | `gcc`(行) / `gc`(選択範囲) |
 | サイドバー(Explorer) | `<space>e`(詳細は[`explorer.md`](./explorer.md)) |
 | Source Control(本格操作) | `<space>gg`(lazygit) |
-| Source Control(その場確認) | `<space>gs` / `<space>gh*`(gitsigns) |
+| Source Control(その場確認) | `<space>gs`(Snacksピッカー) / `<space>gh*`(gitsigns) |
 | 拡張機能パネル | `:Lazy` |
