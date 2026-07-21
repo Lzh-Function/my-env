@@ -108,6 +108,18 @@ if ! command -v lazygit >/dev/null 2>&1; then
     rm -rf "$tmp"
 fi
 
+# --- 4.6. fastfetch(GitHub release tarball)---------------------------------
+# シェル起動時にロゴ+システム情報を表示するツール(~/.bashrcから呼び出す)。
+if ! command -v fastfetch >/dev/null 2>&1; then
+    log "fastfetch をインストール"
+    tmp="$(mktemp -d)"
+    curl -Lo "$tmp/fastfetch.tar.gz" \
+        "https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-amd64.tar.gz"
+    tar xzf "$tmp/fastfetch.tar.gz" -C "$tmp"
+    install "$tmp/fastfetch-linux-amd64/usr/bin/fastfetch" "$HOME/.local/bin/fastfetch"
+    rm -rf "$tmp"
+fi
+
 # --- 5. chezmoi(snap)------------------------------------------------------
 if ! command -v chezmoi >/dev/null 2>&1; then
     log "chezmoi を snap でインストール"

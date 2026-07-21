@@ -22,6 +22,13 @@ RUN LAZYGIT_VERSION="$(curl -s "https://api.github.com/repos/jesseduffield/lazyg
     && install /tmp/lazygit /usr/local/bin/lazygit \
     && rm /tmp/lazygit.tar.gz /tmp/lazygit
 
+# fastfetch: shows a logo + system info banner when the shell pane starts (see zellij/layouts)
+RUN curl -Lo /tmp/fastfetch.tar.gz \
+        "https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-amd64.tar.gz" \
+    && tar xzf /tmp/fastfetch.tar.gz -C /tmp \
+    && install /tmp/fastfetch-linux-amd64/usr/bin/fastfetch /usr/local/bin/fastfetch \
+    && rm -rf /tmp/fastfetch.tar.gz /tmp/fastfetch-linux-amd64
+
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH

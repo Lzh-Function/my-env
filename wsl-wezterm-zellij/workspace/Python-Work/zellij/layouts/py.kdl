@@ -12,6 +12,7 @@ layout {
             }
             pane name="shell" {
                 command "bash"
+                args "-c" "command -v fastfetch >/dev/null 2>&1 && fastfetch; exec bash"
             }
         }
     }
