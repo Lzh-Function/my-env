@@ -27,18 +27,48 @@
 chezmoiのsourceDirを明示的にサブディレクトリへ固定する構成になっている
 (`chezmoi init`だけだとリポジトリ直下を丸ごとsourceとして扱おうとしてしまう)。
 
-**前提**: このリポジトリはprivateなので、cloneする前にSSH鍵をGitHubに登録しておくこと。
+**前提**: このリポジトリはprivateなので、cloneする前にSSH鍵をGitHubに登録しておく
+必要がある(具体的な手順は対象ごとに下記の各セクション内に記載)。
 
-```bash
-ssh-keygen -t ed25519 -C "$(whoami)@$(hostname)"
-cat ~/.ssh/id_ed25519.pub
+### Windows(WezTerm) ── WSLホストならここから始める
+
+WSLホストとして使う場合は**必ずこちらを先に終わらせてから、下記「WSLホスト」に進む**。
+理由: WSL側のセットアップにはこのリポジトリをWSLへcloneする必要があり、それには
+動くSSH認証が要る。先にWindows側でSSH鍵を登録しておけば、WSL側はそれを間借りする
+だけで済み、WSL側で別に鍵を作らずに済む(詳しくは「WSLホスト」の手順内で説明)。
+
+**1. SSH鍵を登録**(このリポジトリはprivateなのでclone前に必要)
+
+```powershell
+ssh-keygen -t ed25519 -C "$env:USERNAME@$env:COMPUTERNAME"
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub
 # 表示された公開鍵を GitHub → Settings → SSH and GPG keys → New SSH key に登録
 ```
-(登録済みなら不要。)
+
+**2. リポジトリをclone**
+
+```powershell
+winget install -e --id Git.Git   # git が無ければ
+
+git clone git@github.com:Lzh-Function/my-env.git $env:USERPROFILE\.local\share\chezmoi
+```
+
+**3. `setup_windows.ps1`を実行**
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+& "$env:USERPROFILE\.local\share\chezmoi\wsl-wezterm-zellij\setup_windows.ps1"
+```
+
+`setup_windows.ps1`がwinget経由でWezTerm・Nerd Font・SumatraPDF・chezmoi・Gitを導入し、
+`chezmoi init`(既にcloneされているので実質no-op)→`chezmoi apply`で`.wezterm.lua`を
+展開する(`.chezmoiignore`によりWindows側はwezterm設定以外は無視される)。
+
+WezTermだけ単体で使いたい(WSLホストのセットアップはしない)場合もここまでで完了。
 
 ### WSLホスト(Windows PC上のWSL2)
 
-前提: WSL2 + Ubuntuが起動していること。まっさらな場合は先に:
+前提: 上記「Windows(WezTerm)」を先に終わらせていること。WSL2 + Ubuntuがまだなら:
 
 ```powershell
 wsl --shutdown
@@ -47,7 +77,27 @@ wsl --unregister Ubuntu      # 既存環境を消す場合のみ
 wsl --install Ubuntu
 ```
 
-WSL上のUbuntuシェルで:
+WezTermを起動すると`default_domain = 'WSL:Ubuntu'`によりそのままWSLのシェルに入る。
+**`setup_wsl.sh`を実行する前に**、WSL側の`ssh`をWindows純正の`ssh.exe`へ委譲する
+シムを作っておく(直前にWindows側で登録したSSH鍵をそのまま使い回すため。WSL側で
+別の鍵は作らない):
+
+```bash
+mkdir -p ~/.local/bin
+
+cat > ~/.local/bin/ssh <<'EOF'
+#!/bin/sh
+exec /mnt/c/Windows/System32/OpenSSH/ssh.exe "$@"
+EOF
+
+chmod +x ~/.local/bin/ssh
+```
+
+(このシムはchezmoi管理には**しない**。`chezmoi apply`で配置される頃には既に
+WSL側の最初のcloneが終わっているので、そこに置いても間に合わない。手で作る
+1回きりの手順)
+
+続けてリポジトリをclone・セットアップ:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git   # git が無ければ
@@ -61,35 +111,29 @@ EOF
 bash ~/.local/share/chezmoi/wsl-wezterm-zellij/setup_wsl.sh
 ```
 
-`setup_wsl.sh`が以降すべて非対話で行う: 基本パッケージ・Docker・Rust/Zellij・Neovim・
-lazygit・chezmoi本体(snap)のインストールから`chezmoi apply`、Python/LaTeX両コンテナの
-ビルドまで。sudoパスワードの入力以外は操作不要(SSH鍵は上で登録済みなので、
-スクリプト内の確認もそのまま素通りする)。完了後は`source ~/.bashrc`してから
-`zj py`/`zj tex`が使える(詳しくは下記「Quick Start」)。
+直前に作った`ssh`シム経由でGitHub認証は既に通っているので、`setup_wsl.sh`内の
+SSH鍵チェックは素通りする(WSL側で新しい鍵が生成されることはない)。以降は非対話で:
+基本パッケージ・Docker・Rust/Zellij・Neovim・lazygit・chezmoi本体(snap)の
+インストールから`chezmoi apply`、Python/LaTeX両コンテナのビルドまで自動で行われる。
+sudoパスワードの入力以外は操作不要。完了後は`source ~/.bashrc`してから`zj py`/`zj tex`
+が使える(詳しくは下記「Quick Start」)。
 
 Claude Code / Codexのagentタブを使いたい場合は、追加で「Claude Code / Codexの導入」
 (下記)を行う。
 
-### Windows(WezTerm)
-
-WSLホストのセットアップを先に済ませておくと、リポジトリは
-`\\wsl.localhost\Ubuntu\home\<ユーザー名>\.local\share\chezmoi\wsl-wezterm-zellij\`
-としてWindows側からもそのまま参照できるので、これが一番早い。
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-& "\\wsl.localhost\Ubuntu\home\<ユーザー名>\.local\share\chezmoi\wsl-wezterm-zellij\setup_windows.ps1"
-```
-
-`setup_windows.ps1`がwinget経由でWezTerm・Nerd Font・SumatraPDF・chezmoi・Gitを導入し、
-`chezmoi init`でこのリポジトリを取得(sourceDirは同じくこのサブディレクトリに固定)、
-`.wezterm.lua`だけを展開する(`.chezmoiignore`によりWindows側はwezterm設定以外は
-無視される)。WSLを経由せず単体で実行する場合は、Windows側にも別途SSH鍵の登録が必要
-(スクリプト完了時のメッセージ参照)。
-
 ### SSHサーバー(WSLではない素のUbuntu)
 
-Docker無しで、Zellij + LazyVimの編集環境だけが欲しい場合。WSLホストと同じ流れ:
+Docker無しで、Zellij + LazyVimの編集環境だけが欲しい場合。
+
+**1. SSH鍵を登録**(このリポジトリはprivateなのでclone前に必要。登録済みなら不要)
+
+```bash
+ssh-keygen -t ed25519 -C "$(whoami)@$(hostname)"
+cat ~/.ssh/id_ed25519.pub
+# 表示された公開鍵を GitHub → Settings → SSH and GPG keys → New SSH key に登録
+```
+
+**2. リポジトリをclone → `setup_ssh.sh`を実行**
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git   # git が無ければ
