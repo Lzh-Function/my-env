@@ -1,0 +1,33 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# Claude Code / Codex を焼き込んだ計算ノード用コンテナ。
+# ログイン情報(~/.claude, ~/.claude.json, ~/.codex)はここには含めない ── 実行時に
+# ログインノード側のものを --bind でマウントする(run_agent_node.sh参照)。
+# このイメージにはバイナリだけを持たせる。
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential nodejs npm unzip
+    rm -rf /var/lib/apt/lists/*
+
+    # Claude Code(公式インストーラ)。ビルド時は HOME=/root なので /root/.local/bin に
+    # 入る。実行時はコンテナが呼び出しユーザーのHOMEで動く(root小ではない)ため、
+    # /root/.local/bin はそのユーザーの$HOMEには含まれない ── そのため %environment で
+    # PATHに/root/.local/binを直接追加して、$HOMEが何であっても見つかるようにする。
+    curl -fsSL https://claude.ai/install.sh | bash
+
+    # Codex CLI(npm経由、システム全体のnpmプレフィックスに入るのでrootでもユーザーでも見える)
+    npm install -g @openai/codex
+
+%environment
+    export PATH=/root/.local/bin:/usr/local/bin:$PATH
+
+%runscript
+    exec "$@"
+
+# --- ビルド方法(ログインノードで、要fakeroot対応) ---------------------------
+# apptainer build agent.sif agent.def
+#   (unprivilegedユーザーは既定でfakerootが自動的に使われる。失敗する場合は
+#    クラスタ側でuser namespaceが制限されている可能性があるので管理者に確認)
