@@ -14,6 +14,8 @@
 - **デバッガ**: `nvim-dap`のようなビジュアルデバッガは入っていない。`print`文か
   `pdb`(後述)でデバッグする
 - **パッケージ管理**: `uv`(pipやvenvを直接触らなくてよい高速ツール)
+- **セル単位の実行**: molten-nvim(後述の「Jupyter Notebookのようにセル単位で試したい」
+  参照)。text/table出力のみで、画像出力は非対応
 
 ## 最初にこれだけ覚える
 
@@ -146,13 +148,40 @@ uv run plot_script.py
 
 ### 「Jupyter Notebookのようにセル単位で試したい」
 
-この環境にJupyter関連の拡張は入っていない。代わりに:
+**molten-nvim**でセル単位の実行ができる(`zj py`専用。`.ipynb`ファイル自体を開くのでは
+なく、普通の`.py`に`# %%`区切りを書いてセルとして実行する、VSCodeのPython
+Interactiveに近い感覚)。
 
-- 普通の`.py`ファイルに書いて`uv run スクリプト.py`で都度実行する
-- どうしてもノートブック形式が欲しい場合は`uv add --dev jupyter`でJupyterLab自体を
-  インストールし、`uv run jupyter lab --no-browser --ip=0.0.0.0`のようにサーバーとして
-  立ち上げてブラウザ(Windows側)からアクセスする、という手もあるが、この環境の標準構成
-  ではない(ポート転送など追加の設定が必要になる)
+```python
+# %%
+import pandas as pd
+df = pd.read_csv("data.csv")
+df.head()
+
+# %%
+df.describe()
+```
+
+| したいこと | キー |
+|---|---|
+| カーネルを起動(ファイルを開いた状態で1回) | `<space>mi`(`:MoltenInit`。カーネル選択を聞かれたら`python3`) |
+| カーソル行を実行 | `<space>ml` |
+| 選択範囲を実行 | ビジュアルモードで選択 → `<space>mv` |
+| カーソル位置のセル(`# %%`区切り)を再実行 | `<space>mr` |
+| 出力を表示/隠す | `<space>mo` / `<space>mh` |
+
+出力はカーソル位置の下にフローティングウィンドウで表示される。`df.head()`のような
+テーブル・数値・文字列の出力は問題なく表示される。
+
+**画像(`plt.show()`など)は表示されない**(`g:molten_image_provider = "none"`で
+意図的に無効化してある)。Zellijが Sixel 以外の画像プロトコルをパススルーせず、その
+SixelもZellij側の実装が不安定という制約のため、当面はtext/table出力専用にしている。
+プロットを確認したい場合は上の「グラフ(matplotlib)を描いて確認したい」の手順
+(`savefig` → Windows Explorerで開く)を使う。
+
+**新しいプロジェクトで使うには**`uv add ipykernel`が必要(デフォルトで用意されている
+プロジェクトには最初から入っている)。`<space>mi`でカーネルが見つからない場合はこれを
+忘れていないか確認する。
 
 ### 「新しいライブラリを試したいけど、プロジェクトを汚したくない」
 

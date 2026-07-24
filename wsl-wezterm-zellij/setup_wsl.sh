@@ -191,11 +191,12 @@ log "Python コンテナをビルド"
 ( cd "$PYDIR" && docker compose build && docker compose up -d )
 
 log "コンテナ内で uv 初期化(.venv 生成)"
+# ipykernel: molten-nvim(<space>mi)がこのプロジェクトのvenvにカーネルとして繋げるように。
 ( cd "$PYDIR" && docker compose exec -T py bash -lc '
     cd /workspace/Python-Work
     [ -f pyproject.toml ] || uv init --bare 2>/dev/null || uv init --name py-app
-    uv add numpy pandas scikit-learn
-' ) || warn "uv 初期化で警告。後で: cd ~/workspace/Python-Work && docker compose exec py uv add numpy pandas scikit-learn"
+    uv add numpy pandas scikit-learn ipykernel
+' ) || warn "uv 初期化で警告。後で: cd ~/workspace/Python-Work && docker compose exec py uv add numpy pandas scikit-learn ipykernel"
 
 log "LaTeX(texlive)コンテナをビルド(イメージが大きいので初回は時間がかかります)"
 ( cd "$TEXDIR" && docker compose build && docker compose up -d )

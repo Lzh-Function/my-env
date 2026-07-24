@@ -33,6 +33,13 @@ RUN curl -Lo /tmp/fastfetch.tar.gz \
     && install /tmp/fastfetch-linux-amd64/usr/bin/fastfetch /usr/local/bin/fastfetch \
     && rm -rf /tmp/fastfetch.tar.gz /tmp/fastfetch-linux-amd64
 
+# molten-nvim(pynvimのremote plugin API + jupyter_client)用の専用環境。
+# プロジェクトごとのuv venv(uv add ipykernel などが入る場所)とはあえて分けてある。
+# こうしておくことで、どのプロジェクトを開いていてもmolten自体は動く
+# (g:python3_host_prog がこれを指す。dot_config/nvim/lua/plugins/molten.lua参照)。
+RUN uv venv /opt/nvim-pyenv \
+    && uv pip install --python /opt/nvim-pyenv/bin/python pynvim jupyter_client
+
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
