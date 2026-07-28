@@ -2,7 +2,7 @@ FROM texlive/texlive:latest
 
 # --- editor & multiplexer: Neovim/Zellij run inside the container itself ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates curl unzip build-essential \
+        git ca-certificates curl unzip build-essential sudo \
         ripgrep fd-find nodejs npm btop \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd
@@ -35,8 +35,25 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && cargo install zellij --locked
 
+# 非rootユーザー(WSLホスト側のUID/GIDに揃える。bind mountで共有するファイルの
+# 所有者を一致させ、コンテナ内で作ったファイルがホスト側でroot所有にならないようにする)。
+# ベースイメージに既にUID 1000の`texlive`ユーザーがいるので、新規作成ではなく
+# リネーム+ホームディレクトリ変更で流用する(UID重複を避けるため)。
+# 対話的なパスワード入力が無い環境のため、sudoはNOPASSWDにしてある。
+RUN usermod -l function -d /home/function -m texlive \
+    && groupmod -n function texlive \
+    && echo 'function ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/function \
+    && chmod 0440 /etc/sudoers.d/function
+
+# named volumeのマウント先を先に作ってchownしておく。Dockerが作成する前だと
+# マウントポイントがroot所有になり、非rootユーザーが書き込めずLazy syncが
+# "Permission denied" → 対話的な"Press any key"待ちでハングする。
+RUN mkdir -p /home/function/.local/share/nvim /home/function/.local/state/nvim /home/function/.cache/nvim \
+    && chown -R function:function /home/function/.local /home/function/.cache
+
 # Container-only zellij config (no clip.exe: no WSL interop in here)
-COPY zellij/ /root/.config/zellij/
+COPY --chown=function:function zellij/ /home/function/.config/zellij/
 
 WORKDIR /workspace/LaTeX-Work
+USER function
 CMD ["sleep", "infinity"]
