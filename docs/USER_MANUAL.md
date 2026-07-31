@@ -453,6 +453,24 @@ review        live/status.json, live/stdout.log, reviews/review_findings.json
 multi-review  live/status.json, reviews/*.md, reviews/disagreements.json, reviews/final_recommendation.md
 ```
 
+## Wizard Mode
+
+`assist`/`experiment`/`campaign`/`review`/`multi-review` は `--partition`/`--gpus` を含めると10種類以上のフラグを組み立てる必要があり、手打ちが煩雑です。`agentrun wizard` は同じ起動ロジックへの、対話式（メニュー選択式）のフロントエンドです。
+
+```bash
+agentrun wizard
+```
+
+流れ:
+
+1. TTY 必須（`[ -t 0 ] && [ -t 1 ]` を満たさない場合は対話せず即エラー終了）
+2. UI backend を自動検出: **gum → whiptail/dialog → 標準 bash `read`/`select`** の順にフォールバックし、フォールバックする度に `"<tool> not found, falling back to <next>"` を1行 stderr に出力（インストール手順は表示しない）
+3. mode → agent → launch style（assist なら「対話セッション（srun --pty）」か「バッチ投入（sbatch）」、それ以外のモードは「今すぐ sbatch するか」の confirm）→ repo → **partition**（空欄なら `AGENTRUN_SLURM_PARTITION`/cluster default）→ **GPU数** → mem/cpus/time → bind mount（「もう1つ追加しますか？」ループ）→ goal（存在しないパスは再入力を促す。`write_plan` が `cp` するため実在するファイルが必要）→ task prompt → （review なら reviewers/target-diff/target-report、multi-review なら agents リストを同じ追加ループで）の順に質問
+4. `agentrun wizard --agent claude` のように一部フラグを先に渡しても、質問はスキップされず、渡された値がその項目のデフォルト値として表示されるだけです（Enter でそのまま採用可）
+5. 最後に全項目のサマリを表示し、"Launch this run?" で確認。Yes ならその場で組み立てた引数で `assist`/`experiment`/`campaign`/`review`/`multi-review` と同じ起動処理（`write_plan`・auth staging・`srun --pty`/`sbatch`）を呼び出し、No なら何も実行せず終了します。
+
+このリポジトリは `--partition`/`--gpus` が実際の CLI フラグとして存在するため、ウィザードでもそのまま対話項目に含めています。
+
 ## Run Directory
 
 `dry-run` を除く run は `.agent-runs/<run_id>/` を作成します。
@@ -772,6 +790,26 @@ agentrun sync-antigravity
 agentrun validate
 ```
 
+### 公開 skills の取り込み
+
+`skills/<name>/SKILL.md` というレイアウトを持つ外部リポジトリ（ローカルパス、または GitHub URL）から、`common/skills/` へ一括で取り込めます。
+
+```bash
+# ローカルの source dir から: SOURCE_DIR/skills/ 配下の全サブディレクトリを取り込み（SKILL.md がないものはスキップ）
+agentrun skill-install ../some-skills-repo
+
+# GitHub URL を直接渡す場合: 一時ディレクトリに shallow clone -> skills/* だけ common/skills/ へコピー -> clone を削除
+agentrun skill-install https://github.com/softaworks/agent-toolkit.git
+
+# 特定の skill だけ選んで取り込み（ローカル/URL どちらでも可）
+agentrun skill-install https://github.com/softaworks/agent-toolkit.git react-dev mui
+
+# 既に common/skills/<name> が存在する場合は上書きしない（--force で上書き）
+agentrun skill-install ../some-skills-repo react-dev --force
+```
+
+URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれかにマッチした場合で、この場合のみ `git clone --depth 1` を一時ディレクトリに対して行い、コピー完了後に即座に削除します（`common/skills/` にはクローン全体ではなく `skills/*` の中身だけが残ります）。取り込みに成功した skill が1件以上あれば、内部で `sync-claude` / `sync-codex` / `sync-antigravity` を自動実行します。取り込み後は `agentrun validate` で確認してください。
+
 ### デフォルト Skill の解説
 
 `common/skills/` に含まれる skill とその役割を以下に示します。各 skill は `SKILL.md` として格納されており、フロントマター (`name:` / `description:`) によって agent がいつ参照すべきかを判断します。
@@ -972,11 +1010,13 @@ agentrun dry-run MODE [options] PROMPT
 agentrun assist [options] [PROMPT]
 agentrun assist --submit [options] PROMPT
 agentrun experiment|campaign|review|multi-review [options] PROMPT
+agentrun wizard [options] [PROMPT]
 agentrun smoke-test [--agent NAME] [--submit]
 agentrun init-goal
 agentrun sync-claude
 agentrun sync-codex
 agentrun sync-antigravity
+agentrun skill-install SOURCE_DIR|GIT_URL [SKILL_NAME...] [--force]
 agentrun status
 agentrun logs [--follow]
 agentrun tail
