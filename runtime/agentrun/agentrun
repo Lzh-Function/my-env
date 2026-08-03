@@ -233,6 +233,24 @@ agent_command() {
     esac
 }
 
+agent_update_command() {
+    local agent="$1"
+    case "$agent" in
+        claude)
+            printf '%s' 'command -v claude >/dev/null 2>&1 && claude update; true'
+            ;;
+        codex)
+            printf '%s' 'command -v codex >/dev/null 2>&1 && codex update; true'
+            ;;
+        antigravity)
+            printf '%s' 'if command -v agy >/dev/null 2>&1; then agy update; elif command -v antigravity >/dev/null 2>&1; then antigravity update; elif command -v gemini >/dev/null 2>&1; then gemini update; fi; true'
+            ;;
+        *)
+            printf '%s' 'true'
+            ;;
+    esac
+}
+
 profile_cpus() {
     case "$1" in
         experiment|campaign) printf '8\n' ;;
@@ -614,8 +632,12 @@ apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
     [ "$gpus" -gt 0 ] && nv=" --nv"
-    local cmd
+    local cmd update_cmd
     cmd="$(agent_command "$agent" "$mode" "$launch")"
+    # image内のCLIバージョンが古くても、この run 限定で自己アップデートを試みる
+    # （.sif自体は read-only なので書き換えない。失敗しても run は止めない）。
+    update_cmd="$(agent_update_command "$agent")"
+    cmd="${update_cmd}; ${cmd}"
     printf 'export APPTAINERENV_SLURM_JOB_ID="${SLURM_JOB_ID:-}"\n'
     printf 'export APPTAINERENV_SLURMD_NODENAME="${SLURMD_NODENAME:-}"\n'
     printf 'export APPTAINERENV_SLURM_CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-}"\n'
