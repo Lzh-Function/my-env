@@ -536,7 +536,9 @@ home_config_mounts() {
 }
 
 write_prompt() {
-    local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5" launch="${6:-batch}"
+    local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5" launch="${6:-batch}" \
+        mem="${7:-}" cpus="${8:-}" gpus="${9:-}" time_limit="${10:-}" partition="${11:-}"
+    local resources="mem=$mem, cpus=$cpus, time=$time_limit, gpus=$gpus, partition=${partition:-<cluster default>}"
 
     if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
         cat > "$path" <<EOF
@@ -548,9 +550,10 @@ Workspace: /workspace
 Runs: /runs
 Scratch: /scratch
 Config: /home/sandbox/ai-agent-config
+Resources: $resources
 Host repo: $repo
 
-Please follow the user's instructions.
+Wait for the user's first instruction. Do not read files, explore the repository, or run any commands until the user tells you what to do.
 EOF
         return 0
     fi
@@ -569,6 +572,7 @@ Workspace: /workspace
 Runs: /runs
 Scratch: /scratch
 Config: /home/sandbox/ai-agent-config
+Resources: $resources
 
 User goal:
 $prompt
@@ -648,7 +652,8 @@ write_plan() {
     if [ "$agent" = "codex" ]; then
         link_codex_shared_assets "$run_dir"
     fi
-    write_prompt "$run_dir/prompt.txt" "$mode" "$agent" "$repo" "$prompt" "$launch"
+    write_prompt "$run_dir/prompt.txt" "$mode" "$agent" "$repo" "$prompt" "$launch" \
+        "$mem" "$cpus" "$gpus" "$time_limit" "$partition"
     if [ -n "$goal" ]; then
         cp "$goal" "$run_dir/goal.yaml"
     else
@@ -1652,7 +1657,8 @@ command_dry_run() {
     printf '\n--- prompt.txt ---\n'
     local _ptmp
     _ptmp="$(mktemp)"
-    write_prompt "$_ptmp" "$mode" "$AGENT" "$REPO" "$PROMPT" "$launch"
+    write_prompt "$_ptmp" "$mode" "$AGENT" "$REPO" "$PROMPT" "$launch" \
+        "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}" "$GPUS" "$TIME_LIMIT" "$PARTITION"
     cat "$_ptmp"
     rm -f "$_ptmp"
     printf '\n--- expected artifacts ---\n'
