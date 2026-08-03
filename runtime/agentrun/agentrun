@@ -235,15 +235,20 @@ agent_command() {
 
 agent_update_command() {
     local agent="$1"
+    # <agent> update に頼らず、image build時と同じ install script を run 限定の
+    # $HOME に再実行する。update サブコマンドは自己インストール検知に /root 側の
+    # install管理情報を必要とするため、sandboxユーザーの使い捨てhomeからは動かない
+    # （実機確認済み: update自体は完走するが、$HOME/.local/binがPATHに無いため
+    # 実際に起動されるセッションには反映されない）。
     case "$agent" in
         claude)
-            printf '%s' 'command -v claude >/dev/null 2>&1 && claude update; true'
+            printf '%s' 'export PATH="$HOME/.local/bin:$PATH"; curl -fsSL https://claude.ai/install.sh | bash; true'
             ;;
         codex)
-            printf '%s' 'command -v codex >/dev/null 2>&1 && codex update; true'
+            printf '%s' 'export PATH="$HOME/.local/bin:$PATH"; curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh; true'
             ;;
         antigravity)
-            printf '%s' 'if command -v agy >/dev/null 2>&1; then agy update; elif command -v antigravity >/dev/null 2>&1; then antigravity update; elif command -v gemini >/dev/null 2>&1; then gemini update; fi; true'
+            printf '%s' 'export PATH="$HOME/.local/bin:$PATH"; curl -fsSL https://antigravity.google/cli/install.sh | bash; true'
             ;;
         *)
             printf '%s' 'true'
