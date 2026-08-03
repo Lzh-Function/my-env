@@ -678,9 +678,7 @@ EOF
 #SBATCH --mem=$mem
 #SBATCH --cpus-per-task=$cpus
 EOF
-    if [ "$gpus" -gt 0 ]; then
-        printf '#SBATCH --gres=gpu:%s\n' "$gpus" >> "$run_dir/submit.sbatch"
-    fi
+    printf '#SBATCH --gres=gpu:%s\n' "$gpus" >> "$run_dir/submit.sbatch"
     cat >> "$run_dir/submit.sbatch" <<EOF
 #SBATCH --output=$run_dir/live/slurm.out
 #SBATCH --error=$run_dir/live/slurm.err
@@ -1611,14 +1609,14 @@ command_dry_run() {
             printf 'sbatch_args:'
             slurm_partition_args "$PARTITION"
             printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
-            [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
+            printf ' --gres=gpu:%s' "$GPUS"
             printf '\n'
         else
             printf 'launch_method: srun --pty (interactive)\n'
             printf 'slurm_command: srun'
             srun_partition_args "$PARTITION"
             printf ' --time=%s --mem=%s --cpus-per-task=%s --pty' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
-            [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
+            printf ' --gres=gpu:%s' "$GPUS"
             printf '\n'
         fi
     else
@@ -1626,7 +1624,7 @@ command_dry_run() {
         printf 'sbatch_args:'
         slurm_partition_args "$PARTITION"
         printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
-        [ "$GPUS" -gt 0 ] && printf ' --gres=gpu:%s' "$GPUS"
+        printf ' --gres=gpu:%s' "$GPUS"
         printf '\n'
     fi
     local launch="batch"
@@ -1704,7 +1702,7 @@ command_prepare() {
         trap "rm -rf $(printf '%q' "$run_dir/home")" EXIT INT TERM
         local srun_args=("--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty")
         [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
-        [ "$GPUS" -gt 0 ] && srun_args+=("--gres=gpu:$GPUS")
+        srun_args+=("--gres=gpu:$GPUS")
         printf 'launching interactive session via srun %s\n' "${srun_args[*]}"
         srun "${srun_args[@]}" bash "$run_dir/apptainer_exec.sh" || true
         rm -rf "$run_dir/home"
