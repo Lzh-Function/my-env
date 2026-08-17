@@ -35,6 +35,30 @@ if [ -z "${SLURM_JOB_ID:-}" ]; then
     exit 2
 fi
 
+# localimage bootstrap は base-system.sif を unsquashfs でサンドボックスへ展開する。
+# unsquashfs は cgroup ではなくノードの CPU 数で並列度を決める（48 コアなら 48 並列）
+# ため、soft RLIMIT_NOFILE が 1024 のままだと展開途中で
+# "FATAL ERROR: write_file: ... because Too many open files" で落ちる。
+# soft を hard まで上げるのは非特権で可能。上げられなくてもビルドは続行する。
+raise_nofile_limit() {
+    local soft hard
+    soft="$(ulimit -Sn)"
+    hard="$(ulimit -Hn)"
+    if [ "$hard" = "unlimited" ]; then
+        hard=1048576
+    fi
+    if [ "$soft" != "unlimited" ] && [ "$soft" -lt "$hard" ] 2>/dev/null; then
+        if ulimit -n "$hard" 2>/dev/null; then
+            printf 'raised open file limit: %s -> %s\n' "$soft" "$(ulimit -Sn)"
+        else
+            printf 'warning: could not raise open file limit from %s; unsquashfs may fail with "Too many open files"\n' \
+                "$soft" >&2
+        fi
+    fi
+}
+
+raise_nofile_limit
+
 build_if_missing_or_stale() {
     local target="$1"
     local definition="$2"
@@ -52,7 +76,12 @@ build_if_missing_or_stale() {
         printf 'rebuilding %s/%s: %s is newer\n' "$SCRIPT_DIR" "$target" "$dependency"
     fi
 
-    apptainer build --disable-cache "$tmp" "$definition"
+    # ビルドが途中で落ちると中途半端な $tmp が残り、再実行のたびに溜まっていく。
+    if ! apptainer build --disable-cache "$tmp" "$definition"; then
+        rm -f "$tmp"
+        printf 'error: build failed for %s/%s\n' "$SCRIPT_DIR" "$target" >&2
+        return 1
+    fi
     mv -f "$tmp" "$target"
     printf 'built %s/%s\n' "$SCRIPT_DIR" "$target"
 }
