@@ -11,18 +11,25 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
     export DEBIAN_FRONTEND=noninteractive
 
     apt-get update
+    # libfuse3-3/liblzo2-2/squashfuse は、capsule の中でさらに apptainer exec を
+    # 実行するときに squashfuse_ll が必要とする。これが無いと、たとえ /dev/fuse を
+    # bind しても inner .sif の mount が共有ライブラリ解決で失敗する。
     apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
         curl \
+        fuse3 \
         git \
         jq \
         less \
+        libfuse3-3 \
+        liblzo2-2 \
         locales \
         nodejs \
         npm \
         python3 \
         python3-venv \
+        squashfuse \
         tini \
         wget
     rm -rf /var/lib/apt/lists/*

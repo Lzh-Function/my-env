@@ -298,8 +298,12 @@ agentrun doctor --all            # 全 agent の auth を検証する
 - agent CLI
 - auth file
 - image: `runtime/apptainer/base-agent.sif`
+- FUSE 前提条件: host の `/dev/fuse` と、image 内の `libfuse3` / `liblzo2`
 - `.agent-runs` の書き込み可否
 - git repository / branch / dirty state
+
+FUSE のチェックは常に WARN 止まりで、run を FAIL にはしません。capsule 内で nested `apptainer exec` を
+使わないなら関係がないためです。使う場合は `--allow-fuse` と合わせて Troubleshooting を参照してください。
 
 login node 上で `apptainer` や `uv` が見つからない場合は WARN です。compute node や image 内で提供される構成もあるため、WARN は即失敗とは限りません。
 
@@ -952,6 +956,39 @@ agentrun auth login --agent NAME
 
 `auth login` は host CLI でのログイン（`claude auth login` / `codex login` / `agy` 対話起動）と store へのインポートを一括で実行します。
 
+### capsule の中で `apptainer exec` が失敗する（nested apptainer / squashfuse_ll エラー）
+
+capsule はデフォルトで FUSE を使えません。`--containall` により `/dev` が最小構成に置き換わるため、
+host が `/dev/fuse` を持っていても capsule 内からは見えず、内側の `apptainer exec` が
+inner `.sif` を mount できずに squashfuse_ll のエラーで落ちます。
+
+必要な条件は 3 つで、どれが欠けても同じような失敗になります。
+
+1. **compute node に `/dev/fuse` があること** — `agentrun doctor` が `fuse:/dev/fuse` として表示します。
+   通常は `crw-rw-rw-` で全ユーザーが open できます。
+2. **capsule に `/dev/fuse` が bind されていること** — `--allow-fuse` を付けます。
+
+   ```bash
+   agentrun assist --agent claude --gpus 1 --allow-fuse
+   ```
+
+   毎回付けたくない場合は `export AGENTRUN_ALLOW_FUSE=1` を shell 設定に入れてください。
+   個別の run で無効化したいときは `--no-allow-fuse` を使います。
+3. **image に `libfuse3` / `liblzo2` が入っていること** — squashfuse_ll がこれらに動的 link しています。
+   `runtime/apptainer/base-system.def` に `libfuse3-3` `liblzo2-2` `squashfuse` `fuse3` を含めてあるので、
+   image を再ビルドすれば満たされます。
+
+   ```bash
+   srun --partition <partition> runtime/apptainer/build-images.sh --run
+   agentrun doctor        # fuse:image-libs が [OK] になることを確認
+   ```
+
+`base-system.def` を変更した場合は system 層と agent 層の両方を再ビルドする必要があります。
+`build-images.sh` は `base-system.sif` の方が新しければ `base-agent.sif` も作り直します。
+
+なお `--allow-fuse` は capsule に FUSE mount 能力を与えるため、隔離をやや緩めます。
+nested container を実際に必要とする run だけで有効化してください。
+
 ### `dry-run` の directory が存在しない
 
 正常です。`dry-run` は副作用なしの plan 表示だけを行います。実体を作るには `assist`, `assist --submit`, `experiment --submit` などを実行してください。
@@ -1037,6 +1074,9 @@ agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 --time HH:MM:SS           walltime override。省略時は profile default
 --partition NAME          Slurm partition。省略時は AGENTRUN_SLURM_PARTITION、未設定なら cluster default
 --bind SRC:DST[:OPTIONS]  追加 bind mount（複数指定可）。OPTIONS: ro|rw
+--allow-fuse              /dev/fuse を capsule に bind する（nested apptainer / FUSE mount 用）。
+                          default: off。AGENTRUN_ALLOW_FUSE=1 で常時 on にもできる
+--no-allow-fuse           AGENTRUN_ALLOW_FUSE=1 が設定されていても off に強制する
 --reviewers LIST          prompt に追記される reviewer list
 --target-diff PATH        prompt に追記される review target diff
 --target-report PATH      prompt に追記される review target report

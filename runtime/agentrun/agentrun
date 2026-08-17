@@ -43,6 +43,9 @@ Options:
   --time HH:MM:SS     walltime, default comes from the selected profile
   --partition NAME    Slurm partition, default: AGENTRUN_SLURM_PARTITION or cluster default
   --bind SRC:DST[:OPTIONS]  extra bind mount (repeatable); OPTIONS: ro|rw
+  --allow-fuse        bind /dev/fuse into the capsule so nested apptainer/FUSE
+                      mounts work (default off; AGENTRUN_ALLOW_FUSE=1 to opt in globally)
+  --no-allow-fuse     force /dev/fuse off even if AGENTRUN_ALLOW_FUSE=1
   --reviewers LIST    reviewer agents
   --target-diff PATH  review target diff
   --target-report PATH review target report
@@ -633,6 +636,19 @@ EOF
     fi
 }
 
+# `--containall` gives the capsule a minimal /dev, so /dev/fuse is absent even
+# when the host exposes it. Without it a nested `apptainer exec` cannot mount the
+# inner .sif (squashfuse_ll fails) — bind it back in when the run opts in.
+FUSE_DEVICE="/dev/fuse"
+
+fuse_enabled() {
+    [ "${ALLOW_FUSE:-0}" -eq 1 ]
+}
+
+fuse_bind_spec() {
+    printf '%s:%s:rw\n' "$FUSE_DEVICE" "$FUSE_DEVICE"
+}
+
 apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
@@ -658,6 +674,9 @@ apptainer_command() {
         "$ROOT_DIR" "/home/sandbox/ai-agent-config"
     auth_mounts "$agent"
     home_config_mounts "$agent" "$run_dir" "$mode"
+    if fuse_enabled; then
+        printf ' --bind %q:%q:rw' "$FUSE_DEVICE" "$FUSE_DEVICE"
+    fi
     local bind
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
         local src="${bind%%:*}" rest="${bind#*:}"
@@ -692,6 +711,7 @@ mode: $mode
 agent: $agent
 repo: $repo
 goal: $goal
+allow_fuse: $(fuse_enabled && printf 'true' || printf 'false')
 EOF
     apptainer_command "$mode" "$agent" "$run_dir" "$gpus" "$repo" "$launch" > "$run_dir/apptainer_exec.sh"
     sed -i '1i#!/usr/bin/env bash\nset -euo pipefail' "$run_dir/apptainer_exec.sh"
@@ -1498,6 +1518,36 @@ command_validate() {
     return "$missing"
 }
 
+# Nested `apptainer exec` inside the capsule needs three things at once: the host
+# device, the shared libraries squashfuse_ll links against, and the --allow-fuse
+# bind that lets the capsule see the device. Report all three, never fail the run
+# on them — plenty of capsules never nest a container.
+check_fuse_support() {
+    local image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
+    if [ -e "$FUSE_DEVICE" ]; then
+        printf '[OK] fuse:%s - %s\n' "$FUSE_DEVICE" "$(ls -l "$FUSE_DEVICE" | awk '{print $1}')"
+    else
+        printf '[WARN] fuse:%s - not present on this host; nested apptainer will fail on nodes without it\n' "$FUSE_DEVICE"
+        return 0
+    fi
+    if ! command -v apptainer >/dev/null 2>&1 || [ ! -e "$image" ]; then
+        printf '[WARN] fuse:image-libs - cannot verify without apptainer and base-agent.sif on this host\n'
+        return 0
+    fi
+    local missing=""
+    local lib
+    for lib in libfuse3 liblzo2; do
+        if ! apptainer exec "$image" ldconfig -p 2>/dev/null | grep -q "$lib"; then
+            missing="${missing:+$missing }$lib"
+        fi
+    done
+    if [ -n "$missing" ]; then
+        printf '[WARN] fuse:image-libs - missing in base-agent.sif: %s (rebuild the image; see runtime/apptainer/base-system.def)\n' "$missing"
+    else
+        printf '[OK] fuse:image-libs - libfuse3 and liblzo2 present in base-agent.sif\n'
+    fi
+}
+
 command_doctor() {
     local agent="$DEFAULT_AGENT" all=0 gpus=0 failed=0
     while [ "$#" -gt 0 ]; do
@@ -1541,6 +1591,7 @@ command_doctor() {
         printf '[FAIL] image:base-agent.sif - not built\n'
         failed=1
     fi
+    check_fuse_support || true
     if [ -w "$PWD" ]; then
         printf '[OK] writable:%s/.agent-runs\n' "$PWD"
     else
@@ -1587,6 +1638,11 @@ parse_run_args() {
     REQUESTED_AGENTS=""
     PROMPT=""
     EXTRA_BINDS=()
+    ALLOW_FUSE="${AGENTRUN_ALLOW_FUSE:-0}"
+    case "$ALLOW_FUSE" in
+        1|true|yes) ALLOW_FUSE=1 ;;
+        *) ALLOW_FUSE=0 ;;
+    esac
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --agent) AGENT="$2"; shift 2 ;;
@@ -1598,6 +1654,8 @@ parse_run_args() {
             --time) TIME_LIMIT="$2"; shift 2 ;;
             --partition) PARTITION="$2"; shift 2 ;;
             --bind) EXTRA_BINDS+=("$2"); shift 2 ;;
+            --allow-fuse) ALLOW_FUSE=1; shift ;;
+            --no-allow-fuse) ALLOW_FUSE=0; shift ;;
             --show-mounts) SHOW_MOUNTS=1; shift ;;
             --reviewers) REVIEWERS="$2"; shift 2 ;;
             --target-diff) TARGET_DIFF="$2"; shift 2 ;;
@@ -1609,10 +1667,25 @@ parse_run_args() {
         esac
     done
     local bind
+    local -a kept_binds=()
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
         local src="${bind%%:*}"
+        if [ "$src" = "$FUSE_DEVICE" ]; then
+            # `--bind /dev/fuse:...` was the manual workaround; fold it into the
+            # supported flag so the device is never bound twice.
+            ALLOW_FUSE=1
+            continue
+        fi
         [ -e "$src" ] || { printf 'bind source does not exist: %s\n' "$src" >&2; exit 2; }
+        kept_binds+=("$bind")
     done
+    EXTRA_BINDS=("${kept_binds[@]+"${kept_binds[@]}"}")
+    # agentrun usually runs on a login node while the capsule runs on a compute
+    # node, so a missing device here is a warning, never a hard failure.
+    if fuse_enabled && [ ! -e "$FUSE_DEVICE" ]; then
+        printf 'warning: %s not present on this host; --allow-fuse only works if the compute node exposes it\n' \
+            "$FUSE_DEVICE" >&2
+    fi
 }
 
 command_dry_run() {
@@ -1667,6 +1740,9 @@ command_dry_run() {
     printf '  %s/scratch:/scratch:rw\n' "$run_dir"
     printf '  %s/cache:/cache:rw\n' "$run_dir"
     printf '  %s:/home/sandbox/ai-agent-config:ro\n' "$ROOT_DIR"
+    if fuse_enabled; then
+        printf '  %s\n' "$(fuse_bind_spec)"
+    fi
     local bind
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
         printf '  %s\n' "$bind"
@@ -1678,7 +1754,8 @@ command_dry_run() {
         printf '\n'
     fi
     printf '\n--- capsule.yaml ---\n'
-    printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\n' "$id" "$mode" "$AGENT" "$REPO" "$GOAL"
+    printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\nallow_fuse: %s\n' \
+        "$id" "$mode" "$AGENT" "$REPO" "$GOAL" "$(fuse_enabled && printf 'true' || printf 'false')"
     printf '\n--- prompt.txt ---\n'
     local _ptmp
     _ptmp="$(mktemp)"
@@ -1814,6 +1891,12 @@ command_wizard() {
         EXTRA_BINDS+=("$bind_src:$bind_dst")
     done
 
+    if wizard_confirm 'Bind /dev/fuse into the capsule? (needed for nested apptainer/FUSE mounts; loosens isolation)' "$ALLOW_FUSE"; then
+        ALLOW_FUSE=1
+    else
+        ALLOW_FUSE=0
+    fi
+
     GOAL="$(wizard_input 'Goal file path (optional)' "$GOAL")" || true
     while [ -n "$GOAL" ] && [ ! -f "$GOAL" ]; do
         printf 'goal file does not exist: %s\n' "$GOAL" >&2
@@ -1857,6 +1940,7 @@ command_wizard() {
     for b in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
         args+=(--bind "$b")
     done
+    [ "$ALLOW_FUSE" -eq 1 ] && args+=(--allow-fuse) || args+=(--no-allow-fuse)
     [ -n "$REVIEWERS" ] && args+=(--reviewers "$REVIEWERS")
     [ -n "$TARGET_DIFF" ] && args+=(--target-diff "$TARGET_DIFF")
     [ -n "$TARGET_REPORT" ] && args+=(--target-report "$TARGET_REPORT")
@@ -1881,6 +1965,7 @@ command_wizard() {
     summary+="gpus:          $GPUS"$'\n'
     summary+="mem/cpus/time: $MEM / $CPUS / $TIME_LIMIT"$'\n'
     [ "${#EXTRA_BINDS[@]}" -gt 0 ] && summary+="bind mounts:   ${EXTRA_BINDS[*]}"$'\n'
+    [ "$ALLOW_FUSE" -eq 1 ] && summary+="/dev/fuse:     bound (nested apptainer allowed)"$'\n'
     [ -n "$GOAL" ] && summary+="goal:          $GOAL"$'\n'
     [ -n "$PROMPT" ] && summary+="prompt:        $PROMPT"$'\n'
     [ -n "$REVIEWERS" ] && summary+="reviewers:     $REVIEWERS"$'\n'

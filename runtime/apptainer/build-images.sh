@@ -38,11 +38,18 @@ fi
 build_if_missing_or_stale() {
     local target="$1"
     local definition="$2"
+    # 追加の依存（agent 層にとっての base-system.sif）。これを見ないと、
+    # base-system.def だけ編集したときに system 層は再ビルドされるのに
+    # agent 層が古いまま再利用され、変更が image に入らない。
+    local dependency="${3:-}"
     local tmp="${target%.sif}.${SLURM_JOB_ID}.sif"
 
     if [ -e "$target" ] && [ "$target" -nt "$definition" ]; then
-        printf 'reusing existing %s/%s\n' "$SCRIPT_DIR" "$target"
-        return 0
+        if [ -z "$dependency" ] || { [ -e "$dependency" ] && [ "$target" -nt "$dependency" ]; }; then
+            printf 'reusing existing %s/%s\n' "$SCRIPT_DIR" "$target"
+            return 0
+        fi
+        printf 'rebuilding %s/%s: %s is newer\n' "$SCRIPT_DIR" "$target" "$dependency"
     fi
 
     apptainer build --disable-cache "$tmp" "$definition"
@@ -59,10 +66,10 @@ case "$TARGET" in
             printf 'error: base-system.sif not found; build system first\n' >&2
             exit 2
         fi
-        build_if_missing_or_stale base-agent.sif base-agent.def
+        build_if_missing_or_stale base-agent.sif base-agent.def base-system.sif
         ;;
     all)
         build_if_missing_or_stale base-system.sif base-system.def
-        build_if_missing_or_stale base-agent.sif base-agent.def
+        build_if_missing_or_stale base-agent.sif base-agent.def base-system.sif
         ;;
 esac
