@@ -33,14 +33,6 @@ command = "/home/sandbox/ai-agent-config/common/hooks/git_branch_guard.py"
 timeout = 30
 
 [[hooks.PreToolUse]]
-matcher = "read_file"
-
-[[hooks.PreToolUse.hooks]]
-type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py"
-timeout = 30
-
-[[hooks.PreToolUse]]
 matcher = "apply_patch"
 
 [[hooks.PreToolUse.hooks]]

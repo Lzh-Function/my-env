@@ -13,13 +13,6 @@
     },
     {
       "event": "PreToolUse",
-      "matcher": "read_file",
-      "entries": [
-        {"script": "block_dangerous_command.py"}
-      ]
-    },
-    {
-      "event": "PreToolUse",
       "matcher": "apply_patch",
       "entries": [
         {"script": "block_dangerous_command.py"}

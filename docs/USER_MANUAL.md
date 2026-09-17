@@ -718,12 +718,12 @@ host files:
 ```text
 agents/codex/AGENTS.md              -> ../../common/AGENTS.md
 agents/codex/skills                 -> ../../common/skills
-agents/codex/config.toml            base config
-agents/codex/config.assist.toml     assist config
-agents/codex/config.experiment.toml experiment config
+agents/codex/config.toml            base config（現在は [tui] のみ）
+agents/codex/config.assist.toml     assist config（現在は [tui] のみ）
+agents/codex/config.experiment.toml experiment config（現在は [tui] のみ）
 agents/codex/hooks.manifest.json    hook source manifest
 agents/codex/requirements.toml      generated managed hook config
-agents/codex/rules/                 exec policy
+agents/codex/rules/                 exec policy（forbidden rule のみ。allow rule は承認を飛ばす起動方法のため無意味）
 ```
 
 commands:
