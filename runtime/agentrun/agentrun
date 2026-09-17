@@ -236,29 +236,6 @@ agent_command() {
     esac
 }
 
-agent_update_command() {
-    local agent="$1"
-    # <agent> update に頼らず、image build時と同じ install script を run 限定の
-    # $HOME に再実行する。update サブコマンドは自己インストール検知に /root 側の
-    # install管理情報を必要とするため、sandboxユーザーの使い捨てhomeからは動かない
-    # （実機確認済み: update自体は完走するが、$HOME/.local/binがPATHに無いため
-    # 実際に起動されるセッションには反映されない）。
-    case "$agent" in
-        claude)
-            printf '%s' 'export PATH="$HOME/.local/bin:$PATH"; curl -fsSL https://claude.ai/install.sh | bash; true'
-            ;;
-        codex)
-            printf '%s' 'export PATH="$HOME/.local/bin:$PATH"; curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh; true'
-            ;;
-        antigravity)
-            printf '%s' 'export PATH="$HOME/.local/bin:$PATH"; curl -fsSL https://antigravity.google/cli/install.sh | bash; true'
-            ;;
-        *)
-            printf '%s' 'true'
-            ;;
-    esac
-}
-
 profile_cpus() {
     case "$1" in
         experiment|campaign) printf '8\n' ;;
@@ -653,12 +630,8 @@ apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
     [ "$gpus" -gt 0 ] && nv=" --nv"
-    local cmd update_cmd
+    local cmd
     cmd="$(agent_command "$agent" "$mode" "$launch")"
-    # image内のCLIバージョンが古くても、この run 限定で自己アップデートを試みる
-    # （.sif自体は read-only なので書き換えない。失敗しても run は止めない）。
-    update_cmd="$(agent_update_command "$agent")"
-    cmd="${update_cmd}; ${cmd}"
     printf 'export APPTAINERENV_SLURM_JOB_ID="${SLURM_JOB_ID:-}"\n'
     printf 'export APPTAINERENV_SLURMD_NODENAME="${SLURMD_NODENAME:-}"\n'
     printf 'export APPTAINERENV_SLURM_CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-}"\n'
