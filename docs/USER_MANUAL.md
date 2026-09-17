@@ -151,7 +151,7 @@ agentrun doctor --agent claude
 - **環境変数になった値は agent から読めます**（`env`、`/proc/self/environ` など）。隠せるのは file と run の記録だけです。トークンは権限を絞り、有効期限を付けてください。
   - Hugging Face: fine-grained token、読み取り専用（gated model の取得なら public gated repos の read のみ）
   - GitHub: fine-grained PAT、対象 repository を限定、有効期限あり、必要な権限のみ
-- `gh` CLI は現在の image には入っていません。
+- `gh` CLI は image（`base-system.def`）に入っています。`GH_TOKEN` があれば `gh auth login` は不要です。`gh` 追加前にビルドした `.sif` を使っている場合は `build-images.sh --run` で再ビルドしてください（`base-system.def` が更新されているため、system 層・agent 層とも作り直されます）。
 
 別の file を使う場合や、secrets を渡さない場合:
 
