@@ -557,9 +557,40 @@ agentrun wizard
 
 1. TTY 必須（`[ -t 0 ] && [ -t 1 ]` を満たさない場合は対話せず即エラー終了）
 2. UI backend を自動検出: **gum → whiptail/dialog → 標準 bash `read`/`select`** の順にフォールバックし、フォールバックする度に `"<tool> not found, falling back to <next>"` を1行 stderr に出力（インストール手順は表示しない）
-3. mode → agent → launch style（assist なら「対話セッション（srun --pty）」か「バッチ投入（sbatch）」、それ以外のモードは「今すぐ sbatch するか」の confirm）→ repo → **partition**（空欄なら `AGENTRUN_SLURM_PARTITION`/cluster default）→ **GPU数** → mem/cpus/time → bind mount（「もう1つ追加しますか？」ループ）→ goal（存在しないパスは再入力を促す。`write_plan` が `cp` するため実在するファイルが必要）→ task prompt → （review なら reviewers/target-diff/target-report、multi-review なら agents リストを同じ追加ループで）の順に質問
-4. `agentrun wizard --agent claude` のように一部フラグを先に渡しても、質問はスキップされず、渡された値がその項目のデフォルト値として表示されるだけです（Enter でそのまま採用可）
-5. 最後に全項目のサマリを表示し、"Launch this run?" で確認。Yes ならその場で組み立てた引数で `assist`/`experiment`/`campaign`/`review`/`multi-review` と同じ起動処理（`write_plan`・auth staging・`srun --pty`/`sbatch`）を呼び出し、No なら何も実行せず終了します。
+3. mode → agent → launch style（assist なら「対話セッション（srun --pty）」か「バッチ投入（sbatch）」、それ以外のモードは「今すぐ sbatch するか」の confirm）→ repo → **partition** → **GPU数** → mem/cpus/time → bind mount → /dev/fuse → secrets / GitHub CLI broker（設定されている場合のみ）→ goal → task prompt → （review なら reviewers/target-diff/target-report、multi-review なら agents リスト）の順に質問
+4. 最後に全項目のサマリと、同じ run を wizard なしで起動する **CLI コマンド**を表示し、"Launch this run?" で確認します。Yes ならその場で組み立てた引数で `assist`/`experiment`/`campaign`/`review`/`multi-review` と同じ起動処理（`write_plan`・auth staging・`srun --pty`/`sbatch`）を呼び出します。No なら何も実行せず、コマンドだけを表示して終了します。
+
+### 入力と取り消し
+
+- 入力欄には既定値が入った状態で表示され、そのまま編集できます（Enter で採用、消せば空欄）。plain（bash `read`）でも同様です。
+- **Ctrl+C / Esc / Cancel ボタン / Ctrl+D で wizard 全体を中止**し、何も起動せずに終了します（exit 130）。whiptail は Ctrl+C のキー入力自体を受け付けないため、Esc か Cancel ボタンを使ってください。
+- 値は入力した時点で検証し、不正ならエラーを表示して入力した値を残したまま再入力を促します。
+  - repo: 存在する directory（`~` と相対パスは絶対パスに展開）。git repository でない場合は注意を表示
+  - GPU数: 0 以上の整数。選んだ partition に sinfo 上 GPU が無い場合は注意を表示
+  - memory: 数値 + 任意の `K`/`M`/`G`/`T`（例: `16000M`、`64G`）
+  - CPU数: 1 以上の整数
+  - walltime: Slurm の形式（`HH:MM:SS`、`MM`、`D-HH:MM:SS` など）
+  - goal: 空欄、または存在するファイル
+  - task prompt: batch 実行（interactive assist 以外）では必須
+- bind mount は `--bind` と同じ `SRC:DST[:ro|rw]` 形式で 1 行に入力します。複数ある場合はスペースかカンマで区切ります（例: `~/data:/data:ro /scratch/me:/work`）。コマンドラインからコピーした `--bind`/`-B` はそのまま貼り付けても無視されます。`DST` を省略すると `SRC` と同じパスに mount します。存在しない `SRC`、絶対パスでない `DST`、`ro`/`rw` 以外のオプションはエラーになります。`none` で bind mount なしにします。
+
+### partition の選択
+
+`sinfo` が使える場合、partition は一覧から選びます。各 partition には sinfo が報告する GPU（例: `gpu (GPU: gpu:a100:4)`、`cpu (no GPU)`）が表示されます。一覧には `(cluster default: <name>)` と `Type a partition name...` も含まれ、後者を選ぶと名前を直接入力できます。sinfo に無い名前を入力した場合は、そのまま使うか確認します。`sinfo` が使えない環境では、従来どおり名前を入力します（空欄 = cluster default）。
+
+### 前回の値の再利用
+
+起動（Launch）した run の回答は `~/.agentrun/wizard-last` に保存され、次回の既定値になります。
+
+- mode・agent・launch style・partition・GPU数・bind mount・/dev/fuse・secrets / broker の有無・multi-review の agents は、常に前回の値を既定値にします。
+- memory・CPU数・walltime は、前回と同じ mode を選んだ場合だけ前回の値を使います（mode ごとに既定値が違うため）。
+- repo・goal・task prompt・review の対象は、前回と同じ directory で wizard を起動した場合だけ使います（別の project で誤って前回の repo を使わないため）。
+- `agentrun wizard --agent claude` のようにフラグを渡した項目は、前回の値より渡した値を優先します（質問はスキップされず、既定値として表示されます）。
+- 中止した場合や、確認で No を選んだ場合は保存しません。
+
+### 表示される CLI コマンド
+
+サマリと起動直前に `Same run without the wizard:` として表示されるコマンドは、コピーしてそのまま同じ run を起動できます。profile の既定値と同じ memory/CPU/walltime、GPU 0、カレント directory の repo など、指定しなくても同じになる引数は省略します。
 
 このリポジトリは `--partition`/`--gpus` が実際の CLI フラグとして存在するため、ウィザードでもそのまま対話項目に含めています。
 
