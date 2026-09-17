@@ -10,16 +10,20 @@ which is bound over `gh` inside the capsule.
 Request  (one JSON object, then EOF): {"argv": [...], "stdin": b64, "repo": "owner/name" | null}
 Response (one JSON object):           {"stdout": b64, "stderr": b64, "code": int}
 
-Guards, in order:
-- argv must start with a subcommand listed in allowlist.txt ("issue list", ...),
-  with no flags before the subcommand words.
-- --body-file / -F may only read stdin ("-"): the client sends file contents
-  itself, so a path can never make gh read files (e.g. /proc/self/environ)
-  in here. --recover and --hostname are rejected.
-- gh runs with a fixed environment, an empty working directory (no agent
-  controlled git config is ever read), prompts/browser/editor disabled, and
-  GH_REPO validated as OWNER/REPO.
-- The token is redacted from anything sent back or logged.
+Guards:
+- argv must match an entry in allowlist.txt: the subcommand words, then only
+  the positional kinds and long flags that entry lists. Short flags, unlisted
+  flags, URLs and extra positionals are rejected.
+- Flag values are validated: --body-file must be "-" (the client sends file
+  contents itself, so gh never opens a path here, e.g. /proc/self/environ),
+  --repo and repository positionals must be OWNER/NAME, --head/--base branch
+  names, --state/--limit/--json well formed.
+- GH_BROKER_REPOS (comma-separated OWNER/NAME, from gh.env) pins the repositories
+  commands may target; with exactly one, it is also the default.
+- gh runs with a fixed environment and an empty working directory (no agent
+  controlled git config is ever read), with prompts/browser/editor disabled.
+- The token is redacted from anything sent back or logged; --comment values
+  are not logged.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ import socketserver
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,10 +47,13 @@ GH_BIN = os.environ.get("GH_BROKER_GH_BIN", "gh")
 TIMEOUT_SECONDS = 300
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
-REPO_RE = re.compile(r"^(github\.com/)?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-BODY_FILE_FLAGS = ("--body-file", "-F")
-REJECTED_FLAGS = ("--recover", "--hostname")
-REPO_FLAGS = ("--repo", "-R")
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+NUMBER_RE = re.compile(r"^#?[0-9]+$")
+# git branch names, without leading "-" and without ":" (so no URLs or OWNER:BRANCH)
+BRANCH_RE = re.compile(r"^(?!-)[A-Za-z0-9._/+@-]+$")
+BOOLEAN_FLAGS = {"--draft"}
+# Logged as <n chars> instead of the value.
+UNLOGGED_FLAGS = {"--comment", "--title"}
 
 
 def log(message: str) -> None:
@@ -58,38 +66,140 @@ def redact(text: str) -> str:
     return text.replace(token, "***") if token else text
 
 
-def load_allowlist() -> list[list[str]]:
-    entries = []
+def pinned_repos() -> list[str]:
+    return [r.strip() for r in os.environ.get("GH_BROKER_REPOS", "").split(",") if r.strip()]
+
+
+def check_repo(value: str) -> str | None:
+    if not REPO_RE.match(value):
+        return f"repository must be OWNER/NAME: {value}"
+    pinned = pinned_repos()
+    if pinned and value.lower() not in (r.lower() for r in pinned):
+        return f"repository {value} is not allowed (GH_BROKER_REPOS: {', '.join(pinned)})"
+    return None
+
+
+def check_flag_value(flag: str, value: str) -> str | None:
+    if flag == "--body-file":
+        return None if value == "-" else "--body-file must be '-' (the gh client sends file contents over stdin)"
+    if flag == "--repo":
+        return check_repo(value)
+    if flag in ("--head", "--base"):
+        return None if BRANCH_RE.match(value) else f"{flag} must be a branch name: {value}"
+    if flag == "--state":
+        return None if value in ("open", "closed", "merged", "all") else f"--state must be open, closed, merged or all: {value}"
+    if flag == "--limit":
+        return None if value.isdigit() else f"--limit must be a number: {value}"
+    if flag == "--json":
+        return None if re.match(r"^[A-Za-z]+(,[A-Za-z]+)*$", value) else f"--json must be comma-separated field names: {value}"
+    return None
+
+
+@dataclass
+class Rule:
+    words: list[str]
+    positional: str | None = None  # "number", "number|branch", "repo"
+    positional_required: bool = False
+    flags: set[str] = field(default_factory=set)
+
+    def describe(self) -> str:
+        return " ".join(self.words)
+
+
+def load_allowlist() -> list[Rule]:
+    rules = []
     for line in ALLOWLIST_FILE.read_text(encoding="utf-8").splitlines():
         line = line.split("#", 1)[0].strip()
-        if line:
-            entries.append(line.split())
-    return entries
+        if not line:
+            continue
+        head, _, flags = line.partition(":") if not line.startswith("-") else (line, "", "")
+        rule = Rule(words=[], flags=set(flags.split()))
+        for token in head.split():
+            if token[0] in "<[":
+                rule.positional = token[1:-1]
+                rule.positional_required = token[0] == "<"
+            else:
+                rule.words.append(token)
+        rules.append(rule)
+    return rules
 
 
-def check_argv(argv: list[str], allowlist: list[list[str]]) -> str | None:
+def check_positional(rule: Rule, value: str) -> str | None:
+    kinds = (rule.positional or "").split("|")
+    if "number" in kinds and NUMBER_RE.match(value):
+        return None
+    if "branch" in kinds and BRANCH_RE.match(value) and not value.isdigit():
+        return None
+    if "repo" in kinds:
+        return check_repo(value)
+    return f"`gh {rule.describe()}` does not accept {value!r} (expected {rule.positional or 'no positional argument'})"
+
+
+def check_argv(argv: list[str], rules: list[Rule]) -> str | None:
     """Return a rejection reason, or None when the command may run."""
     if not argv:
         return "no gh subcommand given"
-    matched = next((e for e in allowlist if argv[: len(e)] == e), None)
-    if matched is None:
-        allowed = ", ".join(" ".join(e) for e in allowlist)
-        hint = " (write subcommands before any flags)" if argv[0].startswith("-") else ""
-        return f"`gh {shlex.join(argv[:2])}` is not allowed through the broker{hint}. Allowed: {allowed}"
-    args = argv[len(matched):]
-    for i, arg in enumerate(args):
-        name, eq, value = arg.partition("=")
-        if name in REJECTED_FLAGS:
-            return f"{name} is not allowed through the broker"
-        if name in BODY_FILE_FLAGS:
-            value = value if eq else (args[i + 1] if i + 1 < len(args) else "")
-            if value != "-":
-                return f"{name} must be '-' (the gh client sends file contents over stdin)"
-        if name in REPO_FLAGS:
-            value = value if eq else (args[i + 1] if i + 1 < len(args) else "")
-            if not REPO_RE.match(value):
-                return f"{name} must be OWNER/REPO"
+    rule = max((r for r in rules if argv[: len(r.words)] == r.words),
+               key=lambda r: len(r.words), default=None)
+    if rule is None:
+        allowed = ", ".join(r.describe() for r in rules)
+        return f"`gh {shlex.join(argv[:2])}` is not allowed through the broker. Allowed: {allowed}"
+    args = argv[len(rule.words):]
+    positionals = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("--"):
+            flag, eq, value = arg.partition("=")
+            if flag not in rule.flags:
+                allowed = " ".join(sorted(rule.flags)) or "none"
+                return f"{flag} is not allowed with `gh {rule.describe()}` (allowed flags: {allowed})"
+            if flag in BOOLEAN_FLAGS:
+                if eq:
+                    return f"{flag} does not take a value"
+            else:
+                if not eq:
+                    if i + 1 >= len(args):
+                        return f"{flag} needs a value"
+                    i += 1
+                    value = args[i]
+                reason = check_flag_value(flag, value)
+                if reason:
+                    return reason
+        elif arg.startswith("-") and arg != "-":
+            return f"short flags are not accepted through the broker; use the long form ({arg})"
+        else:
+            positionals.append(arg)
+        i += 1
+    if len(positionals) > 1:
+        return f"`gh {rule.describe()}` takes at most one positional argument"
+    if positionals:
+        if rule.positional is None:
+            return f"`gh {rule.describe()}` does not take a positional argument"
+        return check_positional(rule, positionals[0])
+    if rule.positional_required:
+        return f"`gh {rule.describe()}` needs {rule.positional}"
     return None
+
+
+def loggable(argv: list[str]) -> str:
+    out = []
+    hide_next = False
+    for arg in argv:
+        if hide_next:
+            out.append(f"<{len(arg)} chars>")
+            hide_next = False
+            continue
+        flag, eq, value = arg.partition("=")
+        if flag in UNLOGGED_FLAGS:
+            if eq:
+                out.append(f"{flag}=<{len(value)} chars>")
+            else:
+                out.append(arg)
+                hide_next = True
+            continue
+        out.append(arg)
+    return shlex.join(out)
 
 
 def run_gh(argv: list[str], stdin: bytes, repo: str | None) -> tuple[bytes, bytes, int]:
@@ -134,19 +244,30 @@ class Handler(socketserver.StreamRequestHandler):
             argv = [str(a) for a in request["argv"]]
             stdin = base64.b64decode(request.get("stdin") or "")
             repo = request.get("repo")
-            if repo is not None and not REPO_RE.match(str(repo)):
-                repo = None
+            repo = str(repo) if repo else None
         except (ValueError, KeyError, TypeError) as exc:
             self.reply(b"", f"gh broker: bad request: {exc}\n".encode(), 2)
             return
 
         reason = check_argv(argv, load_allowlist())
+        pinned = pinned_repos()
+        # `repo` is what the client inferred (--repo, GH_REPO or the origin remote).
+        # With a single pinned repository it is the default target; otherwise an
+        # inferred repository must itself be allowed.
+        if not reason and repo and check_repo(repo):
+            if len(pinned) == 1:
+                log(f"inferred repository {repo} is not allowed; using {pinned[0]}")
+                repo = pinned[0]
+            else:
+                reason = check_repo(repo)
+        if not reason and not repo and len(pinned) == 1:
+            repo = pinned[0]
         if reason:
-            log(f"denied gh {shlex.join(argv)}: {reason}")
+            log(f"denied gh {loggable(argv)}: {reason}")
             self.reply(b"", f"gh broker: {reason}\n".encode(), 1)
             return
         out, err, code = run_gh(argv, stdin, repo)
-        log(f"ran gh {shlex.join(argv)} (repo={repo}) -> {code}")
+        log(f"ran gh {loggable(argv)} (repo={repo}) -> {code}")
         self.reply(out, err, code)
 
     def reply(self, out: bytes, err: bytes, code: int) -> None:

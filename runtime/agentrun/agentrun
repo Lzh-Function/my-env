@@ -636,11 +636,13 @@ EOF
 append_gh_broker_note() {
     gh_broker_enabled || return 0
     local allowed
-    allowed="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$GH_BROKER_SRC/allowlist.txt" | paste -sd, - | sed 's/,/, /g')"
+    allowed="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' -e 's/[[:space:]]*$//' "$GH_BROKER_SRC/allowlist.txt" | sed 's/^/- gh /')"
     cat >> "$1" <<EOF
 
 GitHub CLI: \`gh\` works through a broker; no GitHub credentials exist in this capsule, so do not look for them.
-Allowed: $allowed. Put flags after the subcommand; pass issue/PR numbers explicitly.
+Only these commands, with only the listed long flags (\`--flag value\`), are accepted:
+$allowed
+Pass issue/PR numbers explicitly (no URLs), and use --body-file FILE (or --body-file -) for bodies. \`gh api\` is not available; read issue comments with \`gh issue view <number> --json comments\`.
 EOF
 }
 
@@ -1699,6 +1701,13 @@ check_gh_broker() {
         printf '[OK] gh-broker:token - %s (%s)\n' "$file" "$(stat -c '%a' "$file")"
     else
         printf '[WARN] gh-broker:permissions - %s is readable by group/others; run: chmod 600 %s\n' "$file" "$file"
+    fi
+    if [ -f "$file" ] && file_sets_key "$file" GH_TOKEN; then
+        if file_sets_key "$file" GH_BROKER_REPOS; then
+            printf '[OK] gh-broker:repos - %s\n' "$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?GH_BROKER_REPOS=//p' "$file" | tail -n 1)"
+        else
+            printf '[WARN] gh-broker:repos - GH_BROKER_REPOS not set; commands may target any repository the token can access\n'
+        fi
     fi
     local secrets="${AGENTRUN_SECRETS_FILE:-$DEFAULT_SECRETS_FILE}"
     if [ -f "$secrets" ] && file_sets_key "$secrets" GH_TOKEN; then

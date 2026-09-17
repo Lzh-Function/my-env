@@ -1,32 +1,39 @@
-# gh subcommands the GitHub CLI broker runs for agents.
+# gh commands the GitHub CLI broker runs for agents.
 #
-# One command per line, matched against the start of the agent's argv
-# (`gh issue list --state open` matches "issue list"). Flags are checked
-# separately by gh_broker.py. Anything not listed is rejected.
+# Format, one command per line:
 #
-# Do not add commands that expose or change credentials or run arbitrary
-# requests/code: auth, api, extension, alias, config, secret, variable,
-# ssh-key, gpg-key, codespace, attestation. Commands that read local files by
-# path (release upload, gist create, ...) also need broker-side handling first.
+#   <subcommand words> [<positional>] [: --flag --flag ...]
+#
+# - Positionals: <number> (issue/PR number), <number|branch>, [repo] (OWNER/NAME).
+#   <x> is required, [x] optional. A command without one takes no positional.
+#   URLs are never accepted, so a command cannot reach another repository that way.
+# - Only the listed long flags are accepted, as `--flag value` or `--flag=value`.
+#   Short flags are always rejected. Every listed flag takes a value except the
+#   boolean flags known to gh_broker.py (BOOLEAN_FLAGS); add a new boolean flag
+#   there before listing it here.
+# - Flag values are validated where it matters: --body-file must be "-" (the gh
+#   client sends file contents over stdin), --repo must be OWNER/NAME and in
+#   GH_BROKER_REPOS when that is set, --head/--base must be branch names,
+#   --state/--limit/--json must be well formed.
+#
+# Never add: api (arbitrary API calls with the token), auth token or
+# --show-token, extension, alias, config, secret, variable, ssh-key, gpg-key,
+# or flags that read/upload local files (--attach, --recover, --template file).
+#
+# The default below is the complete set of gh calls research-harness (RDH) makes.
 
-issue list
-issue view
-issue create
-issue comment
-issue edit
-issue close
-issue reopen
-issue status
+--version
+auth status
 
-pr list
-pr view
-pr diff
-pr checks
-pr status
-pr comment
+repo view [repo]: --json
 
-search issues
-search prs
+issue create: --title --body-file --label --repo
+issue view <number>: --json --repo
+issue list: --state --limit --json --repo
+issue comment <number>: --body-file --repo
+issue close <number>: --comment --repo
 
-repo view
-label list
+pr create: --title --body-file --head --base --draft --repo
+pr view <number|branch>: --json --repo
+pr list: --head --state --limit --json --repo
+pr edit <number|branch>: --body-file --repo

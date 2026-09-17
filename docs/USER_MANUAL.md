@@ -189,16 +189,37 @@ agentrun doctor --agent claude   # gh-broker:token が [OK] になることを�
 - `apptainer_exec.sh` は agent の capsule より先に、**別の apptainer container** で broker（`runtime/gh-broker/gh_broker.py`）を起動します。`GH_TOKEN` は `--env-file secrets/gh.env` でこの container にだけ渡ります。
 - agent の capsule では `/usr/local/bin/gh` が `runtime/gh-broker/gh-client` に置き換わります。client は command を Unix socket（compute node の `/tmp/agentrun-gh.*`、capsule 内では `/opt/gh-broker/gh.sock`）で broker に送り、結果を受け取るだけです。
 - `--containall` により 2 つの container は PID namespace が分かれているため、agent から broker の process や環境変数は見えません。`secrets/gh.env` もどちらの capsule にも mount されません。
-- broker は `runtime/gh-broker/allowlist.txt` にある subcommand だけを実行します。既定は `issue list/view/create/comment/edit/close/reopen/status`、`pr list/view/diff/checks/status/comment`、`search issues/prs`、`repo view`、`label list` です。`auth`、`api`、`extension` などは拒否されます。
-- 対象 repository は `-R`/`--repo`、`GH_REPO`、または capsule 内 git repository の `origin` remote から client が判定し、`OWNER/REPO` として broker に渡します。broker は空の作業 directory で `gh` を実行し、agent が書き換えられる git 設定を読みません。
-- `--body-file`/`-F` のファイルは client が読んで stdin で送ります。broker 側でパスを開くことはありません。`--recover` は拒否されます。
-- broker の返す出力とログからは、トークン文字列を `***` に置き換えます。実行・拒否したコマンドは `live/gh_broker.log` に記録されます（トークンは含みません）。
+- broker は `runtime/gh-broker/allowlist.txt` に書かれた command だけを、書かれた位置引数と long flag だけで実行します。それ以外（未記載の subcommand・flag、short flag、URL、余分な位置引数）はすべて拒否します。既定の許可リストは research-harness（RDH）が発行する gh 呼び出しの全体です。
+
+  ```text
+  --version
+  auth status
+  repo view [repo]: --json
+  issue create: --title --body-file --label --repo
+  issue view <number>: --json --repo
+  issue list: --state --limit --json --repo
+  issue comment <number>: --body-file --repo
+  issue close <number>: --comment --repo
+  pr create: --title --body-file --head --base --draft --repo
+  pr view <number|branch>: --json --repo
+  pr list: --head --state --limit --json --repo
+  pr edit <number|branch>: --body-file --repo
+  ```
+
+  書式は `<subcommand> [位置引数] : --flag ...` です。位置引数は `<number>`（Issue/PR 番号）、`<number|branch>`、`[repo]`（`OWNER/NAME`）のいずれかで、`<>` は必須、`[]` は省略可です。URL は受け付けないため、位置引数から別の repository に届くことはありません。flag の値も検証します（`--body-file` は `-` のみ、`--repo` と `repo view` の引数は `OWNER/NAME`、`--head`/`--base` は branch 名、`--state`/`--limit`/`--json` は形式）。値を取らない flag は `gh_broker.py` の `BOOLEAN_FLAGS`（既定は `--draft`）に登録されたものだけです。
+- `api`（任意の GitHub API を token 付きで呼べるため）、`auth token`・`--show-token`、`issue edit`、`pr comment`、`pr merge`、`--attach` などローカルファイルを読む flag は許可しません。Issue comment の読み出しは `gh issue view <番号> --json comments` を使います（100 件を超える comment も全件返ることを確認済み）。
+- **書き込み先 repository の固定**: `secrets/gh.env` の `GH_BROKER_REPOS=owner/name[,owner/name]` を設定すると、`--repo`、`repo view` の引数、client が推定した repository はこのリストに含まれる必要があります。1 つだけ書いた場合はそれが既定の対象になり、推定した repository が違っていても（fork の origin など）固定した repository に向けます。未設定の場合は token が届く全 repository が対象になるため、`doctor` が WARN を出します。
+- 対象 repository は `--repo`、`GH_REPO`、または capsule 内 git repository の `origin` remote から client が推定し、broker に渡します。broker は空の作業 directory で `gh` を実行し、agent が書き換えられる git 設定を読みません。
+- `--body-file FILE` は client（capsule 内）がファイルを読み、`--body-file -` に置き換えて stdin で送ります。broker 側でパスを開くことは一切ありません。そのため broker 側で読めるパスを制限する必要はありません（agent は capsule 内で読めるファイルなら `--body-file` を使わなくても本文に書けるため、client 側でのパス制限は防御になりません）。
+- `pr create` で `--head` を省略すると、client が capsule 内の現在の branch を `--head` として付けます（broker は git checkout の外で `gh` を実行するため）。
+- broker の返す出力とログからは、トークン文字列を `***` に置き換えます。実行・拒否したコマンドは `live/gh_broker.log` に記録されます（トークンは含みません）。`issue close --comment` の本文と `--title` はログに文字数だけを残します（`issue close` には `--body-file` が無く、本文が argv に載るため）。
 - run が終わると broker は停止し、socket directory は削除されます。
 
 制限と注意:
 
-- 対話的な操作（prompt、`--web`、`--editor`）は使えません。issue / PR 番号は明示してください（現在の branch からの推定は broker 側ではできません）。
-- agent は許可リストの範囲内でなら `gh` を自由に使えます（issue の大量作成など）。許可リストとトークンの権限（例: Issues: Read and write、Pull requests: Read、Metadata: Read、対象 repository のみ）の両方で絞ってください。
+- 対話的な操作（prompt、`--web`、`--editor`）は使えません。issue / PR 番号は明示してください（現在の branch からの推定は broker 側ではできません）。`pr create --fill` のようにローカルの git を参照する使い方もできません。
+- `git push` は broker の対象外です。capsule には GitHub の認証情報が無いため、HTTPS remote への push は失敗します（`gh auth setup-git` も token が無いので使えません）。push が必要な場合は、repo 限定の SSH deploy key を渡す（鍵ファイル自体は agent から読めます）か、host 側で push してください。
+- agent は許可リストの範囲内でなら `gh` を自由に使えます（issue の大量作成など）。許可リストとトークンの権限（例: Issues: Read and write、Pull requests: Read and write、Metadata: Read、対象 repository のみ）の両方で絞ってください。
 - capsule 内の `/usr/bin/gh` を直接呼ぶことはできますが、認証情報が無いため認証の必要な操作は失敗します。
 - `gh` は image（`base-system.def`）に入っています。`gh` 追加前にビルドした `.sif` の場合は再ビルドしてください。`git pull` で `base-system.def` が更新されていれば `build-images.sh --run` で system 層・agent 層とも作り直されます。確実に作り直す場合は `--run --force` を使います。
 - 隔離は apptainer の namespace と「token file を mount しない」ことに依存しています。同じ UID で動くため、kernel の脆弱性などによる container escape までは防げません。

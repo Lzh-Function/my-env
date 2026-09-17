@@ -9,6 +9,8 @@ commands with the token and returns their output.
   never opens a path chosen by the agent.
 - The repository is taken from --repo/-R, GH_REPO, or the `origin` remote of
   the current git repository, and passed to the broker as OWNER/REPO.
+- `pr create` without --head/-H gets --head <current branch>, since the broker
+  runs gh outside any git checkout and cannot detect it.
 """
 
 from __future__ import annotations
@@ -48,11 +50,31 @@ def inline_body_files(argv: list[str]) -> tuple[list[str], bytes]:
             else:
                 with open(value, "rb") as fh:
                     stdin = fh.read()
-            out += [name, "-"]
+            out += ["--body-file", "-"]
         else:
             out.append(arg)
         i += 1
     return out, stdin
+
+
+def git_output(*args: str) -> str:
+    try:
+        return subprocess.run(
+            ["git", *args], capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def add_pr_head(argv: list[str]) -> list[str]:
+    if argv[:2] != ["pr", "create"]:
+        return argv
+    if any(a in ("--head", "-H") or a.startswith(("--head=", "-H")) for a in argv[2:]):
+        return argv
+    branch = git_output("symbolic-ref", "--quiet", "--short", "HEAD")
+    if not branch:
+        return argv
+    return [*argv, "--head", branch]
 
 
 def detect_repo(argv: list[str]) -> str | None:
@@ -62,19 +84,13 @@ def detect_repo(argv: list[str]) -> str | None:
             return value if eq else (argv[i + 1] if i + 1 < len(argv) else None)
     if os.environ.get("GH_REPO"):
         return os.environ["GH_REPO"]
-    try:
-        url = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
-    match = REMOTE_RE.search(url)
+    match = REMOTE_RE.search(git_output("remote", "get-url", "origin"))
     return match.group(1) if match else None
 
 
 def main() -> int:
     argv = sys.argv[1:]
+    argv = add_pr_head(argv)
     try:
         argv, stdin = inline_body_files(argv)
     except OSError as exc:
