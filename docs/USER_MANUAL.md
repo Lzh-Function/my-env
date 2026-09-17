@@ -572,7 +572,7 @@ agentrun wizard
   - walltime: Slurm の形式（`HH:MM:SS`、`MM`、`D-HH:MM:SS` など）
   - goal: 空欄、または存在するファイル
   - task prompt: batch 実行（interactive assist 以外）では必須
-- bind mount は `--bind` と同じ `SRC:DST[:ro|rw]` 形式で 1 行に入力します。複数ある場合はスペースかカンマで区切ります（例: `~/data:/data:ro /scratch/me:/work`）。コマンドラインからコピーした `--bind`/`-B` はそのまま貼り付けても無視されます。`DST` を省略すると `SRC` と同じパスに mount します。存在しない `SRC`、絶対パスでない `DST`、`ro`/`rw` 以外のオプションはエラーになります。`none` で bind mount なしにします。
+- bind mount は `--bind` と同じ `SRC:DST[:ro|rw]` 形式で 1 行に入力します。複数ある場合はスペースかカンマで区切ります（例: `~/data:/data:ro /scratch/me:/work`）。コマンドラインからコピーした `--bind`/`-B` はそのまま貼り付けても無視されます。`DST` を省略すると `SRC` と同じパスに mount します。存在しない `SRC`、絶対パスでない `DST`、`ro`/`rw` 以外のオプションはエラーになります。`none` で bind mount なしにします。1 行入力した後に "Add more?" で Yes を選ぶと、続きを別の行で追加できます（入力欄の長さ制限に掛かる場合や、分けて貼り付けたい場合）。gum の入力欄は文字数制限なしで起動します。
 
 ### partition の選択
 

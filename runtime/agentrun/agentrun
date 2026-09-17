@@ -169,7 +169,8 @@ wizard_input() {
     local prompt="$1" default="${2:-}"
     case "$WIZARD_UI" in
         gum)
-            gum input --header "$prompt" --value "$default"
+            # --char-limit 0: no limit (gum's default of 400 truncates pasted values)
+            gum input --char-limit 0 --header "$prompt" --value "$default"
             ;;
         whiptail|dialog)
             "$DIALOG_BIN" --title "agentrun wizard" --inputbox "$prompt" 10 76 "$default" 3>&1 1>&2 2>&3
@@ -2110,8 +2111,10 @@ wizard_ask_binds() {
         line="${EXTRA_BINDS[*]}"
         IFS="$old_ifs"
     fi
+    local -a kept=()
+    local prompt='Bind mounts: SRC:DST[:ro|rw], several separated by spaces or commas ("none" = no bind mounts)'
     while :; do
-        line="$(wizard_input 'Bind mounts: SRC:DST[:ro|rw], several separated by spaces or commas ("none" = no bind mounts)' "$line")" || wizard_abort
+        line="$(wizard_input "$prompt" "$line")" || wizard_abort
         [ "$line" = "none" ] && line=""
         read -r -a specs <<< "${line//,/ }"
         parsed=()
@@ -2126,8 +2129,13 @@ wizard_ask_binds() {
             fi
             parsed+=("$normalized")
         done
-        EXTRA_BINDS=("${parsed[@]+"${parsed[@]}"}")
-        return 0
+        kept+=("${parsed[@]+"${parsed[@]}"}")
+        EXTRA_BINDS=("${kept[@]+"${kept[@]}"}")
+        # More can be added on further lines, for input fields that cap the paste length.
+        [ "${#parsed[@]}" -gt 0 ] || return 0
+        wizard_confirm "Bind mounts so far: ${#kept[@]}. Add more?" 0 || return 0
+        line=""
+        prompt='More bind mounts: SRC:DST[:ro|rw] (empty to finish)'
     done
 }
 
