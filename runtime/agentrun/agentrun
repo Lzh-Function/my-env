@@ -46,6 +46,9 @@ Options:
   --allow-fuse        bind /dev/fuse into the capsule so nested apptainer/FUSE
                       mounts work (default off; AGENTRUN_ALLOW_FUSE=1 to opt in globally)
   --no-allow-fuse     force /dev/fuse off even if AGENTRUN_ALLOW_FUSE=1
+  --secrets-file PATH pass KEY=VALUE lines from PATH into the capsule as environment
+                      variables (default: secrets/.env if present; AGENTRUN_SECRETS_FILE)
+  --no-secrets        do not pass any secrets file
   --reviewers LIST    reviewer agents
   --target-diff PATH  review target diff
   --target-report PATH review target report
@@ -638,6 +641,53 @@ shared_config_bind_specs() {
     done
 }
 
+# Secrets reach the capsule only through `apptainer exec --env-file`: the file is
+# read by apptainer on the compute node and is never bound into the container, and
+# no value is ever written to the run directory (which the agent sees as /runs).
+# Only the path and the variable names appear in generated files. Values still
+# end up in the agent's environment, so they must be treated as readable by it.
+DEFAULT_SECRETS_FILE="$ROOT_DIR/secrets/.env"
+SECRETS_TEMPLATE="$ROOT_DIR/secrets/.env.example"
+
+secrets_enabled() {
+    [ -n "${SECRETS_FILE:-}" ]
+}
+
+# Names of the variables actually assigned (non-empty) in a secrets file.
+secret_keys() {
+    local file="$1"
+    [ -r "$file" ] || return 0
+    sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*[^[:space:]#].*$/\2/p' "$file"
+}
+
+secret_keys_csv() {
+    secret_keys "$1" | paste -sd, -
+}
+
+secrets_file_mode_ok() {
+    local mode
+    mode="$(stat -c '%a' "$1" 2>/dev/null)" || return 1
+    [ "${mode: -2}" = "00" ]
+}
+
+# Create the default secrets file from the committed template, owner-only.
+ensure_default_secrets_file() {
+    [ -e "$DEFAULT_SECRETS_FILE" ] && return 0
+    [ -f "$SECRETS_TEMPLATE" ] || return 0
+    (umask 077 && cp "$SECRETS_TEMPLATE" "$DEFAULT_SECRETS_FILE")
+    printf 'created %s from template (all entries commented out)\n' "$DEFAULT_SECRETS_FILE" >&2
+}
+
+path_is_within() {
+    local path="$1" dir="$2"
+    [ -n "$dir" ] || return 1
+    dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
+    case "$path" in
+        "$dir"|"$dir"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
@@ -660,6 +710,9 @@ apptainer_command() {
     while IFS= read -r spec; do
         printf ' --bind %q' "$spec"
     done < <(shared_config_bind_specs)
+    if secrets_enabled; then
+        printf ' --env-file %q' "$SECRETS_FILE"
+    fi
     auth_mounts "$agent"
     home_config_mounts "$agent" "$run_dir" "$mode"
     if fuse_enabled; then
@@ -700,6 +753,7 @@ agent: $agent
 repo: $repo
 goal: $goal
 allow_fuse: $(fuse_enabled && printf 'true' || printf 'false')
+secret_keys: $(secrets_enabled && secret_keys_csv "$SECRETS_FILE")
 EOF
     apptainer_command "$mode" "$agent" "$run_dir" "$gpus" "$repo" "$launch" > "$run_dir/apptainer_exec.sh"
     sed -i '1i#!/usr/bin/env bash\nset -euo pipefail' "$run_dir/apptainer_exec.sh"
@@ -1536,6 +1590,26 @@ check_fuse_support() {
     fi
 }
 
+# Secrets are optional, so nothing here fails the doctor run.
+check_secrets_file() {
+    local file="${AGENTRUN_SECRETS_FILE:-$DEFAULT_SECRETS_FILE}" keys
+    if [ ! -f "$file" ]; then
+        printf '[WARN] secrets:file - %s not found; no secrets will be passed (template: %s)\n' "$file" "$SECRETS_TEMPLATE"
+        return 0
+    fi
+    if secrets_file_mode_ok "$file"; then
+        printf '[OK] secrets:permissions - %s\n' "$(stat -c '%a' "$file")"
+    else
+        printf '[WARN] secrets:permissions - %s is readable by group/others; run: chmod 600 %s\n' "$file" "$file"
+    fi
+    keys="$(secret_keys_csv "$file")"
+    printf '[OK] secrets:keys - %s\n' "${keys:-<none set>}"
+    if path_is_within "$file" "$PWD"; then
+        printf '[WARN] secrets:visibility - %s is inside the current directory; running with the default --repo . exposes it via /workspace\n' "$file"
+    fi
+    return 0
+}
+
 command_doctor() {
     local agent="$DEFAULT_AGENT" all=0 gpus=0 failed=0
     while [ "$#" -gt 0 ]; do
@@ -1580,6 +1654,7 @@ command_doctor() {
         failed=1
     fi
     check_fuse_support || true
+    check_secrets_file || true
     if [ -w "$PWD" ]; then
         printf '[OK] writable:%s/.agent-runs\n' "$PWD"
     else
@@ -1626,6 +1701,9 @@ parse_run_args() {
     REQUESTED_AGENTS=""
     PROMPT=""
     EXTRA_BINDS=()
+    SECRETS_FILE="${AGENTRUN_SECRETS_FILE:-}"
+    local secrets_explicit=0 no_secrets=0
+    [ -n "$SECRETS_FILE" ] && secrets_explicit=1
     ALLOW_FUSE="${AGENTRUN_ALLOW_FUSE:-0}"
     case "$ALLOW_FUSE" in
         1|true|yes) ALLOW_FUSE=1 ;;
@@ -1644,6 +1722,8 @@ parse_run_args() {
             --bind) EXTRA_BINDS+=("$2"); shift 2 ;;
             --allow-fuse) ALLOW_FUSE=1; shift ;;
             --no-allow-fuse) ALLOW_FUSE=0; shift ;;
+            --secrets-file) SECRETS_FILE="$2"; secrets_explicit=1; no_secrets=0; shift 2 ;;
+            --no-secrets) no_secrets=1; shift ;;
             --show-mounts) SHOW_MOUNTS=1; shift ;;
             --reviewers) REVIEWERS="$2"; shift 2 ;;
             --target-diff) TARGET_DIFF="$2"; shift 2 ;;
@@ -1668,12 +1748,44 @@ parse_run_args() {
         kept_binds+=("$bind")
     done
     EXTRA_BINDS=("${kept_binds[@]+"${kept_binds[@]}"}")
+    resolve_secrets_file "$secrets_explicit" "$no_secrets"
     # agentrun usually runs on a login node while the capsule runs on a compute
     # node, so a missing device here is a warning, never a hard failure.
     if fuse_enabled && [ ! -e "$FUSE_DEVICE" ]; then
         printf 'warning: %s not present on this host; --allow-fuse only works if the compute node exposes it\n' \
             "$FUSE_DEVICE" >&2
     fi
+}
+
+resolve_secrets_file() {
+    local explicit="$1" disabled="$2"
+    if [ "$disabled" -eq 1 ]; then
+        SECRETS_FILE=""
+        return 0
+    fi
+    if [ "$explicit" -eq 1 ]; then
+        [ -f "$SECRETS_FILE" ] || { printf 'secrets file does not exist: %s\n' "$SECRETS_FILE" >&2; exit 2; }
+    elif [ -f "$DEFAULT_SECRETS_FILE" ]; then
+        SECRETS_FILE="$DEFAULT_SECRETS_FILE"
+    else
+        SECRETS_FILE=""
+        return 0
+    fi
+    SECRETS_FILE="$(cd "$(dirname "$SECRETS_FILE")" && pwd -P)/$(basename "$SECRETS_FILE")"
+    if ! secrets_file_mode_ok "$SECRETS_FILE"; then
+        printf 'warning: %s is readable by group/others; run: chmod 600 %q\n' "$SECRETS_FILE" "$SECRETS_FILE" >&2
+    fi
+    # The file itself must never be reachable through a mount.
+    local bind
+    if path_is_within "$SECRETS_FILE" "$REPO"; then
+        printf 'warning: secrets file %s is inside --repo %s and is visible to the agent via /workspace\n' \
+            "$SECRETS_FILE" "$REPO" >&2
+    fi
+    for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
+        if path_is_within "$SECRETS_FILE" "${bind%%:*}"; then
+            printf 'warning: secrets file %s is visible to the agent via --bind %s\n' "$SECRETS_FILE" "$bind" >&2
+        fi
+    done
 }
 
 command_dry_run() {
@@ -1741,9 +1853,15 @@ command_dry_run() {
         home_config_mounts "$AGENT" "$run_dir" "$mode"
         printf '\n'
     fi
+    if secrets_enabled; then
+        printf 'secrets_file: %s\nsecret_keys: %s\n' "$SECRETS_FILE" "$(secret_keys_csv "$SECRETS_FILE")"
+    else
+        printf 'secrets_file: none\n'
+    fi
     printf '\n--- capsule.yaml ---\n'
-    printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\nallow_fuse: %s\n' \
-        "$id" "$mode" "$AGENT" "$REPO" "$GOAL" "$(fuse_enabled && printf 'true' || printf 'false')"
+    printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\nallow_fuse: %s\nsecret_keys: %s\n' \
+        "$id" "$mode" "$AGENT" "$REPO" "$GOAL" "$(fuse_enabled && printf 'true' || printf 'false')" \
+        "$(secrets_enabled && secret_keys_csv "$SECRETS_FILE")"
     printf '\n--- prompt.txt ---\n'
     local _ptmp
     _ptmp="$(mktemp)"
@@ -1772,6 +1890,7 @@ command_dry_run() {
 
 command_prepare() {
     local mode="$1"; shift
+    ensure_default_secrets_file
     parse_run_args "$@"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
@@ -1885,6 +2004,14 @@ command_wizard() {
         ALLOW_FUSE=0
     fi
 
+    if secrets_enabled; then
+        if wizard_confirm "Pass secrets from $SECRETS_FILE into the capsule? (keys: $(secret_keys_csv "$SECRETS_FILE"))" 1; then
+            :
+        else
+            SECRETS_FILE=""
+        fi
+    fi
+
     GOAL="$(wizard_input 'Goal file path (optional)' "$GOAL")" || true
     while [ -n "$GOAL" ] && [ ! -f "$GOAL" ]; do
         printf 'goal file does not exist: %s\n' "$GOAL" >&2
@@ -1929,6 +2056,11 @@ command_wizard() {
         args+=(--bind "$b")
     done
     [ "$ALLOW_FUSE" -eq 1 ] && args+=(--allow-fuse) || args+=(--no-allow-fuse)
+    if secrets_enabled; then
+        args+=(--secrets-file "$SECRETS_FILE")
+    else
+        args+=(--no-secrets)
+    fi
     [ -n "$REVIEWERS" ] && args+=(--reviewers "$REVIEWERS")
     [ -n "$TARGET_DIFF" ] && args+=(--target-diff "$TARGET_DIFF")
     [ -n "$TARGET_REPORT" ] && args+=(--target-report "$TARGET_REPORT")
@@ -1954,6 +2086,7 @@ command_wizard() {
     summary+="mem/cpus/time: $MEM / $CPUS / $TIME_LIMIT"$'\n'
     [ "${#EXTRA_BINDS[@]}" -gt 0 ] && summary+="bind mounts:   ${EXTRA_BINDS[*]}"$'\n'
     [ "$ALLOW_FUSE" -eq 1 ] && summary+="/dev/fuse:     bound (nested apptainer allowed)"$'\n'
+    secrets_enabled && summary+="secrets:       $(secret_keys_csv "$SECRETS_FILE") (from $SECRETS_FILE)"$'\n'
     [ -n "$GOAL" ] && summary+="goal:          $GOAL"$'\n'
     [ -n "$PROMPT" ] && summary+="prompt:        $PROMPT"$'\n'
     [ -n "$REVIEWERS" ] && summary+="reviewers:     $REVIEWERS"$'\n'

@@ -124,6 +124,48 @@ smoke-test    00:10:00
 agentrun assist --agent codex --partition <partition> --time 02:00:00
 ```
 
+### Secrets（トークン系の環境変数）のセットアップ（任意）
+
+Hugging Face や GitHub のトークンなど、capsule 内で環境変数として使いたい値は `secrets/.env` に書きます。
+
+```bash
+./install.sh --apply        # secrets/.env が無ければ template から作成（chmod 600）
+$EDITOR secrets/.env        # 使う行のコメントを外して値を入れる
+agentrun doctor --agent claude
+```
+
+`secrets/.env` は gitignore 済みです。template（`secrets/.env.example`）は全行コメントアウトされた状態で、以下の入力欄があります。`agentrun` の初回 run 時にも、無ければ自動で作成されます。
+
+```text
+# HF_TOKEN=     huggingface_hub / hf CLI が自動で使用（hf auth login 不要）
+# GH_TOKEN=     gh CLI が自動で使用（git push などの git 操作には使われない）
+```
+
+書式は `KEY=VALUE` を 1 行に 1 つです。上記以外の変数も同じ書式で追加できます。
+
+渡し方と見え方:
+
+- 値は `apptainer exec --env-file <path>` で渡されます。file は job 実行時に compute node 上で apptainer が読みます。
+- file 自体は container に mount されません（capsule に mount されるのは `common/hooks` と `common/skills` だけです）。
+- `apptainer_exec.sh`、`submit.sbatch`、`capsule.yaml`、dry-run の出力には、file の path と変数名だけが出て、値は書かれません。
+- **環境変数になった値は agent から読めます**（`env`、`/proc/self/environ` など）。隠せるのは file と run の記録だけです。トークンは権限を絞り、有効期限を付けてください。
+  - Hugging Face: fine-grained token、読み取り専用（gated model の取得なら public gated repos の read のみ）
+  - GitHub: fine-grained PAT、対象 repository を限定、有効期限あり、必要な権限のみ
+- `gh` CLI は現在の image には入っていません。
+
+別の file を使う場合や、secrets を渡さない場合:
+
+```bash
+agentrun assist --agent claude --secrets-file /path/to/other.env
+agentrun assist --agent claude --no-secrets
+export AGENTRUN_SECRETS_FILE=/path/to/other.env   # 常に別 file を使う
+```
+
+注意:
+
+- file が group / others から読める場合は warning が出ます（`chmod 600` してください）。
+- `--repo` や `--bind` の mount 元に secrets file が含まれると、`/workspace` などから agent に見えてしまうため warning が出ます。`slurm-agents-capsule` 自体を `--repo` にして起動する場合（`--repo` を省略してこの directory で実行した場合も含む）が該当します。
+
 ### 任意ディレクトリで実行した場合の挙動
 
 `agentrun` は、コマンドを実行した host 側 current directory を基準に run directory を作ります。`--repo` を省略した場合は、その current directory 自体が container 内の `/workspace` に read/write mount されます。
@@ -303,11 +345,14 @@ agentrun doctor --all            # 全 agent の auth を検証する
 - auth file
 - image: `runtime/apptainer/base-agent.sif`
 - FUSE 前提条件: host の `/dev/fuse` と、image 内の `libfuse3` / `liblzo2`
+- secrets file: 存在、permission（600 か）、設定済みの変数名、current directory 配下に無いか
 - `.agent-runs` の書き込み可否
 - git repository / branch / dirty state
 
 FUSE のチェックは常に WARN 止まりで、run を FAIL にはしません。capsule 内で nested `apptainer exec` を
 使わないなら関係がないためです。使う場合は `--allow-fuse` と合わせて Troubleshooting を参照してください。
+
+secrets のチェックも WARN 止まりです。secrets は任意のためです。
 
 login node 上で `apptainer` や `uv` が見つからない場合は WARN です。compute node や image 内で提供される構成もあるため、WARN は即失敗とは限りません。
 
@@ -1081,6 +1126,9 @@ agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 --allow-fuse              /dev/fuse を capsule に bind する（nested apptainer / FUSE mount 用）。
                           default: off。AGENTRUN_ALLOW_FUSE=1 で常時 on にもできる
 --no-allow-fuse           AGENTRUN_ALLOW_FUSE=1 が設定されていても off に強制する
+--secrets-file PATH       PATH の KEY=VALUE を capsule に環境変数として渡す。
+                          default: secrets/.env（存在する場合）。AGENTRUN_SECRETS_FILE でも指定可
+--no-secrets              secrets file を渡さない
 --reviewers LIST          prompt に追記される reviewer list
 --target-diff PATH        prompt に追記される review target diff
 --target-report PATH      prompt に追記される review target report

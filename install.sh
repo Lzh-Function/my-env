@@ -20,6 +20,14 @@ link_file() {
 
 link_file "$ROOT_DIR/runtime/agentrun/agentrun" "$HOME/.local/bin/agentrun"
 
+# secrets/.env is gitignored; seed it from the template so the entries are ready to fill in.
+if [ ! -e "$ROOT_DIR/secrets/.env" ]; then
+    printf 'cp %s %s (chmod 600)\n' "$ROOT_DIR/secrets/.env.example" "$ROOT_DIR/secrets/.env"
+    if [ "$APPLY" -eq 1 ]; then
+        (umask 077 && cp "$ROOT_DIR/secrets/.env.example" "$ROOT_DIR/secrets/.env")
+    fi
+fi
+
 if [ "$APPLY" -eq 1 ]; then
     printf 'install complete\n'
 else
