@@ -134,10 +134,10 @@ agentrun assist --agent codex --partition <partition> --time 02:00:00
 
 ### Secrets（トークン系の環境変数）のセットアップ（任意）
 
-Hugging Face や GitHub のトークンなど、capsule 内で環境変数として使いたい値は `secrets/.env` に書きます。
+Hugging Face のトークンなど、capsule 内で環境変数として使いたい値は `secrets/.env` に書きます。GitHub のトークンはここには書かず、次節の [GitHub CLI broker](#github-cli-broker任意) を使ってください。
 
 ```bash
-./install.sh --apply        # secrets/.env が無ければ template から作成（chmod 600）
+./install.sh --apply        # secrets/.env と secrets/gh.env が無ければ template から作成（chmod 600）
 $EDITOR secrets/.env        # 使う行のコメントを外して値を入れる
 agentrun doctor --agent claude
 ```
@@ -146,7 +146,6 @@ agentrun doctor --agent claude
 
 ```text
 # HF_TOKEN=     huggingface_hub / hf CLI が自動で使用（hf auth login 不要）
-# GH_TOKEN=     gh CLI が自動で使用（git push などの git 操作には使われない）
 ```
 
 書式は `KEY=VALUE` を 1 行に 1 つです。上記以外の変数も同じ書式で追加できます。
@@ -157,10 +156,8 @@ agentrun doctor --agent claude
 - file 自体は container に mount されません（capsule に mount されるのは `common/hooks` と `common/skills` だけです）。
 - `apptainer_exec.sh`、`submit.sbatch`、`capsule.yaml`、dry-run の出力には、file の path と変数名だけが出て、値は書かれません。
 - **環境変数になった値は agent から読めます**（`env`、`/proc/self/environ` など）。隠せるのは file と run の記録だけです。トークンは権限を絞り、有効期限を付けてください。
-  - Hugging Face: fine-grained token、読み取り専用（gated model の取得なら public gated repos の read のみ）
-  - GitHub: fine-grained PAT、対象 repository を限定、有効期限あり、必要な権限のみ
-- `git push` の禁止（Claude の deny rule、Codex の rules、`git_branch_guard.py`）はコマンド文字列での判定です。`git -C . push` や `gh pr merge`・`gh api` などは通るため、`GH_TOKEN` を渡す場合は、トークンの権限と remote 側の branch protection を実際の防御として設定してください。
-- `gh` CLI は image（`base-system.def`）に入っています。`GH_TOKEN` があれば `gh auth login` は不要です。`gh` 追加前にビルドした `.sif` を使っている場合は再ビルドしてください。`git pull` で `base-system.def` が更新されていれば `build-images.sh --run` で system 層・agent 層とも作り直されます。確実に作り直す場合は `--run --force` を使います。
+  - Hugging Face: fine-grained token、読み取り専用（gated model の取得なら public gated repos の read のみ）。public（非 gated）な model / dataset の download にトークンは不要です
+- `secrets/.env` に `GH_TOKEN` を書くと、トークンが agent に直接渡るため warning が出ます。`secrets/gh.env` に移してください。
 
 別の file を使う場合や、secrets を渡さない場合:
 
@@ -174,6 +171,38 @@ export AGENTRUN_SECRETS_FILE=/path/to/other.env   # 常に別 file を使う
 
 - file が group / others から読める場合は warning が出ます（`chmod 600` してください）。
 - `--repo` や `--bind` の mount 元に secrets file が含まれると、`/workspace` などから agent に見えてしまうため warning が出ます。`slurm-agents-capsule` 自体を `--repo` にして起動する場合（`--repo` を省略してこの directory で実行した場合も含む）が該当します。
+
+### GitHub CLI broker（任意）
+
+agent に GitHub の認証情報を一切渡さずに、許可した `gh` コマンドだけを使わせる仕組みです。
+
+```bash
+./install.sh --apply        # secrets/gh.env が無ければ template から作成（chmod 600）
+$EDITOR secrets/gh.env      # GH_TOKEN= のコメントを外して値を入れる
+agentrun doctor --agent claude   # gh-broker:token が [OK] になることを確認
+```
+
+`secrets/gh.env` に `GH_TOKEN` が設定されていると、すべての run で broker が起動します。run ごとに止める場合は `--no-gh-broker` を付けます。
+
+仕組み:
+
+- `apptainer_exec.sh` は agent の capsule より先に、**別の apptainer container** で broker（`runtime/gh-broker/gh_broker.py`）を起動します。`GH_TOKEN` は `--env-file secrets/gh.env` でこの container にだけ渡ります。
+- agent の capsule では `/usr/local/bin/gh` が `runtime/gh-broker/gh-client` に置き換わります。client は command を Unix socket（compute node の `/tmp/agentrun-gh.*`、capsule 内では `/opt/gh-broker/gh.sock`）で broker に送り、結果を受け取るだけです。
+- `--containall` により 2 つの container は PID namespace が分かれているため、agent から broker の process や環境変数は見えません。`secrets/gh.env` もどちらの capsule にも mount されません。
+- broker は `runtime/gh-broker/allowlist.txt` にある subcommand だけを実行します。既定は `issue list/view/create/comment/edit/close/reopen/status`、`pr list/view/diff/checks/status/comment`、`search issues/prs`、`repo view`、`label list` です。`auth`、`api`、`extension` などは拒否されます。
+- 対象 repository は `-R`/`--repo`、`GH_REPO`、または capsule 内 git repository の `origin` remote から client が判定し、`OWNER/REPO` として broker に渡します。broker は空の作業 directory で `gh` を実行し、agent が書き換えられる git 設定を読みません。
+- `--body-file`/`-F` のファイルは client が読んで stdin で送ります。broker 側でパスを開くことはありません。`--recover` は拒否されます。
+- broker の返す出力とログからは、トークン文字列を `***` に置き換えます。実行・拒否したコマンドは `live/gh_broker.log` に記録されます（トークンは含みません）。
+- run が終わると broker は停止し、socket directory は削除されます。
+
+制限と注意:
+
+- 対話的な操作（prompt、`--web`、`--editor`）は使えません。issue / PR 番号は明示してください（現在の branch からの推定は broker 側ではできません）。
+- agent は許可リストの範囲内でなら `gh` を自由に使えます（issue の大量作成など）。許可リストとトークンの権限（例: Issues: Read and write、Pull requests: Read、Metadata: Read、対象 repository のみ）の両方で絞ってください。
+- capsule 内の `/usr/bin/gh` を直接呼ぶことはできますが、認証情報が無いため認証の必要な操作は失敗します。
+- `gh` は image（`base-system.def`）に入っています。`gh` 追加前にビルドした `.sif` の場合は再ビルドしてください。`git pull` で `base-system.def` が更新されていれば `build-images.sh --run` で system 層・agent 層とも作り直されます。確実に作り直す場合は `--run --force` を使います。
+- 隔離は apptainer の namespace と「token file を mount しない」ことに依存しています。同じ UID で動くため、kernel の脆弱性などによる container escape までは防げません。
+- `git push` の禁止（Claude の deny rule、Codex の rules、`git_branch_guard.py`）はコマンド文字列での判定で、`git -C . push` などは通ります。push の可否は、capsule に push 用の認証情報を渡さないこと、トークンの権限、remote 側の branch protection で決まります。
 
 ### 任意ディレクトリで実行した場合の挙動
 
@@ -355,13 +384,14 @@ agentrun doctor --all            # 全 agent の auth を検証する
 - image: `runtime/apptainer/base-agent.sif`
 - FUSE 前提条件: host の `/dev/fuse` と、image 内の `libfuse3` / `liblzo2`
 - secrets file: 存在、permission（600 か）、設定済みの変数名、current directory 配下に無いか
+- GitHub CLI broker: `secrets/gh.env` の `GH_TOKEN` と permission、`secrets/.env` に `GH_TOKEN` が書かれていないか
 - `.agent-runs` の書き込み可否
 - git repository / branch / dirty state
 
 FUSE のチェックは常に WARN 止まりで、run を FAIL にはしません。capsule 内で nested `apptainer exec` を
 使わないなら関係がないためです。使う場合は `--allow-fuse` と合わせて Troubleshooting を参照してください。
 
-secrets のチェックも WARN 止まりです。secrets は任意のためです。
+secrets と GitHub CLI broker のチェックも WARN 止まりです。どちらも任意のためです。
 
 login node 上で `apptainer` や `uv` が見つからない場合は WARN です。compute node や image 内で提供される構成もあるため、WARN は即失敗とは限りません。
 
@@ -1139,6 +1169,7 @@ agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 --secrets-file PATH       PATH の KEY=VALUE を capsule に環境変数として渡す。
                           default: secrets/.env（存在する場合）。AGENTRUN_SECRETS_FILE でも指定可
 --no-secrets              secrets file を渡さない
+--no-gh-broker            secrets/gh.env に GH_TOKEN があっても GitHub CLI broker を起動しない
 --reviewers LIST          prompt に追記される reviewer list
 --target-diff PATH        prompt に追記される review target diff
 --target-report PATH      prompt に追記される review target report

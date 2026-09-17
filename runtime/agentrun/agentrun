@@ -49,6 +49,7 @@ Options:
   --secrets-file PATH pass KEY=VALUE lines from PATH into the capsule as environment
                       variables (default: secrets/.env if present; AGENTRUN_SECRETS_FILE)
   --no-secrets        do not pass any secrets file
+  --no-gh-broker      do not start the GitHub CLI broker even if secrets/gh.env sets GH_TOKEN
   --reviewers LIST    reviewer agents
   --target-diff PATH  review target diff
   --target-report PATH review target report
@@ -560,6 +561,7 @@ Host repo: $repo
 
 Wait for the user's first instruction. Do not read files, explore the repository, or run any commands until the user tells you what to do.
 EOF
+        append_gh_broker_note "$path"
         return 0
     fi
 
@@ -612,6 +614,18 @@ EOF
     if [ -n "${REQUESTED_AGENTS:-}" ]; then
         printf '\nRequested agents: %s\n' "$REQUESTED_AGENTS" >> "$path"
     fi
+    append_gh_broker_note "$path"
+}
+
+append_gh_broker_note() {
+    gh_broker_enabled || return 0
+    local allowed
+    allowed="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$GH_BROKER_SRC/allowlist.txt" | paste -sd, - | sed 's/,/, /g')"
+    cat >> "$1" <<EOF
+
+GitHub CLI: \`gh\` works through a broker; no GitHub credentials exist in this capsule, so do not look for them.
+Allowed: $allowed. Put flags after the subcommand; pass issue/PR numbers explicitly.
+EOF
 }
 
 # `--containall` gives the capsule a minimal /dev, so /dev/fuse is absent even
@@ -688,12 +702,58 @@ path_is_within() {
     esac
 }
 
+# GitHub CLI broker: GH_TOKEN from secrets/gh.env is given only to a separate
+# apptainer container running runtime/gh-broker/gh_broker.py. The agent's capsule
+# gets `gh` replaced by gh-client, which forwards allowlisted commands over a
+# Unix socket; neither the token file nor the broker process is visible to it.
+GH_BROKER_SRC="$ROOT_DIR/runtime/gh-broker"
+DEFAULT_GH_ENV_FILE="$ROOT_DIR/secrets/gh.env"
+GH_ENV_TEMPLATE="$ROOT_DIR/secrets/gh.env.example"
+GH_BROKER_CONTAINER_DIR="/opt/gh-broker"
+
+gh_broker_enabled() {
+    [ -n "${GH_ENV_FILE:-}" ]
+}
+
+file_sets_key() {
+    local file="$1" key="$2"
+    secret_keys "$file" | grep -qx "$key"
+}
+
+# Printed into apptainer_exec.sh before the agent's apptainer exec. The socket
+# directory lives in the node's /tmp (not the run directory) and is removed on exit.
+gh_broker_launch_lines() {
+    local run_dir="$1" image="$2"
+    cat <<EOF
+GH_BROKER_DIR="\$(mktemp -d /tmp/agentrun-gh.XXXXXX)"
+apptainer exec --containall --cleanenv --env-file $(printf '%q' "$GH_ENV_FILE") --bind $(printf '%q' "$GH_BROKER_SRC"):$GH_BROKER_CONTAINER_DIR-src:ro --bind "\$GH_BROKER_DIR":$GH_BROKER_CONTAINER_DIR:rw $(printf '%q' "$image") python3 $GH_BROKER_CONTAINER_DIR-src/gh_broker.py $GH_BROKER_CONTAINER_DIR/gh.sock 2>>$(printf '%q' "$run_dir/live/gh_broker.log") &
+GH_BROKER_PID=\$!
+trap 'kill "\$GH_BROKER_PID" 2>/dev/null; rm -rf "\$GH_BROKER_DIR"' EXIT
+for _ in \$(seq 150); do
+    [ -S "\$GH_BROKER_DIR/gh.sock" ] && break
+    kill -0 "\$GH_BROKER_PID" 2>/dev/null || break
+    sleep 0.2
+done
+[ -S "\$GH_BROKER_DIR/gh.sock" ] || printf 'warning: GitHub CLI broker did not start; see %s\\n' $(printf '%q' "$run_dir/live/gh_broker.log") >&2
+EOF
+}
+
+ensure_default_gh_env_file() {
+    [ -e "$DEFAULT_GH_ENV_FILE" ] && return 0
+    [ -f "$GH_ENV_TEMPLATE" ] || return 0
+    (umask 077 && cp "$GH_ENV_TEMPLATE" "$DEFAULT_GH_ENV_FILE")
+    printf 'created %s from template (GH_TOKEN commented out)\n' "$DEFAULT_GH_ENV_FILE" >&2
+}
+
 apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
     [ "$gpus" -gt 0 ] && nv=" --nv"
     local cmd
     cmd="$(agent_command "$agent" "$mode" "$launch")"
+    if gh_broker_enabled; then
+        gh_broker_launch_lines "$run_dir" "$image"
+    fi
     printf 'export APPTAINERENV_SLURM_JOB_ID="${SLURM_JOB_ID:-}"\n'
     printf 'export APPTAINERENV_SLURMD_NODENAME="${SLURMD_NODENAME:-}"\n'
     printf 'export APPTAINERENV_SLURM_CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-}"\n'
@@ -712,6 +772,10 @@ apptainer_command() {
     done < <(shared_config_bind_specs)
     if secrets_enabled; then
         printf ' --env-file %q' "$SECRETS_FILE"
+    fi
+    if gh_broker_enabled; then
+        printf ' --bind "$GH_BROKER_DIR":%s:ro --bind %q:/usr/local/bin/gh:ro' \
+            "$GH_BROKER_CONTAINER_DIR" "$GH_BROKER_SRC/gh-client"
     fi
     auth_mounts "$agent"
     home_config_mounts "$agent" "$run_dir" "$mode"
@@ -754,6 +818,7 @@ repo: $repo
 goal: $goal
 allow_fuse: $(fuse_enabled && printf 'true' || printf 'false')
 secret_keys: $(secrets_enabled && secret_keys_csv "$SECRETS_FILE")
+gh_broker: $(gh_broker_enabled && printf 'true' || printf 'false')
 EOF
     apptainer_command "$mode" "$agent" "$run_dir" "$gpus" "$repo" "$launch" > "$run_dir/apptainer_exec.sh"
     sed -i '1i#!/usr/bin/env bash\nset -euo pipefail' "$run_dir/apptainer_exec.sh"
@@ -1610,6 +1675,22 @@ check_secrets_file() {
     return 0
 }
 
+check_gh_broker() {
+    local file="$DEFAULT_GH_ENV_FILE"
+    if [ ! -f "$file" ] || ! file_sets_key "$file" GH_TOKEN; then
+        printf '[WARN] gh-broker:disabled - GH_TOKEN not set in %s\n' "$file"
+    elif secrets_file_mode_ok "$file"; then
+        printf '[OK] gh-broker:token - %s (%s)\n' "$file" "$(stat -c '%a' "$file")"
+    else
+        printf '[WARN] gh-broker:permissions - %s is readable by group/others; run: chmod 600 %s\n' "$file" "$file"
+    fi
+    local secrets="${AGENTRUN_SECRETS_FILE:-$DEFAULT_SECRETS_FILE}"
+    if [ -f "$secrets" ] && file_sets_key "$secrets" GH_TOKEN; then
+        printf '[WARN] gh-broker:bypass - %s sets GH_TOKEN, which hands the token to the agent directly; move it to %s\n' "$secrets" "$file"
+    fi
+    return 0
+}
+
 command_doctor() {
     local agent="$DEFAULT_AGENT" all=0 gpus=0 failed=0
     while [ "$#" -gt 0 ]; do
@@ -1655,6 +1736,7 @@ command_doctor() {
     fi
     check_fuse_support || true
     check_secrets_file || true
+    check_gh_broker || true
     if [ -w "$PWD" ]; then
         printf '[OK] writable:%s/.agent-runs\n' "$PWD"
     else
@@ -1702,7 +1784,7 @@ parse_run_args() {
     PROMPT=""
     EXTRA_BINDS=()
     SECRETS_FILE="${AGENTRUN_SECRETS_FILE:-}"
-    local secrets_explicit=0 no_secrets=0
+    local secrets_explicit=0 no_secrets=0 no_gh_broker=0
     [ -n "$SECRETS_FILE" ] && secrets_explicit=1
     ALLOW_FUSE="${AGENTRUN_ALLOW_FUSE:-0}"
     case "$ALLOW_FUSE" in
@@ -1724,6 +1806,7 @@ parse_run_args() {
             --no-allow-fuse) ALLOW_FUSE=0; shift ;;
             --secrets-file) SECRETS_FILE="$2"; secrets_explicit=1; no_secrets=0; shift 2 ;;
             --no-secrets) no_secrets=1; shift ;;
+            --no-gh-broker) no_gh_broker=1; shift ;;
             --show-mounts) SHOW_MOUNTS=1; shift ;;
             --reviewers) REVIEWERS="$2"; shift 2 ;;
             --target-diff) TARGET_DIFF="$2"; shift 2 ;;
@@ -1749,6 +1832,7 @@ parse_run_args() {
     done
     EXTRA_BINDS=("${kept_binds[@]+"${kept_binds[@]}"}")
     resolve_secrets_file "$secrets_explicit" "$no_secrets"
+    resolve_gh_broker "$no_gh_broker"
     # agentrun usually runs on a login node while the capsule runs on a compute
     # node, so a missing device here is a warning, never a hard failure.
     if fuse_enabled && [ ! -e "$FUSE_DEVICE" ]; then
@@ -1784,6 +1868,30 @@ resolve_secrets_file() {
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
         if path_is_within "$SECRETS_FILE" "${bind%%:*}"; then
             printf 'warning: secrets file %s is visible to the agent via --bind %s\n' "$SECRETS_FILE" "$bind" >&2
+        fi
+    done
+}
+
+resolve_gh_broker() {
+    local disabled="$1"
+    GH_ENV_FILE=""
+    if secrets_enabled && file_sets_key "$SECRETS_FILE" GH_TOKEN; then
+        printf 'warning: %s sets GH_TOKEN, which hands the token to the agent directly; move it to %s to use the GitHub CLI broker\n' \
+            "$SECRETS_FILE" "$DEFAULT_GH_ENV_FILE" >&2
+    fi
+    [ "$disabled" -eq 0 ] || return 0
+    [ -f "$DEFAULT_GH_ENV_FILE" ] && file_sets_key "$DEFAULT_GH_ENV_FILE" GH_TOKEN || return 0
+    GH_ENV_FILE="$(cd "$(dirname "$DEFAULT_GH_ENV_FILE")" && pwd -P)/$(basename "$DEFAULT_GH_ENV_FILE")"
+    if ! secrets_file_mode_ok "$GH_ENV_FILE"; then
+        printf 'warning: %s is readable by group/others; run: chmod 600 %q\n' "$GH_ENV_FILE" "$GH_ENV_FILE" >&2
+    fi
+    local bind
+    if path_is_within "$GH_ENV_FILE" "$REPO"; then
+        printf 'warning: %s is inside --repo %s and is visible to the agent via /workspace\n' "$GH_ENV_FILE" "$REPO" >&2
+    fi
+    for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
+        if path_is_within "$GH_ENV_FILE" "${bind%%:*}"; then
+            printf 'warning: %s is visible to the agent via --bind %s\n' "$GH_ENV_FILE" "$bind" >&2
         fi
     done
 }
@@ -1858,10 +1966,11 @@ command_dry_run() {
     else
         printf 'secrets_file: none\n'
     fi
+    printf 'gh_broker: %s\n' "$(gh_broker_enabled && printf 'enabled (token: %s)' "$GH_ENV_FILE" || printf 'disabled')"
     printf '\n--- capsule.yaml ---\n'
-    printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\nallow_fuse: %s\nsecret_keys: %s\n' \
+    printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\nallow_fuse: %s\nsecret_keys: %s\ngh_broker: %s\n' \
         "$id" "$mode" "$AGENT" "$REPO" "$GOAL" "$(fuse_enabled && printf 'true' || printf 'false')" \
-        "$(secrets_enabled && secret_keys_csv "$SECRETS_FILE")"
+        "$(secrets_enabled && secret_keys_csv "$SECRETS_FILE")" "$(gh_broker_enabled && printf 'true' || printf 'false')"
     printf '\n--- prompt.txt ---\n'
     local _ptmp
     _ptmp="$(mktemp)"
@@ -1891,6 +2000,7 @@ command_dry_run() {
 command_prepare() {
     local mode="$1"; shift
     ensure_default_secrets_file
+    ensure_default_gh_env_file
     parse_run_args "$@"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
@@ -2012,6 +2122,12 @@ command_wizard() {
         fi
     fi
 
+    if gh_broker_enabled; then
+        if ! wizard_confirm "Start the GitHub CLI broker? (gh works through allowlisted commands; the token stays outside the capsule)" 1; then
+            GH_ENV_FILE=""
+        fi
+    fi
+
     GOAL="$(wizard_input 'Goal file path (optional)' "$GOAL")" || true
     while [ -n "$GOAL" ] && [ ! -f "$GOAL" ]; do
         printf 'goal file does not exist: %s\n' "$GOAL" >&2
@@ -2061,6 +2177,7 @@ command_wizard() {
     else
         args+=(--no-secrets)
     fi
+    gh_broker_enabled || args+=(--no-gh-broker)
     [ -n "$REVIEWERS" ] && args+=(--reviewers "$REVIEWERS")
     [ -n "$TARGET_DIFF" ] && args+=(--target-diff "$TARGET_DIFF")
     [ -n "$TARGET_REPORT" ] && args+=(--target-report "$TARGET_REPORT")
@@ -2087,6 +2204,7 @@ command_wizard() {
     [ "${#EXTRA_BINDS[@]}" -gt 0 ] && summary+="bind mounts:   ${EXTRA_BINDS[*]}"$'\n'
     [ "$ALLOW_FUSE" -eq 1 ] && summary+="/dev/fuse:     bound (nested apptainer allowed)"$'\n'
     secrets_enabled && summary+="secrets:       $(secret_keys_csv "$SECRETS_FILE") (from $SECRETS_FILE)"$'\n'
+    gh_broker_enabled && summary+="gh broker:     enabled"$'\n'
     [ -n "$GOAL" ] && summary+="goal:          $GOAL"$'\n'
     [ -n "$PROMPT" ] && summary+="prompt:        $PROMPT"$'\n'
     [ -n "$REVIEWERS" ] && summary+="reviewers:     $REVIEWERS"$'\n'

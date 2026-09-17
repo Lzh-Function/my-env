@@ -1,0 +1,32 @@
+# gh subcommands the GitHub CLI broker runs for agents.
+#
+# One command per line, matched against the start of the agent's argv
+# (`gh issue list --state open` matches "issue list"). Flags are checked
+# separately by gh_broker.py. Anything not listed is rejected.
+#
+# Do not add commands that expose or change credentials or run arbitrary
+# requests/code: auth, api, extension, alias, config, secret, variable,
+# ssh-key, gpg-key, codespace, attestation. Commands that read local files by
+# path (release upload, gist create, ...) also need broker-side handling first.
+
+issue list
+issue view
+issue create
+issue comment
+issue edit
+issue close
+issue reopen
+issue status
+
+pr list
+pr view
+pr diff
+pr checks
+pr status
+pr comment
+
+search issues
+search prs
+
+repo view
+label list
