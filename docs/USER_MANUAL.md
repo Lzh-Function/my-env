@@ -143,7 +143,8 @@ host: /path/to/my-project/.agent-runs/<run_id>    -> container: /runs:rw
 host: /path/to/my-project/.agent-runs/<run_id>/home    -> container: /home/sandbox
 host: /path/to/my-project/.agent-runs/<run_id>/scratch -> container: /scratch:rw
 host: /path/to/my-project/.agent-runs/<run_id>/cache   -> container: /cache:rw
-host: <ai-agent-env repository>                   -> container: /home/sandbox/ai-agent-config:ro
+host: <ai-agent-env repository>/common/hooks      -> container: /home/sandbox/ai-agent-config/common/hooks:ro
+host: <ai-agent-env repository>/common/skills     -> container: /home/sandbox/ai-agent-config/common/skills:ro
 ```
 
 `--repo` を指定した場合、`/workspace` に mount される対象だけが変わります。run directory は引き続き `agentrun` を実行した directory の `.agent-runs/<run_id>/` に作られます。
@@ -202,8 +203,11 @@ uninstall の dry-run:
 /runs                              run ledger
 /scratch                           run scratch
 /cache                             run cache
-/home/sandbox/ai-agent-config      この config repository
+/home/sandbox/ai-agent-config/common/hooks    共有 hooks（read-only）
+/home/sandbox/ai-agent-config/common/skills   共有 skills（read-only）
 ```
+
+config repository 全体は mount しません。mount されるのは `common/hooks` と `common/skills` だけなので、それ以外の場所に置いたファイルは container から見えません。
 
 host 側の run directory:
 

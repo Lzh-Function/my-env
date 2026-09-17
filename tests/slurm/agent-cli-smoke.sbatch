@@ -62,7 +62,8 @@ apptainer exec \
     --bind "$RUN_DIR:/runs:rw" \
     --bind "$RUN_DIR/scratch:/scratch:rw" \
     --bind "$RUN_DIR/cache:/cache:rw" \
-    --bind "$ENV_ROOT:/home/sandbox/ai-agent-config:ro" \
+    --bind "$ENV_ROOT/common/hooks:/home/sandbox/ai-agent-config/common/hooks:ro" \
+    --bind "$ENV_ROOT/common/skills:/home/sandbox/ai-agent-config/common/skills:ro" \
     "$IMAGE" \
     bash -lc "$AGENT_COMMAND" \
     > "$RUN_DIR/live/stdout.log" \

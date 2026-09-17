@@ -503,7 +503,7 @@ link_codex_shared_assets() {
     for skill in "$ROOT_DIR"/common/skills/*; do
         [ -d "$skill" ] || continue
         skill_name="$(basename "$skill")"
-        ln -sfn "/home/sandbox/ai-agent-config/common/skills/$skill_name" \
+        ln -sfn "$CONTAINER_CONFIG_DIR/common/skills/$skill_name" \
             "$run_dir/home/.codex/skills/$skill_name"
     done
 }
@@ -552,7 +552,6 @@ Agent: $agent
 Workspace: /workspace
 Runs: /runs
 Scratch: /scratch
-Config: /home/sandbox/ai-agent-config
 Resources: $resources
 Host repo: $repo
 
@@ -574,7 +573,6 @@ Agent: $agent
 Workspace: /workspace
 Runs: /runs
 Scratch: /scratch
-Config: /home/sandbox/ai-agent-config
 Resources: $resources
 
 User goal:
@@ -626,6 +624,20 @@ fuse_bind_spec() {
     printf '%s:%s:rw\n' "$FUSE_DEVICE" "$FUSE_DEVICE"
 }
 
+# Only the pieces the capsule actually needs from this repository are bound in,
+# never the whole of ROOT_DIR, so anything else kept here (e.g. secrets files)
+# stays invisible to the agent. Codex's /etc/codex/requirements.toml and its
+# ~/.codex/skills symlinks point at these exact container paths.
+CONTAINER_CONFIG_DIR="/home/sandbox/ai-agent-config"
+SHARED_CONFIG_SUBDIRS="common/hooks common/skills"
+
+shared_config_bind_specs() {
+    local sub
+    for sub in $SHARED_CONFIG_SUBDIRS; do
+        printf '%s:%s:ro\n' "$ROOT_DIR/$sub" "$CONTAINER_CONFIG_DIR/$sub"
+    done
+}
+
 apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
@@ -637,14 +649,17 @@ apptainer_command() {
     printf 'export APPTAINERENV_SLURM_CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-}"\n'
     printf 'export APPTAINERENV_SLURM_MEM_PER_NODE="${SLURM_MEM_PER_NODE:-}"\n'
     printf 'export APPTAINERENV_SLURM_GPUS="${SLURM_GPUS:-}"\n'
-    printf 'apptainer exec%s --containall --cleanenv --pwd /workspace --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q:ro' \
+    printf 'apptainer exec%s --containall --cleanenv --pwd /workspace --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q' \
         "$nv" \
         "$run_dir/home" "/home/sandbox" \
         "$repo" "/workspace:rw" \
         "$run_dir" "/runs:rw" \
         "$run_dir/scratch" "/scratch:rw" \
-        "$run_dir/cache" "/cache:rw" \
-        "$ROOT_DIR" "/home/sandbox/ai-agent-config"
+        "$run_dir/cache" "/cache:rw"
+    local spec
+    while IFS= read -r spec; do
+        printf ' --bind %q' "$spec"
+    done < <(shared_config_bind_specs)
     auth_mounts "$agent"
     home_config_mounts "$agent" "$run_dir" "$mode"
     if fuse_enabled; then
@@ -813,7 +828,7 @@ codex_hooks_manifest() {
 
 render_codex_requirements_toml() {
     local output="$1"
-    local prefix="/home/sandbox/ai-agent-config/common/hooks/"
+    local prefix="$CONTAINER_CONFIG_DIR/common/hooks/"
     local manifest
     manifest="$(codex_hooks_manifest)"
     {
@@ -1712,7 +1727,7 @@ command_dry_run() {
     printf '  %s:/runs:rw\n' "$run_dir"
     printf '  %s/scratch:/scratch:rw\n' "$run_dir"
     printf '  %s/cache:/cache:rw\n' "$run_dir"
-    printf '  %s:/home/sandbox/ai-agent-config:ro\n' "$ROOT_DIR"
+    shared_config_bind_specs | sed 's/^/  /'
     if fuse_enabled; then
         printf '  %s\n' "$(fuse_bind_spec)"
     fi

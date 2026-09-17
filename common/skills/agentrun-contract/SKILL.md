@@ -20,7 +20,8 @@ is 0.
 /runs               run ledger (read/write) — write all outputs here
 /scratch            ephemeral scratch space (read/write)
 /cache              persistent cache (read/write across runs on the same node)
-/home/sandbox/ai-agent-config   this config repository (read-only)
+/home/sandbox/ai-agent-config/common/hooks    shared hooks (read-only)
+/home/sandbox/ai-agent-config/common/skills   shared skills (read-only)
 ```
 
 All output paths below are relative to `/runs`.
