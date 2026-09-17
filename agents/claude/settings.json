@@ -62,13 +62,6 @@
       "Bash(git push *)",
       "Bash(pip *)",
       "Bash(conda *)"
-    ],
-    "ask": [
-      "Bash(rm *)",
-      "Bash(cp *)",
-      "Bash(mv *)",
-      "Bash(chmod *)",
-      "Bash(ln *)"
     ]
   },
   "hooks": {
