@@ -159,6 +159,7 @@ agentrun doctor --agent claude
 - **環境変数になった値は agent から読めます**（`env`、`/proc/self/environ` など）。隠せるのは file と run の記録だけです。トークンは権限を絞り、有効期限を付けてください。
   - Hugging Face: fine-grained token、読み取り専用（gated model の取得なら public gated repos の read のみ）
   - GitHub: fine-grained PAT、対象 repository を限定、有効期限あり、必要な権限のみ
+- `git push` の禁止（Claude の deny rule、Codex の rules、`git_branch_guard.py`）はコマンド文字列での判定です。`git -C . push` や `gh pr merge`・`gh api` などは通るため、`GH_TOKEN` を渡す場合は、トークンの権限と remote 側の branch protection を実際の防御として設定してください。
 - `gh` CLI は image（`base-system.def`）に入っています。`GH_TOKEN` があれば `gh auth login` は不要です。`gh` 追加前にビルドした `.sif` を使っている場合は再ビルドしてください。`git pull` で `base-system.def` が更新されていれば `build-images.sh --run` で system 層・agent 層とも作り直されます。確実に作り直す場合は `--run --force` を使います。
 
 別の file を使う場合や、secrets を渡さない場合:
@@ -570,7 +571,7 @@ live/stdout.log         agent stdout 用 ledger。現状の batch では空の�
 live/stderr.log         apptainer_exec.sh の stderr 追記先
 live/slurm.out          Slurm stdout。submitted job の標準出力は主にここを見る
 live/slurm.err          Slurm stderr
-live/command_log.jsonl  command/hook 実行ログ用 JSONL。空でも異常とは限らない
+live/command_log.jsonl  command/hook 実行ログ用 JSONL（ツール名とコマンド文字列のみ、出力は含まない）。空でも異常とは限らない
 live/events.jsonl       run event 用 JSONL。空でも異常とは限らない
 live/exit_code.txt      Slurm job 内 command の exit code
 live/slurm_job_id.txt   Slurm job id。prepare-only では空のことがある
@@ -930,11 +931,11 @@ agentrun validate
 
 | hook | 役割 |
 | ---- | ---- |
-| `block_dangerous_command.py` | `rm -rf /`・`rm -rf ~`、`ssh`、`sudo`、`.ssh/`・auth ファイル・`.env`・token へのアクセスをブロックします。コマンド実行ツールとファイル系ツール（Read/Edit/Write/view_file など）の両方に適用されます。 |
+| `block_dangerous_command.py` | `rm -rf /`・`rm -rf ~`、`mkfs`、`ssh`、`sudo` と、秘密ファイル（`.ssh/`、`id_rsa`/`id_ed25519`、`auth.json`、`.credentials.json`、`.env`/`.env.*`、`secrets/`、`.bashrc` など）へのアクセスをブロックします。判定はファイル名・パスだけで、`token`・`secret` といった単語（`AutoTokenizer`、`--max-new-tokens` など）では止めません。環境変数の値は対象外です。コマンド実行ツールとファイル系ツール（Read/Edit/Write/view_file など）の両方に適用されます。Codex の `apply_patch` は patch 本文ではなく、対象ファイルのパス（`*** Update File:` などの行）だけを判定します。 |
 | `check_login_node.py` | Slurm login node 上での compute 系コマンド（`python`、`pytest`、`jupyter`、`torchrun` 等）をブロックします。`SLURM_JOB_ID` が設定されていない場合のみ動作するため、compute node 内では pass-through になります。 |
 | `check_pip_forbidden.py` | `pip` の直接呼び出しと `uv pip install`/`uninstall`/`sync`/`compile` をブロックします。パッケージ管理は `uv add`/`uv remove` を使います。`uv pip list`/`show`/`freeze`/`check` は許可されます。 |
 | `check_sbatch_forbidden.py` | Slurm allocation の内部（`SLURM_JOB_ID` が設定されている環境）での `sbatch`/`salloc` 呼び出しをブロックします。ネストした job 投入を防ぎます。 |
-| `git_branch_guard.py` | `git checkout`/`switch` で main/master への切り替え、`git merge`、`git rebase` をブロックします。Claude では manifest の `if: "Bash(git *)"` フィルタにより、git コマンド以外では発火しません。 |
+| `git_branch_guard.py` | `git merge`、`git rebase`、`git push`、`.git` ディレクトリへの直接操作をブロックします。Claude では manifest の `if: "Bash(git *)"` フィルタにより、git コマンド以外では発火しません。コマンド文字列での判定なので、`git -C . push` のような書き方や `gh pr merge`・`gh api` は止められません。push や merge を確実に防ぐには、GitHub トークンの権限と remote 側の branch protection で制限してください。 |
 
 #### PostToolUse: コマンド実行後
 
@@ -943,7 +944,7 @@ agentrun validate
 | hook | 役割 |
 | ---- | ---- |
 | `git_worktree_auto_create.py` | `git checkout -b <branch>` または `git switch -c <branch>` の直後に、`../<branch>` に worktree を自動作成します。 |
-| `update_run_status.py` | 実行されたコマンドのイベントを `live/command_log.jsonl` に追記し、`live/status.json` を更新します。`AGENTRUN_DIR` が未設定の場合は何もしません。 |
+| `update_run_status.py` | 実行されたコマンドのツール名とコマンド文字列を `live/command_log.jsonl` に追記し、`live/status.json` を更新します。コマンドの出力は記録しません（`env` の結果などから secrets の値が run directory に残るのを防ぐため）。書き込み先は `AGENTRUN_DIR`、未設定なら `/runs` です。 |
 
 #### PostToolUse: ファイル編集後
 
