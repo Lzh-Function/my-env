@@ -20,12 +20,20 @@
 `.sif` は git 管理外のため、各ユーザーが compute node でビルドする必要があります。`runtime/apptainer/base-agent.sif` が存在しない場合、`doctor` は `[FAIL]` を出し、agent を起動できません。
 
 ```bash
-runtime/apptainer/build-images.sh [system|agent]                                          # dry-run（確認のみ）
-srun --partition <partition> runtime/apptainer/build-images.sh --run                      # 両方ビルド
-srun --partition <partition> runtime/apptainer/build-images.sh --run agent                # agent 層のみ再ビルド
+runtime/apptainer/build-images.sh [--force] [system|agent]                                # dry-run（確認のみ）
+srun --partition <partition> runtime/apptainer/build-images.sh --run                      # 両方ビルド（必要な層だけ）
+srun --partition <partition> runtime/apptainer/build-images.sh --run --force              # 両方を強制再ビルド
+srun --partition <partition> runtime/apptainer/build-images.sh --run --force agent        # agent 層のみ強制再ビルド
 ```
 
-`base-system.sif` → `base-agent.sif` の順にビルドされます。ダウンロードを含むため数十分かかります。agent CLI のバージョンアップ時は `agent` を指定することで `base-system.sif` の再ビルドをスキップできます。`build-images.sh` は `SLURM_JOB_ID` が設定されていない環境（login node）での実行を拒否します。
+`base-system.sif` → `base-agent.sif` の順にビルドされます。ダウンロードを含むため数十分かかります。
+
+`--force` なしの場合、既存の `.sif` は次のときだけ作り直されます。それ以外は `reusing existing ...` と表示して再利用します。
+
+- `.def` の更新日時が `.sif` より新しい（`git pull` で `.def` が更新された場合など）
+- agent 層のみ: `base-system.sif` が `base-agent.sif` より新しい
+
+判定は更新日時だけなので、`.def` を変えずに中身を新しくしたいときは `--force` を使います。代表例は agent CLI のバージョンアップです。CLI は build 時に install script で最新版を取得するため、`--run --force agent` で `base-system.sif` の再ビルドをスキップしつつ agent 層だけ作り直せます。`build-images.sh` は `SLURM_JOB_ID` が設定されていない環境（login node）での実行を拒否します。
 
 ビルド完了後、以下で状態を確認します。
 
@@ -151,7 +159,7 @@ agentrun doctor --agent claude
 - **環境変数になった値は agent から読めます**（`env`、`/proc/self/environ` など）。隠せるのは file と run の記録だけです。トークンは権限を絞り、有効期限を付けてください。
   - Hugging Face: fine-grained token、読み取り専用（gated model の取得なら public gated repos の read のみ）
   - GitHub: fine-grained PAT、対象 repository を限定、有効期限あり、必要な権限のみ
-- `gh` CLI は image（`base-system.def`）に入っています。`GH_TOKEN` があれば `gh auth login` は不要です。`gh` 追加前にビルドした `.sif` を使っている場合は `build-images.sh --run` で再ビルドしてください（`base-system.def` が更新されているため、system 層・agent 層とも作り直されます）。
+- `gh` CLI は image（`base-system.def`）に入っています。`GH_TOKEN` があれば `gh auth login` は不要です。`gh` 追加前にビルドした `.sif` を使っている場合は再ビルドしてください。`git pull` で `base-system.def` が更新されていれば `build-images.sh --run` で system 層・agent 層とも作り直されます。確実に作り直す場合は `--run --force` を使います。
 
 別の file を使う場合や、secrets を渡さない場合:
 
@@ -1034,6 +1042,7 @@ inner `.sif` を mount できずに squashfuse_ll のエラーで落ちます。
 
 `base-system.def` を変更した場合は system 層と agent 層の両方を再ビルドする必要があります。
 `build-images.sh` は `base-system.sif` の方が新しければ `base-agent.sif` も作り直します。
+更新日時の判定で作り直されない場合（`.def` を mtime ごとコピーした場合など）は `--run --force` を使ってください。
 
 なお `--allow-fuse` は capsule に FUSE mount 能力を与えるため、隔離をやや緩めます。
 nested container を実際に必要とする run だけで有効化してください。

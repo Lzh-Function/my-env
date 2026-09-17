@@ -5,16 +5,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 RUN=0
+FORCE=0
 TARGET=all
 
 for arg in "$@"; do
     case "$arg" in
         --run)   RUN=1 ;;
+        --force) FORCE=1 ;;
         system)  TARGET=system ;;
         agent)   TARGET=agent ;;
-        *)       printf 'usage: build-images.sh [--run] [system|agent]\n' >&2; exit 2 ;;
+        *)       printf 'usage: build-images.sh [--run] [--force] [system|agent]\n' >&2; exit 2 ;;
     esac
 done
+
+# 通常は .def / 依存 .sif より古い image だけを作り直す。--force はこの判定を
+# 無視して、指定した層を必ず作り直す。agent CLI は build 時に install script で
+# 最新版を取得するため、.def を変えずに CLI を更新したいときに使う。
+if [ "$FORCE" -eq 1 ]; then
+    printf 'force: rebuilding %s regardless of existing images\n' \
+        "$([ "$TARGET" = all ] && printf 'system and agent layers' || printf '%s layer' "$TARGET")"
+fi
 
 case "$TARGET" in
     system) printf 'apptainer build --disable-cache base-system.sif base-system.def\n' ;;
@@ -68,7 +78,9 @@ build_if_missing_or_stale() {
     local dependency="${3:-}"
     local tmp="${target%.sif}.${SLURM_JOB_ID}.sif"
 
-    if [ -e "$target" ] && [ "$target" -nt "$definition" ]; then
+    if [ "$FORCE" -eq 1 ]; then
+        printf 'rebuilding %s/%s: --force\n' "$SCRIPT_DIR" "$target"
+    elif [ -e "$target" ] && [ "$target" -nt "$definition" ]; then
         if [ -z "$dependency" ] || { [ -e "$dependency" ] && [ "$target" -nt "$dependency" ]; }; then
             printf 'reusing existing %s/%s\n' "$SCRIPT_DIR" "$target"
             return 0

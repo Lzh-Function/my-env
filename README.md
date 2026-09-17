@@ -29,9 +29,9 @@ tests/fixtures/           smoke-test goal ファイルおよびダミー reposit
 `.sif` は git 管理外のため、各ユーザーが compute node でビルドする必要があります。`runtime/apptainer/base-agent.sif` が存在しない場合、`doctor` は `[FAIL]` を出し、agent を起動できません。
 
 ```bash
-runtime/apptainer/build-images.sh                                            # dry-run（確認のみ）
-srun --partition <partition> runtime/apptainer/build-images.sh --run         # 両方ビルド
-srun --partition <partition> runtime/apptainer/build-images.sh --run agent   # agent 層のみ再ビルド
+runtime/apptainer/build-images.sh                                                   # dry-run（確認のみ）
+srun --partition <partition> runtime/apptainer/build-images.sh --run                # 両方ビルド（必要な層だけ）
+srun --partition <partition> runtime/apptainer/build-images.sh --run --force agent  # agent 層のみ強制再ビルド（agent CLI 更新時）
 ```
 
 `base-system.sif` → `base-agent.sif` の順にビルドされます。ダウンロードを含むため数十分かかります。agent CLI のバージョンアップ時は `agent` を指定することで `base-system.sif` の再ビルドをスキップできます。完了後は `agentrun doctor --agent <name>` の `image:base-agent.sif` が `[OK]` になります。
@@ -93,10 +93,13 @@ Quick Start の「[Image ビルド（初回必須）](#image-ビルド初回必�
 `build-images.sh` は `SLURM_JOB_ID` が設定されていない環境（login node）での実行を拒否します。`srun` または `sbatch` で compute node に投入してください。
 
 ```bash
-runtime/apptainer/build-images.sh [system|agent]                                          # dry-run
-srun --partition <partition> runtime/apptainer/build-images.sh --run                      # 両方ビルド
-srun --partition <partition> runtime/apptainer/build-images.sh --run agent                # agent 層のみ
+runtime/apptainer/build-images.sh [--force] [system|agent]                                # dry-run
+srun --partition <partition> runtime/apptainer/build-images.sh --run                      # 両方ビルド（必要な層だけ）
+srun --partition <partition> runtime/apptainer/build-images.sh --run --force              # 両方を強制再ビルド
+srun --partition <partition> runtime/apptainer/build-images.sh --run --force agent        # agent 層のみ強制再ビルド
 ```
+
+`--force` なしでは、`.def`（agent 層は `base-system.sif` も）より古い `.sif` だけが作り直されます。agent CLI の更新など `.def` を変えずに作り直したいときは `--force` を付けてください。
 
 ## ドキュメント
 
