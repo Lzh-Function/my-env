@@ -1,0 +1,383 @@
+{
+    // ============================================================
+    // Dev Container の表示名
+    // ============================================================
+    //
+    // VS Code 左下や Dev Containers 一覧に表示される名前です。
+    //
+    "name": "WSL All-in-One Research Development",
+
+
+    // ============================================================
+    // Container image の build
+    // ============================================================
+    //
+    // 同じ .devcontainer ディレクトリにある Dockerfile から
+    // image を build します。
+    //
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+
+
+    // ============================================================
+    // GPU / Docker runtime settings
+    // ============================================================
+    //
+    // `docker run` に渡す追加引数です。
+    //
+    "runArgs": [
+        // WSL/Docker から利用可能な NVIDIA GPU を
+        // container 内へ公開します。
+        //
+        // container 内から:
+        //
+        //   nvidia-smi
+        //
+        // や CUDA 対応 PyTorch が利用可能になります。
+        "--gpus=all",
+
+        // Docker の標準 /dev/shm は小さいため、
+        // PyTorch DataLoader の multiprocessing 等で
+        // shared-memory 不足にならないよう 8 GB まで許可します。
+        //
+        // 実際に最初から 8 GB の RAM を消費するわけではなく、
+        // tmpfs の上限値です。
+        "--shm-size=24g"
+    ],
+
+
+    // ============================================================
+    // Container 内ユーザー
+    // ============================================================
+    //
+    // Dev Container base image に存在する `vscode` ユーザーで
+    // VS Code、terminal、postCreateCommand 等を実行します。
+    //
+    // root で日常的な開発をしないための設定です。
+    //
+    "remoteUser": "vscode",
+
+
+    // ============================================================
+    // UID synchronization
+    // ============================================================
+    //
+    // WSL host 側ユーザーと container 内 vscode ユーザーの UID を
+    // Dev Containers が合わせます。
+    //
+    // bind mount した workspace に root 所有ファイルなどが
+    // 発生することを防ぎます。
+    //
+    "updateRemoteUserUID": true,
+
+
+    // ============================================================
+    // Workspace bind mount
+    // ============================================================
+    //
+    // VS Code で開いている WSL 側の:
+    //
+    //   ~/workspace
+    //
+    // を container 内:
+    //
+    //   /workspace
+    //
+    // に bind mount します。
+    //
+    // Docker volume へのコピーではありません。
+    // WSL 側の実ファイルを直接読み書きします。
+    //
+    // そのため container を削除・rebuild しても project の
+    // source code は WSL 側にそのまま残ります。
+    //
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+
+
+    // ============================================================
+    // VS Code workspace root
+    // ============================================================
+    //
+    // container 接続後、VS Code が /workspace を開きます。
+    //
+    // 例えば:
+    //
+    //   /workspace/pancore
+    //   /workspace/docking
+    //   /workspace/paper
+    //
+    // を同時に見ることができます。
+    //
+    // LaTeX project から別 project の Python source を参照する
+    // といった用途にも使えます。
+    //
+    "workspaceFolder": "/workspace",
+
+
+    // ============================================================
+    // Dev Container Features
+    // ============================================================
+    //
+    // Dev Containers 公式の reusable installer を使用します。
+    //
+    // Dockerfile に language installation を自前実装するよりも
+    // 保守しやすいため、Python / Node / Rust / gh は
+    // Features に任せます。
+    //
+    "features": {
+
+        // --------------------------------------------------------
+        // Python
+        // --------------------------------------------------------
+        //
+        // Python 3.12 を共通 interpreter としてインストールします。
+        //
+        // package dependencies はここには入れません。
+        //
+        // 各 project:
+        //
+        //   /workspace/foo/.venv
+        //   /workspace/bar/.venv
+        //
+        // に uv で独立した環境を作る設計です。
+        //
+        // installTools=false:
+        //   black / flake8 / pytest 等を system-wide に大量導入せず、
+        //   project dependencies として uv で管理します。
+        //
+        "ghcr.io/devcontainers/features/python:1": {
+            "version": "3.12",
+            "installTools": false
+        },
+
+
+        // --------------------------------------------------------
+        // Node.js
+        // --------------------------------------------------------
+        //
+        // Node.js LTS + npm 等を導入します。
+        //
+        // Codex / Claude Code / OpenCode のインストールにも
+        // Node/npm を利用します。
+        //
+        "ghcr.io/devcontainers/features/node:2": {
+            "version": "lts"
+        },
+
+
+        // --------------------------------------------------------
+        // Rust
+        // --------------------------------------------------------
+        //
+        // rustup / rustc / cargo / rustfmt / clippy 等の
+        // Rust toolchain を導入します。
+        //
+        "ghcr.io/devcontainers/features/rust:1": {
+            "version": "latest",
+            "profile": "default"
+        },
+
+
+        // --------------------------------------------------------
+        // GitHub CLI
+        // --------------------------------------------------------
+        //
+        // `gh` コマンドを導入します。
+        //
+        // GitHub issue / PR / repo 操作などを terminal や
+        // coding agent から利用できます。
+        //
+        "ghcr.io/devcontainers/features/github-cli:1": {
+            "version": "latest"
+        }
+    },
+
+
+    // ============================================================
+    // Persistent volumes
+    // ============================================================
+    //
+    // container を Rebuild すると通常 container 内 HOME の
+    // データは失われます。
+    //
+    // ただし /home/vscode 全体を volume 化すると
+    // Dockerfile / Features が HOME に配置するファイルまで
+    // 隠してしまう可能性があります。
+    //
+    // そのため coding agent の状態だけ個別に永続化します。
+    //
+    "mounts": [
+
+        // --------------------------------------------------------
+        // Codex
+        // --------------------------------------------------------
+        //
+        // Codex の user-level configuration / authentication /
+        // sessions 等が保存されるディレクトリです。
+        //
+        "source=devcontainer-codex,target=/home/vscode/.codex,type=volume",
+
+
+        // --------------------------------------------------------
+        // Claude Code
+        // --------------------------------------------------------
+        //
+        // Claude Code の user settings / credentials 等を
+        // 永続化します。
+        //
+        "source=devcontainer-claude,target=/home/vscode/.claude,type=volume",
+
+
+        // --------------------------------------------------------
+        // OpenCode state
+        // --------------------------------------------------------
+        //
+        // OpenCode の:
+        //
+        //   auth.json
+        //   sessions
+        //   logs
+        //   project state
+        //
+        // 等が保存されます。
+        //
+        "source=devcontainer-opencode-state,target=/home/vscode/.local/share/opencode,type=volume",
+
+
+        // --------------------------------------------------------
+        // OpenCode configuration
+        // --------------------------------------------------------
+        //
+        // OpenCode の global config / plugins 等を保存します。
+        //
+        "source=devcontainer-opencode-config,target=/home/vscode/.config/opencode,type=volume"
+    ],
+
+
+    // ============================================================
+    // VS Code remote environment variables
+    // ============================================================
+    //
+    // VS Code server / terminal / extensions 等から見える環境変数。
+    //
+    "remoteEnv": {
+
+        // coding agent は npm の --prefix ~/.local で入れるため
+        // executable が ~/.local/bin に配置されます。
+        //
+        // そのディレクトリを PATH の最優先に追加します。
+        //
+        "PATH": "/home/vscode/.local/bin:${containerEnv:PATH}"
+    },
+
+    // ...
+
+    // ============================================================
+    // Port forwarding
+    // ============================================================
+    //
+    // Dev Container 内で待ち受けているポートを
+    // VS Code 経由でホスト側へ転送します。
+    //
+    // 例:
+    //   container: localhost:5070
+    //          ↓
+    //   Windows:   localhost:5070
+    //
+    "forwardPorts": [
+        5070
+    ],
+
+    // 各ポートの VS Code 上での扱い
+    "portsAttributes": {
+        "5070": {
+            // VS Code の Ports パネル等に表示される名前
+            "label": "LLM Chat UI",
+
+            // Dev Container 接続時にポートが利用可能なら
+            // 自動的にブラウザで開く
+            "onAutoForward": "openBrowser"
+        }
+    },
+
+    // ============================================================
+    // Container 初回作成後のセットアップ
+    // ============================================================
+    //
+    // image build / Features installation / workspace mount の後に
+    // vscode ユーザーとして実行されます。
+    //
+    // 実処理は post-create.sh に分離しています。
+    //
+    // Rebuild して新しい container を作った場合にも
+    // 再実行されるため、CLI は常に再現可能です。
+    //
+    "postCreateCommand": "bash /workspace/.devcontainer/post-create.sh",
+
+
+    // ============================================================
+    // VS Code specific configuration
+    // ============================================================
+    //
+    // Windows 側の VS Code 全体ではなく、
+    // この Dev Container に接続している場合だけ有効になります。
+    //
+    "customizations": {
+        "vscode": {
+
+            // ====================================================
+            // Automatically installed extensions
+            // ====================================================
+            "extensions": [
+
+                // Python support
+                "ms-python.python",
+
+                // Python lint / formatter
+                "charliermarsh.ruff",
+
+                // Jupyter notebook support
+                "ms-toolsai.jupyter",
+
+                // Rust language server
+                "rust-lang.rust-analyzer",
+
+                // C / C++ language server
+                "llvm-vs-code-extensions.vscode-clangd",
+
+                // CMake integration
+                "ms-vscode.cmake-tools",
+
+                // TOML syntax support
+                "tamasfe.even-better-toml",
+
+                // LaTeX build / preview / SyncTeX
+                "james-yu.latex-workshop",
+
+                // JavaScript / TypeScript lint
+                "dbaeumer.vscode-eslint",
+
+                // JavaScript / TypeScript formatter
+                "esbenp.prettier-vscode"
+            ],
+
+
+            // ====================================================
+            // VS Code settings
+            // ====================================================
+            "settings": {
+
+                // integrated terminal は bash を使用
+                "terminal.integrated.defaultProfile.linux": "bash",
+
+                // 保存時に formatter を実行
+                "editor.formatOnSave": true,
+
+                // C/C++ IntelliSense は Microsoft C/C++ extension ではなく
+                // clangd に任せる想定
+                "C_Cpp.intelliSenseEngine": "disabled"
+            }
+        }
+    }
+}
