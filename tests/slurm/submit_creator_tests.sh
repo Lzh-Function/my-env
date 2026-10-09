@@ -26,15 +26,15 @@ case "$MODE" in
         sbatch --export=ALL,AI_AGENT_ENV_DIR="$ENV_ROOT" tests/slurm/build-sif.sbatch
         ;;
     agents)
-        if [ ! -e runtime/apptainer/base-agent.sif ]; then
-            printf 'error: runtime/apptainer/base-agent.sif is missing; run "%s build" first\n' "$0" >&2
+        if [ ! -e runtime/apptainer/base-system.sif ]; then
+            printf 'error: runtime/apptainer/base-system.sif is missing; run "%s build" first\n' "$0" >&2
             exit 2
         fi
         sbatch --export=ALL,AI_AGENT_ENV_DIR="$ENV_ROOT" --array=0-2 tests/slurm/agent-cli-smoke.sbatch
         ;;
     codex-auth)
-        if [ ! -e runtime/apptainer/base-agent.sif ]; then
-            printf 'error: runtime/apptainer/base-agent.sif is missing; run "%s build" first\n' "$0" >&2
+        if [ ! -e runtime/apptainer/base-system.sif ]; then
+            printf 'error: runtime/apptainer/base-system.sif is missing; run "%s build" first\n' "$0" >&2
             exit 2
         fi
         if [ ! -f "$HOME/.codex/auth.json" ]; then
@@ -49,15 +49,15 @@ case "$MODE" in
         sbatch --export=ALL,AI_AGENT_ENV_DIR="$ENV_ROOT",CODEX_AUTH_SMOKE_RUN_DIR="$RUN_DIR" tests/slurm/codex-auth-smoke.sbatch
         ;;
     assist-pty)
-        if [ ! -e runtime/apptainer/base-agent.sif ]; then
-            printf 'error: runtime/apptainer/base-agent.sif is missing; run "%s build" first\n' "$0" >&2
+        if [ ! -e runtime/apptainer/base-system.sif ]; then
+            printf 'error: runtime/apptainer/base-system.sif is missing; run "%s build" first\n' "$0" >&2
             exit 2
         fi
         sbatch --export=ALL,AI_AGENT_ENV_DIR="$ENV_ROOT" tests/slurm/assist-pty-smoke.sbatch
         ;;
     codex-assist-pty)
-        if [ ! -e runtime/apptainer/base-agent.sif ]; then
-            printf 'error: runtime/apptainer/base-agent.sif is missing; run "%s build" first\n' "$0" >&2
+        if [ ! -e runtime/apptainer/base-system.sif ]; then
+            printf 'error: runtime/apptainer/base-system.sif is missing; run "%s build" first\n' "$0" >&2
             exit 2
         fi
         sbatch --export=ALL,AI_AGENT_ENV_DIR="$ENV_ROOT" tests/slurm/codex-assist-pty-smoke.sbatch

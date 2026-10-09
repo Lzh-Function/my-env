@@ -17,23 +17,21 @@
 
 ### Image ビルド（初回必須）
 
-`.sif` は git 管理外のため、各ユーザーが compute node でビルドする必要があります。`runtime/apptainer/base-agent.sif` が存在しない場合、`doctor` は `[FAIL]` を出し、agent を起動できません。
+`.sif` は git 管理外のため、各ユーザーが compute node でビルドする必要があります。`runtime/apptainer/base-system.sif` が存在しない場合、`doctor` は `[FAIL]` を出し、agent を起動できません。
 
 ```bash
-runtime/apptainer/build-images.sh [--force] [system|agent]                                # dry-run（確認のみ）
-srun --partition <partition> runtime/apptainer/build-images.sh --run                      # 両方ビルド（必要な層だけ）
-srun --partition <partition> runtime/apptainer/build-images.sh --run --force              # 両方を強制再ビルド
-srun --partition <partition> runtime/apptainer/build-images.sh --run --force agent        # agent 層のみ強制再ビルド
+runtime/apptainer/build-images.sh [--force]                                # dry-run（確認のみ）
+srun --partition <partition> runtime/apptainer/build-images.sh --run                      # system image をビルド
+srun --partition <partition> runtime/apptainer/build-images.sh --run --force              # system image を強制再ビルド
 ```
 
-`base-system.sif` → `base-agent.sif` の順にビルドされます。ダウンロードを含むため数十分かかります。
+`base-system.sif` のみをビルドします。agent CLI は各ジョブの起動時に公式 installer から最新版をインストールします。バージョン更新に image の再ビルドは不要です。
 
 `--force` なしの場合、既存の `.sif` は次のときだけ作り直されます。それ以外は `reusing existing ...` と表示して再利用します。
 
 - `.def` の更新日時が `.sif` より新しい（`git pull` で `.def` が更新された場合など）
-- agent 層のみ: `base-system.sif` が `base-agent.sif` より新しい
 
-判定は更新日時だけなので、`.def` を変えずに中身を新しくしたいときは `--force` を使います。代表例は agent CLI のバージョンアップです。CLI は build 時に install script で最新版を取得するため、`--run --force agent` で `base-system.sif` の再ビルドをスキップしつつ agent 層だけ作り直せます。`build-images.sh` は `SLURM_JOB_ID` が設定されていない環境（login node）での実行を拒否します。
+判定は更新日時です。強制的に image を作り直す場合は `--force` を使います。`build-images.sh` は `SLURM_JOB_ID` がない環境でのビルドを拒否します。
 
 ビルド完了後、以下で状態を確認します。
 
@@ -43,7 +41,7 @@ agentrun validate
 agentrun doctor --agent <name>   # 使用する agent を指定する（例: claude, codex, antigravity）
 ```
 
-`doctor` の `image:base-agent.sif` が `[OK]` になれば準備完了です。
+`doctor` の `image:base-system.sif` が `[OK]` になれば準備完了です。
 
 ### 認証情報のセットアップ（初回必須）
 
@@ -221,7 +219,7 @@ agentrun doctor --agent claude   # gh-broker:token が [OK] になることを�
 - `git push` は broker の対象外です。capsule には GitHub の認証情報が無いため、HTTPS remote への push は失敗します（`gh auth setup-git` も token が無いので使えません）。push が必要な場合は、repo 限定の SSH deploy key を渡す（鍵ファイル自体は agent から読めます）か、host 側で push してください。
 - agent は許可リストの範囲内でなら `gh` を自由に使えます（issue の大量作成など）。許可リストとトークンの権限（例: Issues: Read and write、Pull requests: Read and write、Metadata: Read、対象 repository のみ）の両方で絞ってください。
 - capsule 内の `/usr/bin/gh` を直接呼ぶことはできますが、認証情報が無いため認証の必要な操作は失敗します。
-- `gh` は image（`base-system.def`）に入っています。`gh` 追加前にビルドした `.sif` の場合は再ビルドしてください。`git pull` で `base-system.def` が更新されていれば `build-images.sh --run` で system 層・agent 層とも作り直されます。確実に作り直す場合は `--run --force` を使います。
+- `gh` は image（`base-system.def`）に入っています。`gh` 追加前にビルドした `.sif` の場合は再ビルドしてください。`git pull` で `base-system.def` が更新されていれば `build-images.sh --run` で system image を作り直されます。確実に作り直す場合は `--run --force` を使います。
 - 隔離は apptainer の namespace と「token file を mount しない」ことに依存しています。同じ UID で動くため、kernel の脆弱性などによる container escape までは防げません。
 - `git push` の禁止（Claude の deny rule、Codex の rules、`git_branch_guard.py`）はコマンド文字列での判定で、`git -C . push` などは通ります。push の可否は、capsule に push 用の認証情報を渡さないこと、トークンの権限、remote 側の branch protection で決まります。
 
@@ -402,7 +400,7 @@ agentrun doctor --all            # 全 agent の auth を検証する
 - `jq`
 - agent CLI
 - auth file
-- image: `runtime/apptainer/base-agent.sif`
+- image: `runtime/apptainer/base-system.sif`
 - FUSE 前提条件: host の `/dev/fuse` と、image 内の `libfuse3` / `liblzo2`
 - secrets file: 存在、permission（600 か）、設定済みの変数名、current directory 配下に無いか
 - GitHub CLI broker: `secrets/gh.env` の `GH_TOKEN` と permission、`secrets/.env` に `GH_TOKEN` が書かれていないか
@@ -1123,8 +1121,7 @@ inner `.sif` を mount できずに squashfuse_ll のエラーで落ちます。
    agentrun doctor        # fuse:image-libs が [OK] になることを確認
    ```
 
-`base-system.def` を変更した場合は system 層と agent 層の両方を再ビルドする必要があります。
-`build-images.sh` は `base-system.sif` の方が新しければ `base-agent.sif` も作り直します。
+`base-system.def` を変更した場合は system image を再ビルドしてください。
 更新日時の判定で作り直されない場合（`.def` を mtime ごとコピーした場合など）は `--run --force` を使ってください。
 
 なお `--allow-fuse` は capsule に FUSE mount 能力を与えるため、隔離をやや緩めます。
@@ -1229,3 +1226,18 @@ agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 --show-mounts             dry-run で agent 固有 mount も表示
 --submit                  prepare 後に sbatch する
 ```
+
+### Wizard の戻る・パス補完・再開
+
+wizard の各ステップで「← 戻る」または `:back` を使うと前の入力へ戻れます。`:cancel`、Esc、Ctrl+C はキャンセルです。bind のホスト側パスは Tab で補完できます。
+CLI の Bash 補完は `install.sh --apply` で登録されます。現在のシェルでは `source runtime/agentrun/agentrun.bash` で有効にできます（`--bind` の source、`--repo`、`--goal`）。
+
+```bash
+agentrun resume --list
+agentrun resume RUN_ID --preview
+agentrun resume RUN_ID --time 02:00:00 --mem 16000M --cpus 4
+agentrun resume  # 対話的に選択
+```
+
+wizard の mode でも `resume` を選べます。会話データは `.agent-runs/.sessions` に保存し、元のログを残して新しい run で再開します。保存前の旧 run は再開対象になりません。
+起動時の installer ログは `live/agent_install.log`、インストールした CLI の情報は `artifacts/agent-cli.json` に保存します。compute node から公式 installer に接続できる必要があります。

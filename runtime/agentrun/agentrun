@@ -18,6 +18,9 @@ Usage:
   agentrun assist [options] [PROMPT]        # interactive PTY session via srun --pty; PROMPT ignored if given
   agentrun assist --submit [options] PROMPT # batch via sbatch (non-interactive)
   agentrun experiment|campaign|review|multi-review [options] PROMPT  # prepare, or batch with --submit
+  agentrun resume [RUN_ID|RUN_DIR] [--time HH:MM:SS] [--mem SIZE] [--cpus N] [--bind SRC:DST[:OPTIONS]]
+  agentrun resume --list
+  agentrun resume RUN_ID --preview
   agentrun wizard [options] [PROMPT]         # guided/menu-driven alternative to assist|experiment|campaign|review|multi-review
   agentrun skill-install SOURCE_DIR|GIT_URL [SKILL_NAME...] [--force]
   agentrun smoke-test [--agent NAME]
@@ -117,116 +120,7 @@ detect_wizard_ui() {
     WIZARD_UI="plain"
 }
 
-wizard_banner() {
-    local text="$1"
-    case "$WIZARD_UI" in
-        gum)
-            gum style --border rounded --margin "1 0" --padding "0 2" --border-foreground 212 "$text"
-            ;;
-        whiptail|dialog)
-            "$DIALOG_BIN" --title "agentrun wizard" --msgbox "$text" 12 76
-            ;;
-        *)
-            printf '\n\033[1;35m== %s ==\033[0m\n' "$text" >&2
-            ;;
-    esac
-}
-
-wizard_select() {
-    local prompt="$1"; shift
-    local -a opts=("$@")
-    case "$WIZARD_UI" in
-        gum)
-            gum choose --header "$prompt" "${opts[@]}"
-            ;;
-        whiptail|dialog)
-            local -a menu_args=()
-            local o
-            for o in "${opts[@]}"; do
-                menu_args+=("$o" "")
-            done
-            "$DIALOG_BIN" --title "agentrun wizard" --menu "$prompt" 20 78 "${#opts[@]}" "${menu_args[@]}" 3>&1 1>&2 2>&3
-            ;;
-        *)
-            printf '\033[1;36m%s\033[0m\n' "$prompt" >&2
-            local PS3="#? " choice
-            select choice in "${opts[@]}"; do
-                [ -n "$choice" ] && break
-            done
-            printf '%s\n' "$choice"
-            ;;
-    esac
-}
-
-wizard_notice() {
-    case "$WIZARD_UI" in
-        whiptail|dialog) "$DIALOG_BIN" --title "agentrun wizard" --msgbox "$1" 10 76 ;;
-        *) printf '\033[1;31m%s\033[0m\n' "$1" >&2 ;;
-    esac
-}
-
-wizard_input() {
-    local prompt="$1" default="${2:-}"
-    case "$WIZARD_UI" in
-        gum)
-            # --char-limit 0: no limit (gum's default of 400 truncates pasted values)
-            gum input --char-limit 0 --header "$prompt" --value "$default"
-            ;;
-        whiptail|dialog)
-            "$DIALOG_BIN" --title "agentrun wizard" --inputbox "$prompt" 10 76 "$default" 3>&1 1>&2 2>&3
-            ;;
-        *)
-            local val
-            # The default is pre-filled and editable (as in gum/whiptail), so a field
-            # can also be cleared. EOF (Ctrl-D) is reported as a cancel.
-            printf '\033[1;36m%s\033[0m\n' "$prompt" >&2
-            read -e -r -i "$default" -p '> ' val || return 1
-            printf '%s\n' "$val"
-            ;;
-    esac
-}
-
-# Yes returns 0 and No returns 1; cancelling (Ctrl+C, Esc, EOF) ends the wizard.
-wizard_confirm() {
-    local prompt="$1" default_yes="${2:-0}" rc=0
-    case "$WIZARD_UI" in
-        gum)
-            if [ "$default_yes" -eq 1 ]; then
-                gum confirm "$prompt" || rc=$?
-            else
-                gum confirm --default=false "$prompt" || rc=$?
-            fi
-            [ "$rc" -le 1 ] || wizard_abort
-            return "$rc"
-            ;;
-        whiptail|dialog)
-            local lines height
-            lines="$(printf '%s\n' "$prompt" | wc -l)"
-            height=$((lines + 9))
-            [ "$height" -gt 30 ] && height=30
-            if [ "$default_yes" -eq 1 ]; then
-                "$DIALOG_BIN" --title "agentrun wizard" --yesno "$prompt" "$height" 78 || rc=$?
-            else
-                "$DIALOG_BIN" --title "agentrun wizard" --defaultno --yesno "$prompt" "$height" 78 || rc=$?
-            fi
-            [ "$rc" -le 1 ] || wizard_abort
-            return "$rc"
-            ;;
-        *)
-            local suffix="[y/N]" val
-            [ "$default_yes" -eq 1 ] && suffix="[Y/n]"
-            read -r -p "$(printf '\033[1;33m%s\033[0m %s: ' "$prompt" "$suffix")" val || wizard_abort
-            if [ -z "$val" ]; then
-                [ "$default_yes" -eq 1 ]
-                return
-            fi
-            case "$val" in
-                y|Y|yes|Yes|YES) return 0 ;;
-                *) return 1 ;;
-            esac
-            ;;
-    esac
-}
+source "$ROOT_DIR/runtime/agentrun/wizard.sh"
 
 agent_command() {
     local agent="$1" mode="${2:-}" launch="${3:-batch}"
@@ -240,9 +134,9 @@ agent_command() {
             ;;
         codex)
             if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
-                printf 'cd /workspace && codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --cd /workspace "$(cat /runs/prompt.txt)"\n'
+                printf '%s\n' 'cd /workspace && codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --cd /workspace -c '\''sqlite_home="/home/sandbox/.codex/sqlite"'\'' "$(cat /runs/prompt.txt)"'
             else
-                printf 'cd /workspace && codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --cd /workspace "$(cat /runs/prompt.txt)"\n'
+                printf '%s\n' 'cd /workspace && codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --cd /workspace -c '\''sqlite_home="/home/sandbox/.codex/sqlite"'\'' "$(cat /runs/prompt.txt)"'
             fi
             ;;
         antigravity)
@@ -356,6 +250,15 @@ srun_partition_args() {
     local partition="${1:-${AGENTRUN_SLURM_PARTITION:-}}"
     [ -n "$partition" ] || return 0
     printf ' --partition=%s' "$partition"
+}
+
+slurm_log_directives() {
+    # SBATCH parses its own arguments; do not use Bash's $'...' quoting here.
+    local path="$1"
+    path="${path//\\/\\\\}"
+    path="${path//\"/\\\"}"
+    printf '#SBATCH --output="%s/live/slurm.out"\n' "$path"
+    printf '#SBATCH --error="%s/live/slurm.err"\n' "$path"
 }
 
 run_id() {
@@ -763,12 +666,24 @@ ensure_default_gh_env_file() {
     printf 'created %s from template (GH_TOKEN commented out)\n' "$DEFAULT_GH_ENV_FILE" >&2
 }
 
+session_tool() {
+    command -v python3 >/dev/null 2>&1 || {
+        printf 'セッション管理にはホストの python3 が必要です\n' >&2
+        return 2
+    }
+    python3 "$ROOT_DIR/runtime/agentrun/sessions.py" "$@"
+}
+
 apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
-    local nv="" image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
+    local nv="" image="$ROOT_DIR/runtime/apptainer/base-system.sif"
     [ "$gpus" -gt 0 ] && nv=" --nv"
     local cmd
     cmd="$(agent_command "$agent" "$mode" "$launch")"
+    if [ -f "$run_dir/session.json" ] && [ -n "${RESUME_SOURCE:-}" ]; then
+        cmd="$(session_tool command "$run_dir")" || return $?
+    fi
+    cmd="AGENTRUN_AGENT_BIN=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$agent")) || exit \$?; export PATH=\"\$AGENTRUN_AGENT_BIN:\$PATH\"; hash -r; unset -f claude codex agy antigravity gemini; ${cmd}"
     if gh_broker_enabled; then
         gh_broker_launch_lines "$run_dir" "$image"
     fi
@@ -795,15 +710,20 @@ apptainer_command() {
         printf ' --bind "$GH_BROKER_DIR":%s:ro --bind %q:/usr/local/bin/gh:ro' \
             "$GH_BROKER_CONTAINER_DIR" "$GH_BROKER_SRC/gh-client"
     fi
+    printf ' --bind %q:/opt/agentrun/install-agent.sh:ro' "$ROOT_DIR/runtime/agentrun/install-agent.sh"
     auth_mounts "$agent"
     home_config_mounts "$agent" "$run_dir" "$mode"
+    local session_mounts session_src session_dst
+    session_mounts="$(session_tool mounts "$run_dir" "$agent")" || return $?
+    while IFS=$'\t' read -r session_src session_dst; do
+        printf ' --bind %q:%q:rw' "$session_src" "$session_dst"
+    done <<< "$session_mounts"
     if fuse_enabled; then
         printf ' --bind %q:%q:rw' "$FUSE_DEVICE" "$FUSE_DEVICE"
     fi
     local bind
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
-        local src="${bind%%:*}" rest="${bind#*:}"
-        printf ' --bind %q:%s' "$src" "$rest"
+        printf ' --bind %q' "$bind"
     done
     printf ' %q bash -l -c %q\n' "$image" "$cmd"
 }
@@ -817,6 +737,9 @@ write_plan() {
     _runs_dir="$(dirname "$run_dir")"
     _run_base="$(basename "$run_dir")"
     make_layout "$run_dir"
+    local session_args=(init "$run_dir" "$agent" "$repo" "$mode")
+    [ -z "${RESUME_SOURCE:-}" ] || session_args+=("$RESUME_SOURCE")
+    session_tool "${session_args[@]}" || return $?
     generate_container_config "$run_dir" "$agent" "$mode"
     if [ "$agent" = "codex" ]; then
         link_codex_shared_assets "$run_dir"
@@ -851,33 +774,45 @@ EOF
 #SBATCH --cpus-per-task=$cpus
 EOF
     printf '#SBATCH --gres=gpu:%s\n' "$gpus" >> "$run_dir/submit.sbatch"
+    slurm_log_directives "$run_dir" >> "$run_dir/submit.sbatch"
     cat >> "$run_dir/submit.sbatch" <<EOF
-#SBATCH --output=$run_dir/live/slurm.out
-#SBATCH --error=$run_dir/live/slurm.err
 
 set -euo pipefail
-_cleanup_home() { rm -rf $run_dir/home; }
+run_dir=$(printf '%q' "$run_dir")
+repo=$(printf '%q' "$repo")
+runs_dir=$(printf '%q' "$_runs_dir")
+run_base=$(printf '%q' "$_run_base")
+session_helper=$(printf '%q' "$ROOT_DIR/runtime/agentrun/sessions.py")
+session_started=0
+_cleanup_home() {
+    if [ "\$session_started" -eq 1 ]; then
+        python3 "\$session_helper" finalize "\$run_dir" || true
+    fi
+    rm -rf "\$run_dir/home"
+}
 trap _cleanup_home EXIT
-printf '%s\n' "\${SLURM_JOB_ID:-}" > $run_dir/live/slurm_job_id.txt
-env | sort > $run_dir/artifacts/environment.txt
-apptainer --version > $run_dir/artifacts/container.txt 2>/dev/null || true
+printf '%s\n' "\${SLURM_JOB_ID:-}" > "\$run_dir/live/slurm_job_id.txt"
+env | sort > "\$run_dir/artifacts/environment.txt"
+apptainer --version > "\$run_dir/artifacts/container.txt" 2>/dev/null || true
+
 set +e
-bash $run_dir/apptainer_exec.sh 2>>"$run_dir/live/stderr.log"
+session_started=1
+bash "\$run_dir/apptainer_exec.sh" 2>>"\$run_dir/live/stderr.log"
 rc=\$?
 set -e
-printf '%s\n' "\$rc" > $run_dir/live/exit_code.txt
+printf '%s\n' "\$rc" > "\$run_dir/live/exit_code.txt"
 if [ "\$rc" -eq 0 ]; then
-    printf '{"status":"success","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\${SLURM_JOB_ID:-}" > $run_dir/live/status.json
+    printf '{"status":"success","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\${SLURM_JOB_ID:-}" > "\$run_dir/live/status.json"
 else
-    printf '{"status":"failed","exit_code":"%s","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\$rc" "\${SLURM_JOB_ID:-}" > $run_dir/live/status.json
+    printf '{"status":"failed","exit_code":"%s","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\$rc" "\${SLURM_JOB_ID:-}" > "\$run_dir/live/status.json"
 fi
-if [ -f "$run_dir/artifacts/run_title.txt" ]; then
-    _title="\$(tr ' ' '-' < "$run_dir/artifacts/run_title.txt" | tr -cd 'a-zA-Z0-9_-')"
+if [ -f "\$run_dir/artifacts/run_title.txt" ]; then
+    _title="\$(tr ' ' '-' < "\$run_dir/artifacts/run_title.txt" | tr -cd 'a-zA-Z0-9_-')"
     if [ -n "\$_title" ]; then
-        rm -rf "$run_dir/home"
+        _cleanup_home
         trap - EXIT
-        mv "$run_dir" "$_runs_dir/${_run_base}_\${_title}"
-        ln -sfn "${_run_base}_\${_title}" "$_runs_dir/latest"
+        mv "\$run_dir" "\$runs_dir/\${run_base}_\${_title}"
+        ln -sfn "\${run_base}_\${_title}" "\$runs_dir/latest"
     fi
 fi
 exit "\$rc"
@@ -1570,7 +1505,12 @@ command_validate() {
         agents/antigravity/hooks.json \
         agents/antigravity/GEMINI.md \
         runtime/apptainer/base-system.def \
-        runtime/apptainer/base-agent.def
+        runtime/agentrun/sessions.py \
+        runtime/agentrun/wizard.sh \
+        runtime/agentrun/wizard-state.py \
+        runtime/agentrun/path-input.py \
+        runtime/agentrun/install-agent.sh \
+        runtime/agentrun/agentrun.bash
     do
         if [ -e "$ROOT_DIR/$path" ]; then
             printf '[OK] %s\n' "$path"
@@ -1648,7 +1588,7 @@ command_validate() {
 # bind that lets the capsule see the device. Report all three, never fail the run
 # on them — plenty of capsules never nest a container.
 check_fuse_support() {
-    local image="$ROOT_DIR/runtime/apptainer/base-agent.sif"
+    local image="$ROOT_DIR/runtime/apptainer/base-system.sif"
     if [ -e "$FUSE_DEVICE" ]; then
         printf '[OK] fuse:%s - %s\n' "$FUSE_DEVICE" "$(ls -l "$FUSE_DEVICE" | awk '{print $1}')"
     else
@@ -1656,7 +1596,7 @@ check_fuse_support() {
         return 0
     fi
     if ! command -v apptainer >/dev/null 2>&1 || [ ! -e "$image" ]; then
-        printf '[WARN] fuse:image-libs - cannot verify without apptainer and base-agent.sif on this host\n'
+        printf '[WARN] fuse:image-libs - cannot verify without apptainer and base-system.sif on this host\n'
         return 0
     fi
     local missing=""
@@ -1667,9 +1607,9 @@ check_fuse_support() {
         fi
     done
     if [ -n "$missing" ]; then
-        printf '[WARN] fuse:image-libs - missing in base-agent.sif: %s (rebuild the image; see runtime/apptainer/base-system.def)\n' "$missing"
+        printf '[WARN] fuse:image-libs - missing in base-system.sif: %s (rebuild the image; see runtime/apptainer/base-system.def)\n' "$missing"
     else
-        printf '[OK] fuse:image-libs - libfuse3 and liblzo2 present in base-agent.sif\n'
+        printf '[OK] fuse:image-libs - libfuse3 and liblzo2 present in base-system.sif\n'
     fi
 }
 
@@ -1726,7 +1666,7 @@ command_doctor() {
             *) shift ;;
         esac
     done
-    for cmd in sinfo squeue srun sbatch jq; do
+    for cmd in sinfo squeue srun sbatch jq python3; do
         if command -v "$cmd" >/dev/null 2>&1; then
             printf '[OK] command:%s - %s\n' "$cmd" "$(command -v "$cmd")"
         else
@@ -1753,10 +1693,10 @@ command_doctor() {
     else
         check_agent_auth "$agent" || failed=1
     fi
-    if [ -e "$ROOT_DIR/runtime/apptainer/base-agent.sif" ]; then
-        printf '[OK] image:base-agent.sif\n'
+    if [ -e "$ROOT_DIR/runtime/apptainer/base-system.sif" ]; then
+        printf '[OK] image:base-system.sif\n'
     else
-        printf '[FAIL] image:base-agent.sif - not built\n'
+        printf '[FAIL] image:base-system.sif - not built\n'
         failed=1
     fi
     check_fuse_support || true
@@ -1809,6 +1749,7 @@ parse_run_args() {
     PROMPT=""
     EXTRA_BINDS=()
     SECRETS_FILE="${AGENTRUN_SECRETS_FILE:-}"
+    GH_BROKER_DISABLED=0
     local secrets_explicit=0 no_secrets=0 no_gh_broker=0
     [ -n "$SECRETS_FILE" ] && secrets_explicit=1
     ALLOW_FUSE="${AGENTRUN_ALLOW_FUSE:-0}"
@@ -1838,6 +1779,7 @@ parse_run_args() {
             --target-report) TARGET_REPORT="$2"; shift 2 ;;
             --agents) REQUESTED_AGENTS="$2"; shift 2 ;;
             --submit) SUBMIT=1; shift ;;
+            --) shift; PROMPT="$*"; break ;;
             --*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
             *) PROMPT="${PROMPT:+$PROMPT }$1"; shift ;;
         esac
@@ -1857,6 +1799,7 @@ parse_run_args() {
     done
     EXTRA_BINDS=("${kept_binds[@]+"${kept_binds[@]}"}")
     resolve_secrets_file "$secrets_explicit" "$no_secrets"
+    GH_BROKER_DISABLED="$no_gh_broker"
     resolve_gh_broker "$no_gh_broker"
     # agentrun usually runs on a login node while the capsule runs on a compute
     # node, so a missing device here is a warning, never a hard failure.
@@ -1898,7 +1841,7 @@ resolve_secrets_file() {
 }
 
 resolve_gh_broker() {
-    local disabled="$1"
+    local disabled="${1:-${GH_BROKER_DISABLED:-0}}"
     GH_ENV_FILE=""
     if secrets_enabled && file_sets_key "$SECRETS_FILE" GH_TOKEN; then
         printf 'warning: %s sets GH_TOKEN, which hands the token to the agent directly; move it to %s to use the GitHub CLI broker\n' \
@@ -1973,6 +1916,12 @@ command_dry_run() {
     printf '  %s/scratch:/scratch:rw\n' "$run_dir"
     printf '  %s/cache:/cache:rw\n' "$run_dir"
     shared_config_bind_specs | sed 's/^/  /'
+    printf '  %s:/opt/agentrun/install-agent.sh:ro\n' "$ROOT_DIR/runtime/agentrun/install-agent.sh"
+    local session_mounts session_src session_dst
+    session_mounts="$(session_tool mounts "$run_dir" "$AGENT")" || return $?
+    while IFS=$'\t' read -r session_src session_dst; do
+        printf '  %s:%s:rw\n' "$session_src" "$session_dst"
+    done <<< "$session_mounts"
     if fuse_enabled; then
         printf '  %s\n' "$(fuse_bind_spec)"
     fi
@@ -2022,6 +1971,74 @@ command_dry_run() {
     done
 }
 
+run_interactive_session() {
+    local run_dir="$1" repo_abs="$2"; shift 2
+    local terminal_fd="" terminal_state="" srun_pid="" session_started=0 agent_started=0 rc=0
+
+    _cleanup_interactive_session() {
+        # Neither a killed agent nor srun can be relied on to undo TUI modes.
+        # Write to the controlling terminal even when stdout is redirected.
+        if [ "$session_started" -eq 1 ]; then
+            # Mouse/focus/paste reporting, application cursor keys and keypad.
+            printf '\033[?9l\033[?1000l\033[?1001l\033[?1002l\033[?1003l\033[?1004l\033[?1005l\033[?1006l\033[?1015l\033[?1016l\033[?2004l\033[?1l\033>' >&"$terminal_fd" || true
+            # Reset enhanced keyboards on both alternate and main screens:
+            # kitty keeps separate flag stacks for the two screens.
+            printf '\033[<u\033[=0u\033[>4;0m\033[?1049l\033[?1047l\033[?47l\033[<u\033[=0u\033[>4;0m\033[0m\033[?25h' >&"$terminal_fd" || true
+            stty "$terminal_state" <&"$terminal_fd" 2>/dev/null || true
+            session_started=0
+        fi
+        if [ -n "$terminal_fd" ]; then
+            exec {terminal_fd}>&-
+            terminal_fd=""
+        fi
+        if [ "$agent_started" -eq 1 ] && [ -f "$run_dir/session.json" ]; then
+            session_tool finalize "$run_dir" || true
+            agent_started=0
+        fi
+        rm -rf "$run_dir/home"
+    }
+
+    _stop_interactive_session() {
+        local signal_status="$1"
+        trap '' HUP INT TERM
+        if [ -n "$srun_pid" ]; then
+            kill -TERM "$srun_pid" 2>/dev/null || true
+            wait "$srun_pid" 2>/dev/null || true
+        fi
+        exit "$signal_status"
+    }
+
+    trap _cleanup_interactive_session EXIT
+    trap '_stop_interactive_session 129' HUP
+    trap '_stop_interactive_session 130' INT
+    trap '_stop_interactive_session 143' TERM
+    if ! { exec {terminal_fd}<>/dev/tty; } 2>/dev/null; then
+        printf 'interactive assist requires a controlling terminal; use --submit for batch runs\n' >&2
+        exit 1
+    fi
+    terminal_state="$(stty -g <&"$terminal_fd")"
+    copy_auth_credentials "$run_dir" "$AGENT"
+    exec 200>"$repo_abs/.agentrun.lock"
+    if ! flock -n 200; then
+        printf 'another agentrun is already active on this repo (%s). Refusing to start to avoid concurrent git operations.\n' "$repo_abs" >&2
+        rc=1
+    else
+        printf 'launching interactive session via srun %s\n' "$*"
+        session_started=1
+        agent_started=1
+        # An explicit stdin keeps the background child attached to the PTY.
+        # wait is interruptible, so host-side signals also run cleanup promptly.
+        srun "$@" bash "$run_dir/apptainer_exec.sh" <&0 &
+        srun_pid=$!
+        wait "$srun_pid" || rc=$?
+        srun_pid=""
+    fi
+    _cleanup_interactive_session
+    trap - EXIT HUP INT TERM
+    exec 200>&-
+    return "$rc"
+}
+
 command_prepare() {
     local mode="$1"; shift
     ensure_default_secrets_file
@@ -2030,6 +2047,7 @@ command_prepare() {
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
         PROMPT=""
+        [ -t 0 ] || { printf 'interactive assist requires a terminal; use --submit for batch runs\n' >&2; return 1; }
     else
         [ -n "$PROMPT" ] || { printf 'missing prompt\n' >&2; exit 2; }
     fi
@@ -2044,16 +2062,13 @@ command_prepare() {
     write_plan "$mode" "$AGENT" "$REPO" "$GOAL" "$GPUS" "$TIME_LIMIT" "$PROMPT" "$run_dir" "$PARTITION" "$launch"
     printf 'prepared run: %s\n' "$run_dir"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
-        copy_auth_credentials "$run_dir" "$AGENT"
-        trap "rm -rf $(printf '%q' "$run_dir/home")" EXIT INT TERM
+        local repo_abs
+        repo_abs="$(cd "$REPO" && pwd)"
         local srun_args=("--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty")
         [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
         srun_args+=("--gres=gpu:$GPUS")
-        printf 'launching interactive session via srun %s\n' "${srun_args[*]}"
-        srun "${srun_args[@]}" bash "$run_dir/apptainer_exec.sh" || true
-        rm -rf "$run_dir/home"
-        trap - EXIT INT TERM
-        return 0
+        run_interactive_session "$run_dir" "$repo_abs" "${srun_args[@]}"
+        return $?
     fi
     printf 'submit script: %s\n' "$run_dir/submit.sbatch"
     if [ "$SUBMIT" -eq 1 ]; then
@@ -2061,569 +2076,6 @@ command_prepare() {
         sbatch "$run_dir/submit.sbatch"
     elif [ "$AGENT" = "claude" ] || [ "$AGENT" = "codex" ]; then
         printf 'auth credentials were not staged; rerun with --submit to copy them before sbatch\n'
-    fi
-}
-
-# Normalize one bind spec typed in the wizard: SRC[:DST[:ro|rw]]. SRC may start
-# with ~ or be relative (made absolute); DST defaults to SRC. Prints the spec, or
-# the error message with a non-zero status.
-wizard_normalize_bind() {
-    local spec="$1" src dst opts rest
-    src="${spec%%:*}"
-    rest=""
-    [ "$src" = "$spec" ] || rest="${spec#*:}"
-    dst="${rest%%:*}"
-    opts=""
-    [ "$dst" = "$rest" ] || opts="${rest#*:}"
-    src="$(wizard_expand_tilde "$src")"
-    [ -n "$src" ] || { printf 'empty source in %s\n' "$spec"; return 1; }
-    [ -e "$src" ] || { printf 'source does not exist: %s\n' "$src"; return 1; }
-    src="$(wizard_abs_path "$src")"
-    [ -n "$dst" ] || dst="$src"
-    case "$dst" in
-        /*) ;;
-        *) printf 'destination must be an absolute container path: %s\n' "$dst"; return 1 ;;
-    esac
-    case "$opts" in
-        ''|ro|rw) ;;
-        *) printf 'options must be ro or rw: %s\n' "$spec"; return 1 ;;
-    esac
-    printf '%s:%s%s\n' "$src" "$dst" "${opts:+:$opts}"
-}
-
-wizard_expand_tilde() {
-    case "$1" in
-        "~") printf '%s\n' "$HOME" ;;
-        "~/"*) printf '%s/%s\n' "$HOME" "${1#"~/"}" ;;
-        *) printf '%s\n' "$1" ;;
-    esac
-}
-
-# Absolute, symlink-resolved path of an existing file or directory.
-wizard_abs_path() {
-    if [ -d "$1" ]; then
-        (cd "$1" && pwd -P)
-    else
-        printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd -P | sed 's:/$::')" "$(basename "$1")"
-    fi
-}
-
-# One input line for all bind mounts, in the same SRC:DST[:ro|rw] form as --bind,
-# so specs can be pasted. Several specs may be separated by spaces or commas, and
-# pasted "--bind"/"-B" words are ignored. On an error the line is shown again for editing.
-wizard_ask_binds() {
-    local line="" spec normalized
-    local -a specs parsed
-    if [ "${#EXTRA_BINDS[@]}" -gt 0 ]; then
-        local old_ifs="$IFS"
-        IFS=' '
-        line="${EXTRA_BINDS[*]}"
-        IFS="$old_ifs"
-    fi
-    local -a kept=()
-    local prompt='Bind mounts: SRC:DST[:ro|rw], several separated by spaces or commas ("none" = no bind mounts)'
-    while :; do
-        line="$(wizard_input "$prompt" "$line")" || wizard_abort
-        [ "$line" = "none" ] && line=""
-        read -r -a specs <<< "${line//,/ }"
-        parsed=()
-        for spec in "${specs[@]+"${specs[@]}"}"; do
-            case "$spec" in
-                --bind|-B) continue ;;
-                --bind=*) spec="${spec#--bind=}" ;;
-            esac
-            if ! normalized="$(wizard_normalize_bind "$spec")"; then
-                wizard_notice "Bind mount not added: $normalized"
-                continue 2
-            fi
-            parsed+=("$normalized")
-        done
-        kept+=("${parsed[@]+"${parsed[@]}"}")
-        EXTRA_BINDS=("${kept[@]+"${kept[@]}"}")
-        # More can be added on further lines, for input fields that cap the paste length.
-        [ "${#parsed[@]}" -gt 0 ] || return 0
-        wizard_confirm "Bind mounts so far: ${#kept[@]}. Add more?" 0 || return 0
-        line=""
-        prompt='More bind mounts: SRC:DST[:ro|rw] (empty to finish)'
-    done
-}
-
-# Ctrl+C, Esc, a Cancel button or EOF anywhere in the wizard ends it without launching.
-wizard_abort() {
-    trap - INT
-    printf '\nwizard cancelled, nothing was launched\n' >&2
-    exit 130
-}
-
-# Ask until VALIDATOR accepts the answer, then store it in VAR. A validator prints
-# the (possibly normalized) value and succeeds, or prints an error and fails; the
-# rejected answer is offered again for editing. Must not run inside $(...), so
-# that cancelling can end the wizard.
-wizard_ask() {
-    local __var="$1" prompt="$2" value="$3" validator="${4:-}" out
-    while :; do
-        value="$(wizard_input "$prompt" "$value")" || wizard_abort
-        if [ -z "$validator" ]; then
-            printf -v "$__var" '%s' "$value"
-            return 0
-        fi
-        if out="$("$validator" "$value")"; then
-            printf -v "$__var" '%s' "$out"
-            return 0
-        fi
-        wizard_notice "$out"
-    done
-}
-
-wizard_valid_repo() {
-    local path
-    path="$(wizard_expand_tilde "${1:-.}")"
-    [ -d "$path" ] || { printf 'repository path is not a directory: %s\n' "$1"; return 1; }
-    wizard_abs_path "$path"
-}
-
-wizard_valid_gpus() {
-    [[ "$1" =~ ^[0-9]+$ ]] || { printf 'GPU count must be a whole number (0 for none): %s\n' "$1"; return 1; }
-    printf '%s\n' "$((10#$1))"
-}
-
-wizard_valid_cpus() {
-    [[ "$1" =~ ^[0-9]+$ ]] && [ "$((10#$1))" -gt 0 ] || { printf 'CPU cores must be a positive whole number: %s\n' "$1"; return 1; }
-    printf '%s\n' "$((10#$1))"
-}
-
-wizard_valid_mem() {
-    [[ "$1" =~ ^[1-9][0-9]*[KMGTkmgt]?$ ]] || { printf 'memory must be a number with an optional K/M/G/T suffix (e.g. 16000M, 64G): %s\n' "$1"; return 1; }
-    printf '%s\n' "$1"
-}
-
-# Slurm --time forms: MM, MM:SS, HH:MM:SS, D-HH, D-HH:MM, D-HH:MM:SS
-wizard_valid_time() {
-    [[ "$1" =~ ^([0-9]+-)?[0-9]+(:[0-5][0-9]){0,2}$ ]] || { printf 'walltime must look like HH:MM:SS, MM, or D-HH:MM:SS: %s\n' "$1"; return 1; }
-    printf '%s\n' "$1"
-}
-
-wizard_valid_goal() {
-    [ -n "$1" ] || { printf '\n'; return 0; }
-    local path
-    path="$(wizard_expand_tilde "$1")"
-    [ -f "$path" ] || { printf 'goal file does not exist: %s (leave empty to skip)\n' "$1"; return 1; }
-    wizard_abs_path "$path"
-}
-
-wizard_valid_prompt() {
-    [ -n "${1//[[:space:]]/}" ] || { printf 'a task prompt is required for this run\n'; return 1; }
-    printf '%s\n' "$1"
-}
-
-# "name|gres" per partition from sinfo, GPU gres joined, in sinfo order.
-wizard_sinfo_partitions() {
-    command -v sinfo >/dev/null 2>&1 || return 0
-    sinfo -h -o '%R|%G' 2>/dev/null | awk -F'|' '
-        {
-            gres = $2; gsub(/\([^)]*\)/, "", gres)
-            if (!($1 in seen)) { seen[$1] = 1; order[++n] = $1; g[$1] = "" }
-            m = split(gres, parts, ",")
-            for (i = 1; i <= m; i++) {
-                if (parts[i] ~ /^gpu/ && index("," g[$1] ",", "," parts[i] ",") == 0) {
-                    g[$1] = g[$1] (g[$1] == "" ? "" : ",") parts[i]
-                }
-            }
-        }
-        END { for (i = 1; i <= n; i++) print order[i] "|" g[order[i]] }'
-}
-
-wizard_sinfo_default_partition() {
-    command -v sinfo >/dev/null 2>&1 || return 0
-    sinfo -h -o '%P' 2>/dev/null | sed -n 's/\*$//p' | head -n 1
-}
-
-# Partition picker: choose from sinfo (with GPU info) or type a name.
-wizard_ask_partition() {
-    local type_label='Type a partition name...' cluster_label='(cluster default)'
-    local line name gres label choice default_part
-    local -a names=() labels=() opts=()
-    while IFS='|' read -r name gres; do
-        [ -n "$name" ] || continue
-        names+=("$name")
-        if [ -n "$gres" ]; then
-            labels+=("$name  (GPU: $gres)")
-        else
-            labels+=("$name  (no GPU)")
-        fi
-    done < <(wizard_sinfo_partitions)
-
-    if [ "${#names[@]}" -eq 0 ]; then
-        wizard_ask PARTITION 'Slurm partition (empty = cluster default / AGENTRUN_SLURM_PARTITION)' "$PARTITION"
-        return 0
-    fi
-
-    default_part="$(wizard_sinfo_default_partition)"
-    [ -n "$default_part" ] && cluster_label="(cluster default: $default_part)"
-    local i current=""
-    for i in "${!names[@]}"; do
-        if [ "${names[$i]}" = "$PARTITION" ]; then
-            current="${labels[$i]}"
-        fi
-    done
-    if [ -n "$current" ]; then
-        opts+=("$current" "$cluster_label")
-    elif [ -n "$PARTITION" ]; then
-        opts+=("$PARTITION  (not listed by sinfo)" "$cluster_label")
-    else
-        opts+=("$cluster_label")
-    fi
-    for label in "${labels[@]}"; do
-        if [ "$label" != "$current" ]; then
-            opts+=("$label")
-        fi
-    done
-    opts+=("$type_label")
-
-    choice="$(wizard_select 'Slurm partition' "${opts[@]}")" || wizard_abort
-    [ -n "$choice" ] || wizard_abort
-    case "$choice" in
-        "$cluster_label") PARTITION="" ;;
-        "$type_label")
-            while :; do
-                wizard_ask PARTITION 'Partition name (empty = cluster default)' "$PARTITION"
-                [ -z "$PARTITION" ] && break
-                case " ${names[*]} " in
-                    *" $PARTITION "*) break ;;
-                esac
-                wizard_confirm "Partition '$PARTITION' is not listed by sinfo. Use it anyway?" 0 && break
-            done
-            ;;
-        *) PARTITION="${choice%%  (*}" ;;
-    esac
-}
-
-# GPU gres sinfo reports for PARTITION ("" when none or unknown).
-wizard_partition_gres() {
-    local name gres
-    while IFS='|' read -r name gres; do
-        [ "$name" = "$1" ] && { printf '%s\n' "$gres"; return 0; }
-    done < <(wizard_sinfo_partitions)
-    return 1
-}
-
-# Remembered answers from the last launched wizard run.
-WIZARD_LAST_FILE="$HOME/.agentrun/wizard-last"
-declare -A WIZARD_LAST=()
-
-wizard_load_last() {
-    [ -r "$WIZARD_LAST_FILE" ] || return 0
-    local key value
-    while IFS='=' read -r key value; do
-        [ -n "$key" ] && WIZARD_LAST["$key"]="$value"
-    done < "$WIZARD_LAST_FILE"
-}
-
-wizard_last() {
-    printf '%s' "${WIZARD_LAST[$1]:-}"
-}
-
-wizard_save_last() {
-    local mode="$1" old_ifs="$IFS" binds
-    IFS=' '
-    binds="${EXTRA_BINDS[*]}"
-    IFS="$old_ifs"
-    mkdir -p "$(dirname "$WIZARD_LAST_FILE")"
-    {
-        printf 'cwd=%s\n' "$PWD"
-        printf 'mode=%s\n' "$mode"
-        printf 'agent=%s\n' "$AGENT"
-        printf 'submit=%s\n' "$SUBMIT"
-        printf 'repo=%s\n' "$REPO"
-        printf 'partition=%s\n' "$PARTITION"
-        printf 'gpus=%s\n' "$GPUS"
-        printf 'mem=%s\n' "$MEM"
-        printf 'cpus=%s\n' "$CPUS"
-        printf 'time=%s\n' "$TIME_LIMIT"
-        printf 'binds=%s\n' "$binds"
-        printf 'allow_fuse=%s\n' "$ALLOW_FUSE"
-        printf 'secrets=%s\n' "$(secrets_enabled && printf 1 || printf 0)"
-        printf 'gh_broker=%s\n' "$(gh_broker_enabled && printf 1 || printf 0)"
-        printf 'goal=%s\n' "$GOAL"
-        printf 'prompt=%s\n' "${PROMPT//$'\n'/ }"
-        printf 'reviewers=%s\n' "$REVIEWERS"
-        printf 'target_diff=%s\n' "$TARGET_DIFF"
-        printf 'target_report=%s\n' "$TARGET_REPORT"
-        printf 'agents=%s\n' "$REQUESTED_AGENTS"
-    } > "$WIZARD_LAST_FILE"
-}
-
-# The secrets file a launch uses without --secrets-file (empty when there is none).
-wizard_default_secrets_file() {
-    local file="${AGENTRUN_SECRETS_FILE:-$DEFAULT_SECRETS_FILE}"
-    [ -f "$file" ] || return 0
-    printf '%s/%s\n' "$(cd "$(dirname "$file")" && pwd -P)" "$(basename "$file")"
-}
-
-# Quote an argument for copy-pasting into a shell, leaving plain words bare.
-wizard_shell_quote() {
-    if [[ "$1" =~ ^[A-Za-z0-9_./:=@%+,-]+$ ]]; then
-        printf '%s' "$1"
-    else
-        printf "'%s'" "${1//\'/\'\\\'\'}"
-    fi
-}
-
-command_wizard() {
-    [ -t 0 ] && [ -t 1 ] || {
-        printf '[FAIL] agentrun wizard requires an interactive terminal\n' >&2
-        exit 1
-    }
-    detect_wizard_ui
-    trap wizard_abort INT
-
-    local cli=" $* " gres
-    parse_run_args "$@"
-    # What secrets file / gh broker token a plain launch would use from here.
-    local secrets_candidate="${SECRETS_FILE:-}" gh_env_candidate="${GH_ENV_FILE:-}"
-    # A secrets file with every entry commented out passes nothing; don't ask about it.
-    if [ -n "$secrets_candidate" ] && [ -z "$(secret_keys "$secrets_candidate")" ]; then
-        secrets_candidate=""
-    fi
-    wizard_load_last
-    # Values from the last run apply to what was not given on the command line.
-    # Directory-specific answers (repo, goal, prompt, review targets) are reused
-    # only when the wizard runs from the same directory as last time.
-    local same_dir=0
-    [ "$(wizard_last cwd)" = "$PWD" ] && same_dir=1
-    [[ "$cli" == *" --agent "* ]] || AGENT="$(wizard_last agent)"
-    [ -n "$AGENT" ] || AGENT="$DEFAULT_AGENT"
-    [[ "$cli" == *" --submit "* ]] || SUBMIT="$(wizard_last submit)"
-    [[ "$SUBMIT" =~ ^[01]$ ]] || SUBMIT=0
-    [[ "$cli" == *" --partition "* ]] || [ -z "$(wizard_last partition)" ] || PARTITION="$(wizard_last partition)"
-    [[ "$cli" == *" --gpus "* ]] || [ -z "$(wizard_last gpus)" ] || GPUS="$(wizard_last gpus)"
-    if [[ "$cli" != *" --bind "* ]] && [ -n "$(wizard_last binds)" ]; then
-        read -r -a EXTRA_BINDS <<< "$(wizard_last binds)"
-    fi
-    if [[ "$cli" != *" --allow-fuse "* && "$cli" != *" --no-allow-fuse "* ]] && [ -n "$(wizard_last allow_fuse)" ]; then
-        ALLOW_FUSE="$(wizard_last allow_fuse)"
-    fi
-    [[ "$cli" == *" --secrets-file "* ]] || [ "$(wizard_last secrets)" != 0 ] || SECRETS_FILE=""
-    [ "$(wizard_last gh_broker)" != 0 ] || GH_ENV_FILE=""
-    [[ "$cli" == *" --agents "* ]] || [ -z "$(wizard_last agents)" ] || REQUESTED_AGENTS="$(wizard_last agents)"
-    if [ "$same_dir" -eq 1 ]; then
-        [[ "$cli" == *" --repo "* ]] || [ -z "$(wizard_last repo)" ] || REPO="$(wizard_last repo)"
-        [[ "$cli" == *" --goal "* ]] || GOAL="$(wizard_last goal)"
-        [ -n "$PROMPT" ] || PROMPT="$(wizard_last prompt)"
-        [[ "$cli" == *" --reviewers "* ]] || REVIEWERS="$(wizard_last reviewers)"
-        [[ "$cli" == *" --target-diff "* ]] || TARGET_DIFF="$(wizard_last target_diff)"
-        [[ "$cli" == *" --target-report "* ]] || TARGET_REPORT="$(wizard_last target_report)"
-    fi
-
-    wizard_banner 'agentrun wizard - Enter accepts the shown value, Ctrl+C or Esc cancels'
-
-    local mode last_mode m
-    last_mode="$(wizard_last mode)"
-    local -a mode_opts=()
-    is_profile "$last_mode" && mode_opts+=("$last_mode")
-    for m in assist experiment campaign review multi-review; do
-        [ "$m" = "$last_mode" ] || mode_opts+=("$m")
-    done
-    mode="$(wizard_select 'Select run mode' "${mode_opts[@]}")" || wizard_abort
-    [ -n "$mode" ] || wizard_abort
-
-    local -a agent_opts=("$AGENT")
-    local ao
-    for ao in claude codex antigravity; do
-        [ "$ao" = "$AGENT" ] || agent_opts+=("$ao")
-    done
-    local agent
-    agent="$(wizard_select 'Select agent' "${agent_opts[@]}")" || wizard_abort
-    [ -n "$agent" ] || wizard_abort
-    AGENT="$agent"
-
-    if [ "$mode" = "assist" ]; then
-        local -a launch_opts=('Interactive session (srun --pty)' 'Batch submit (sbatch)')
-        [ "$SUBMIT" -eq 1 ] && launch_opts=('Batch submit (sbatch)' 'Interactive session (srun --pty)')
-        local launch_choice
-        launch_choice="$(wizard_select 'Select launch style' "${launch_opts[@]}")" || wizard_abort
-        [ -n "$launch_choice" ] || wizard_abort
-        case "$launch_choice" in
-            'Batch submit (sbatch)') SUBMIT=1 ;;
-            *) SUBMIT=0 ;;
-        esac
-    else
-        if wizard_confirm 'Submit this job now via sbatch? (No just writes submit.sbatch without queuing it)' "$SUBMIT"; then
-            SUBMIT=1
-        else
-            SUBMIT=0
-        fi
-    fi
-
-    wizard_ask REPO 'Repository path' "$REPO" wizard_valid_repo
-    if ! git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        wizard_notice "Note: $REPO is not a git repository."
-    fi
-
-    wizard_ask_partition
-    wizard_ask GPUS 'GPU count' "$GPUS" wizard_valid_gpus
-    if [ "$GPUS" -gt 0 ] && [ -n "$PARTITION" ] && gres="$(wizard_partition_gres "$PARTITION")" && [ -z "$gres" ]; then
-        wizard_notice "Note: sinfo reports no GPUs on partition $PARTITION."
-    fi
-
-    # Resource answers are reused only for the same mode, since defaults differ per mode.
-    if [ "$(wizard_last mode)" = "$mode" ]; then
-        [[ "$cli" == *" --mem "* ]] || [ -z "$(wizard_last mem)" ] || MEM="$(wizard_last mem)"
-        [[ "$cli" == *" --cpus "* ]] || [ -z "$(wizard_last cpus)" ] || CPUS="$(wizard_last cpus)"
-        [[ "$cli" == *" --time "* ]] || [ -z "$(wizard_last time)" ] || TIME_LIMIT="$(wizard_last time)"
-    fi
-    wizard_ask MEM 'Memory (e.g. 16000M, 64G)' "${MEM:-$(profile_mem "$mode")}" wizard_valid_mem
-    wizard_ask CPUS 'CPU cores' "${CPUS:-$(profile_cpus "$mode")}" wizard_valid_cpus
-    wizard_ask TIME_LIMIT 'Walltime (HH:MM:SS or D-HH:MM:SS)' "${TIME_LIMIT:-$(profile_time "$mode")}" wizard_valid_time
-
-    wizard_ask_binds
-
-    if wizard_confirm 'Bind /dev/fuse into the capsule? (needed for nested apptainer/FUSE mounts; loosens isolation)' "$ALLOW_FUSE"; then
-        ALLOW_FUSE=1
-    else
-        ALLOW_FUSE=0
-    fi
-
-    # Offer secrets / the gh broker whenever they would be used, with the last
-    # answer as the default.
-    if [ -n "$secrets_candidate" ]; then
-        if wizard_confirm "Pass secrets from $secrets_candidate into the capsule? (keys: $(secret_keys_csv "$secrets_candidate"))" "$(secrets_enabled && printf 1 || printf 0)"; then
-            SECRETS_FILE="$secrets_candidate"
-        else
-            SECRETS_FILE=""
-        fi
-    fi
-    if [ -n "$gh_env_candidate" ]; then
-        if wizard_confirm "Start the GitHub CLI broker? (gh works through allowlisted commands; the token stays outside the capsule)" "$(gh_broker_enabled && printf 1 || printf 0)"; then
-            GH_ENV_FILE="$gh_env_candidate"
-        else
-            GH_ENV_FILE=""
-        fi
-    fi
-
-    wizard_ask GOAL 'Goal file path (optional, empty to skip)' "$GOAL" wizard_valid_goal
-
-    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
-        wizard_banner 'Interactive assist ignores the task prompt; the agent starts and you drive it live'
-        PROMPT=""
-    else
-        wizard_ask PROMPT 'Task prompt' "$PROMPT" wizard_valid_prompt
-    fi
-
-    if [ "$mode" = "review" ]; then
-        wizard_ask REVIEWERS 'Reviewers (comma-separated agent list)' "$REVIEWERS"
-        wizard_ask TARGET_DIFF 'Target diff path' "$TARGET_DIFF"
-        wizard_ask TARGET_REPORT 'Target report path' "$TARGET_REPORT"
-    elif [ "$mode" = "multi-review" ]; then
-        local -a agents_list=()
-        if [ -n "$REQUESTED_AGENTS" ]; then
-            IFS=',' read -r -a agents_list <<< "$REQUESTED_AGENTS"
-            wizard_banner "Already-specified agents: ${agents_list[*]}"
-        fi
-        while wizard_confirm 'Add an agent to the multi-review list?' 0; do
-            local extra_agent
-            extra_agent="$(wizard_select 'Select agent to add' claude codex antigravity)" || wizard_abort
-            [ -n "$extra_agent" ] || wizard_abort
-            agents_list+=("$extra_agent")
-        done
-        if [ "${#agents_list[@]}" -gt 0 ]; then
-            local old_ifs="$IFS"
-            IFS=','
-            REQUESTED_AGENTS="${agents_list[*]}"
-            IFS="$old_ifs"
-        fi
-    fi
-
-    # Arguments for the launch: explicit, so the run does not depend on environment defaults.
-    local -a args=(--agent "$AGENT" --repo "$REPO" --gpus "$GPUS" --mem "$MEM" --cpus "$CPUS" --time "$TIME_LIMIT")
-    # The copy-paste command: the same run, leaving out values that are already the default.
-    local -a show=(--agent "$AGENT")
-    [ "$REPO" = "$(wizard_abs_path "$PWD")" ] || show+=(--repo "$REPO")
-    # Always explicit: an empty --partition keeps AGENTRUN_SLURM_PARTITION from applying.
-    args+=(--partition "$PARTITION")
-    [ "$PARTITION" = "${AGENTRUN_SLURM_PARTITION:-}" ] || show+=(--partition "$PARTITION")
-    [ "$GPUS" -eq 0 ] || show+=(--gpus "$GPUS")
-    [ "$MEM" = "$(profile_mem "$mode")" ] || show+=(--mem "$MEM")
-    [ "$CPUS" = "$(profile_cpus "$mode")" ] || show+=(--cpus "$CPUS")
-    [ "$TIME_LIMIT" = "$(profile_time "$mode")" ] || show+=(--time "$TIME_LIMIT")
-    [ -n "$GOAL" ] && { args+=(--goal "$GOAL"); show+=(--goal "$GOAL"); }
-    local b
-    for b in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
-        args+=(--bind "$b")
-        show+=(--bind "$b")
-    done
-    if [ "$ALLOW_FUSE" -eq 1 ]; then
-        args+=(--allow-fuse)
-        show+=(--allow-fuse)
-    else
-        args+=(--no-allow-fuse)
-        case "${AGENTRUN_ALLOW_FUSE:-0}" in 1|true|yes) show+=(--no-allow-fuse) ;; esac
-    fi
-    if secrets_enabled; then
-        args+=(--secrets-file "$SECRETS_FILE")
-        [ "$SECRETS_FILE" = "$(wizard_default_secrets_file)" ] || show+=(--secrets-file "$SECRETS_FILE")
-    else
-        args+=(--no-secrets)
-        [ -z "$secrets_candidate" ] || show+=(--no-secrets)
-    fi
-    if ! gh_broker_enabled; then
-        args+=(--no-gh-broker)
-        [ -z "$gh_env_candidate" ] || show+=(--no-gh-broker)
-    fi
-    local -a tail_args=()
-    [ -n "$REVIEWERS" ] && tail_args+=(--reviewers "$REVIEWERS")
-    [ -n "$TARGET_DIFF" ] && tail_args+=(--target-diff "$TARGET_DIFF")
-    [ -n "$TARGET_REPORT" ] && tail_args+=(--target-report "$TARGET_REPORT")
-    [ -n "$REQUESTED_AGENTS" ] && tail_args+=(--agents "$REQUESTED_AGENTS")
-    [ "$SUBMIT" -eq 1 ] && tail_args+=(--submit)
-    [ -n "$PROMPT" ] && tail_args+=("$PROMPT")
-    args+=("${tail_args[@]+"${tail_args[@]}"}")
-    show+=("${tail_args[@]+"${tail_args[@]}"}")
-
-    local command_line="agentrun $mode" a
-    for a in "${show[@]}"; do
-        command_line+=" $(wizard_shell_quote "$a")"
-    done
-
-    local launch_desc
-    if [ "$SUBMIT" -eq 1 ]; then
-        launch_desc="sbatch (batch submit)"
-    elif [ "$mode" = "assist" ]; then
-        launch_desc="srun --pty (interactive)"
-    else
-        launch_desc="prepare only (submit.sbatch written, not queued)"
-    fi
-    local summary=""
-    summary+="mode:          $mode"$'\n'
-    summary+="agent:         $AGENT"$'\n'
-    summary+="launch:        $launch_desc"$'\n'
-    summary+="repo:          $REPO"$'\n'
-    summary+="partition:     ${PARTITION:-<cluster default>}"$'\n'
-    summary+="gpus:          $GPUS"$'\n'
-    summary+="mem/cpus/time: $MEM / $CPUS / $TIME_LIMIT"$'\n'
-    [ "${#EXTRA_BINDS[@]}" -gt 0 ] && summary+="bind mounts:   ${EXTRA_BINDS[*]}"$'\n'
-    [ "$ALLOW_FUSE" -eq 1 ] && summary+="/dev/fuse:     bound (nested apptainer allowed)"$'\n'
-    secrets_enabled && [ -n "$(secret_keys "$SECRETS_FILE")" ] && summary+="secrets:       $(secret_keys_csv "$SECRETS_FILE") (from $SECRETS_FILE)"$'\n'
-    gh_broker_enabled && summary+="gh broker:     enabled"$'\n'
-    [ -n "$GOAL" ] && summary+="goal:          $GOAL"$'\n'
-    [ -n "$PROMPT" ] && summary+="prompt:        $PROMPT"$'\n'
-    [ -n "$REVIEWERS" ] && summary+="reviewers:     $REVIEWERS"$'\n'
-    [ -n "$TARGET_DIFF" ] && summary+="target-diff:   $TARGET_DIFF"$'\n'
-    [ -n "$TARGET_REPORT" ] && summary+="target-report: $TARGET_REPORT"$'\n'
-    [ -n "$REQUESTED_AGENTS" ] && summary+="agents:        $REQUESTED_AGENTS"$'\n'
-    summary+=$'\n'"command:       $command_line"$'\n'
-
-    if wizard_confirm "${summary}
-Launch this run?" 1; then
-        trap - INT
-        wizard_save_last "$mode"
-        printf '\nSame run without the wizard:\n  %s\n\n' "$command_line"
-        command_prepare "$mode" "${args[@]}"
-    else
-        trap - INT
-        printf 'aborted, nothing was launched\n'
-        printf 'Command for these settings:\n  %s\n' "$command_line"
-        return 0
     fi
 }
 
@@ -2711,7 +2163,72 @@ command_logs() {
 
 command_list_runs() {
     [ -d "$PWD/.agent-runs" ] || return 0
-    find "$PWD/.agent-runs" -mindepth 1 -maxdepth 1 ! -name latest -printf '%f\n' | sort
+    find "$PWD/.agent-runs" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' | sort
+}
+
+command_resume() {
+    local target="" list=0 preview=0 source fields run_dir mode
+    AGENT="" REPO="" MEM="" CPUS="" TIME_LIMIT="" GPUS=0 PARTITION="agent" EXTRA_BINDS=()
+    GH_BROKER_DISABLED=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -h|--help) usage; return 0 ;;
+            --list) list=1; shift ;;
+            --preview) preview=1; shift ;;
+            --no-gh-broker) GH_BROKER_DISABLED=1; shift ;;
+            --time|--mem|--cpus|--bind)
+                [ "$#" -ge 2 ] || { printf '%s requires a value\n' "$1" >&2; return 2; }
+                case "$1" in
+                    --time) TIME_LIMIT="$2" ;;
+                    --mem) MEM="$2" ;;
+                    --cpus) CPUS="$2" ;;
+                    --bind) EXTRA_BINDS+=("$2") ;;
+                esac
+                shift 2 ;;
+            --*) printf 'unknown resume option: %s\n' "$1" >&2; return 2 ;;
+            *) [ -z "$target" ] || { printf '指定できる run は1件です\n' >&2; return 2; }
+                target="$1"; shift ;;
+        esac
+    done
+    local resume_time="$TIME_LIMIT" resume_mem="$MEM" resume_cpus="$CPUS" resume_disabled="$GH_BROKER_DISABLED"
+    local -a resume_binds=("${EXTRA_BINDS[@]}")
+    parse_run_args --no-secrets
+    TIME_LIMIT="$resume_time" MEM="$resume_mem" CPUS="$resume_cpus" EXTRA_BINDS=("${resume_binds[@]}") GH_BROKER_DISABLED="$resume_disabled"
+    resolve_gh_broker || return $?
+    if [ "$list" -eq 1 ]; then
+        [ -z "$target" ] && [ "$preview" -eq 0 ] || { printf '--list は単独で指定してください\n' >&2; return 2; }
+        session_tool list "$PWD/.agent-runs"
+        return $?
+    fi
+    if [ -n "$target" ]; then
+        source="$(session_tool resolve "$PWD/.agent-runs" "$target")" || return $?
+    else
+        source="$(session_tool pick "$PWD/.agent-runs")" || return $?
+    fi
+    if [ "$preview" -eq 1 ]; then
+        session_tool preview "$source"
+        return $?
+    fi
+    fields="$(session_tool fields "$source")" || return $?
+    local -a values
+    mapfile -t values <<< "$fields"
+    AGENT="${values[0]}" REPO="${values[1]}" mode="${values[2]}"
+    is_profile "$mode" || { printf '保存された profile が不正です\n' >&2; return 2; }
+    [ -d "$REPO" ] || { printf '再開先の repo がありません: %s\n' "$REPO" >&2; return 2; }
+    [ -t 0 ] || { printf 'resume には端末が必要です。会話の確認は --preview を使ってください\n' >&2; return 2; }
+    local bind
+    for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
+        [ -e "${bind%%:*}" ] || { printf 'bind source does not exist: %s\n' "${bind%%:*}" >&2; return 2; }
+    done
+    [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
+    # 過去のログを上書きせず、新しい Slurm job 用の run を作る。
+    run_dir="$(mktemp -d "$(dirname "$source")/$(run_id "resume-$mode" "$AGENT")_XXXXXX")"
+    local RESUME_SOURCE="$source"
+    write_plan "$mode" "$AGENT" "$REPO" "" 0 "$TIME_LIMIT" "" "$run_dir" "$PARTITION" interactive
+    printf 'resume: %s → %s\n' "$(basename "$source")" "$(basename "$run_dir")"
+    local srun_args=("--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty" "--gres=gpu:0")
+    [ -z "$PARTITION" ] || srun_args+=("--partition=$PARTITION")
+    run_interactive_session "$run_dir" "$REPO" "${srun_args[@]}"
 }
 
 command_open_run() {
@@ -3017,6 +2534,7 @@ main() {
             command_dry_run "$mode" "$@"
             ;;
         assist|experiment|campaign|review|multi-review) command_prepare "$command" "$@" ;;
+        resume) command_resume "$@" ;;
         wizard) command_wizard "$@" ;;
         skill-install) command_skill_install "$@" ;;
         smoke-test) command_smoke_test "$@" ;;

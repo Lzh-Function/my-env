@@ -14,7 +14,7 @@ tests/slurm/submit_creator_tests.sh codex-assist-pty
 
 Expected flow:
 
-1. `build` submits `build-sif.sbatch` to `large-creator` and creates `runtime/apptainer/base-system.sif` and `runtime/apptainer/base-agent.sif`.
+1. `build` submits `build-sif.sbatch` to `large-creator` and creates `runtime/apptainer/base-system.sif`.
 2. `agents` submits `agent-cli-smoke.sbatch` to `small-creator` as a 3-task array for `antigravity`, `codex`, and `claude`. The smoke checks verify non-interactive CLI startup, not authenticated model responses.
 3. `codex-auth` stages `$HOME/.codex/auth.json` into the run home, submits `codex-auth-smoke.sbatch`, and verifies a minimal authenticated `codex exec` response.
 4. `codex-assist-pty` verifies that Codex assist runs are planned with the interactive top-level `codex` command, mode-specific config, hooks, AGENTS.md, rules, and common skill links.

@@ -14,7 +14,7 @@ set -euo pipefail
 ENV_ROOT="${AI_AGENT_ENV_DIR:?AI_AGENT_ENV_DIR must be exported by submit_creator_tests.sh}"
 cd "$ENV_ROOT"
 
-IMAGE="$ENV_ROOT/runtime/apptainer/base-agent.sif"
+IMAGE="$ENV_ROOT/runtime/apptainer/base-system.sif"
 SMOKE_DIR="$ENV_ROOT/.agent-runs/assist-pty-smoke"
 mkdir -p "$SMOKE_DIR"
 
@@ -82,6 +82,7 @@ set +e
 apptainer exec \
     --containall \
     --cleanenv \
+    --bind "$ENV_ROOT/runtime/agentrun/install-agent.sh:/opt/agentrun/install-agent.sh:ro" \
     --home "$RUN_DIR/home:/home/sandbox" \
     --bind "$RUN_DIR/workspace:/workspace:rw" \
     --bind "$RUN_DIR:/runs:rw" \
@@ -94,7 +95,7 @@ apptainer exec \
     --bind "$ENV_ROOT/common/hooks:/home/sandbox/.claude/hooks:ro" \
     --bind "$ENV_ROOT/agents/claude/skills:/home/sandbox/.claude/skills:ro" \
     "$IMAGE" \
-    bash -l -c "claude --version" \
+    bash -l -c 'agent_bin=$(bash /opt/agentrun/install-agent.sh claude) || exit $?; export PATH="$agent_bin:$PATH"; claude --version'  \
     > "$RUN_DIR/live/stdout.log" \
     2> "$RUN_DIR/live/stderr.log"
 RC=$?

@@ -19,6 +19,7 @@ link_file() {
 }
 
 link_file "$ROOT_DIR/runtime/agentrun/agentrun" "$HOME/.local/bin/agentrun"
+link_file "$ROOT_DIR/runtime/agentrun/agentrun.bash" "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/agentrun"
 
 # secrets/.env and secrets/gh.env are gitignored; seed them from their templates
 # so the entries are ready to fill in.
@@ -33,6 +34,7 @@ done
 
 if [ "$APPLY" -eq 1 ]; then
     printf 'install complete\n'
+    printf 'enable Bash completion in the current shell: source %q\n' "$ROOT_DIR/runtime/agentrun/agentrun.bash"
 else
     printf 'dry-run complete; rerun with --apply to create symlinks\n'
 fi

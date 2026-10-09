@@ -15,7 +15,7 @@ cd "$ENV_ROOT"
 AGENTS=(antigravity codex claude)
 AGENT="${AGENTS[$SLURM_ARRAY_TASK_ID]}"
 RUN_DIR="$ENV_ROOT/.agent-runs/creator-agent-smoke/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_${AGENT}"
-IMAGE="$ENV_ROOT/runtime/apptainer/base-agent.sif"
+IMAGE="$ENV_ROOT/runtime/apptainer/base-system.sif"
 
 mkdir -p \
     "$RUN_DIR/home/.claude" \
@@ -44,6 +44,8 @@ case "$AGENT" in
         ;;
 esac
 
+AGENT_COMMAND="agent_bin=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$AGENT")) || exit \$?; export PATH=\"\$agent_bin:\$PATH\"; $AGENT_COMMAND"
+
 {
     printf 'job_id=%s\n' "${SLURM_JOB_ID:-}"
     printf 'array_job_id=%s\n' "${SLURM_ARRAY_JOB_ID:-}"
@@ -57,6 +59,7 @@ set +e
 apptainer exec \
     --containall \
     --cleanenv \
+    --bind "$ENV_ROOT/runtime/agentrun/install-agent.sh:/opt/agentrun/install-agent.sh:ro" \
     --home "$RUN_DIR/home:/home/sandbox" \
     --bind "$RUN_DIR/workspace:/workspace:rw" \
     --bind "$RUN_DIR:/runs:rw" \

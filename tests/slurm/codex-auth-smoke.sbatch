@@ -11,7 +11,7 @@ set -euo pipefail
 
 ENV_ROOT="${AI_AGENT_ENV_DIR:?AI_AGENT_ENV_DIR must be exported by submit_creator_tests.sh}"
 RUN_DIR="${CODEX_AUTH_SMOKE_RUN_DIR:?CODEX_AUTH_SMOKE_RUN_DIR must be exported by submit_creator_tests.sh}"
-IMAGE="$ENV_ROOT/runtime/apptainer/base-agent.sif"
+IMAGE="$ENV_ROOT/runtime/apptainer/base-system.sif"
 EXPECTED="OK_CODEX_AUTH_SMOKE_DONE"
 
 cd "$ENV_ROOT"
@@ -53,6 +53,7 @@ set +e
 apptainer exec \
     --containall \
     --cleanenv \
+    --bind "$ENV_ROOT/runtime/agentrun/install-agent.sh:/opt/agentrun/install-agent.sh:ro" \
     --home "$RUN_DIR/home:/home/sandbox" \
     --bind "$RUN_DIR/workspace:/workspace:rw" \
     --bind "$RUN_DIR:/runs:rw" \
@@ -64,7 +65,7 @@ apptainer exec \
     --bind "$ENV_ROOT/agents/codex/AGENTS.md:/home/sandbox/.codex/AGENTS.md:ro" \
     --bind "$ENV_ROOT/agents/codex/rules:/home/sandbox/.codex/rules:ro" \
     "$IMAGE" \
-    bash -lc 'codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --cd /workspace "$(cat /runs/prompt.txt)"' \
+    bash -lc 'agent_bin=$(bash /opt/agentrun/install-agent.sh codex) || exit $?; export PATH="$agent_bin:$PATH"; codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --cd /workspace "$(cat /runs/prompt.txt)"' \
     > "$RUN_DIR/live/stdout.log" \
     2> "$RUN_DIR/live/stderr.log"
 RC=$?

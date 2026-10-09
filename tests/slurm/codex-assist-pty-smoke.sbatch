@@ -74,11 +74,12 @@ if [ ! -L "$RUN_DIR/home/.codex/skills/work-log" ]; then
     exit 1
 fi
 
-IMAGE="$ENV_ROOT/runtime/apptainer/base-agent.sif"
+IMAGE="$ENV_ROOT/runtime/apptainer/base-system.sif"
 set +e
 apptainer exec \
     --containall \
     --cleanenv \
+    --bind "$ENV_ROOT/runtime/agentrun/install-agent.sh:/opt/agentrun/install-agent.sh:ro" \
     --home "$RUN_DIR/home:/home/sandbox" \
     --bind "$ENV_ROOT:/workspace:rw" \
     --bind "$RUN_DIR:/runs:rw" \
@@ -90,7 +91,7 @@ apptainer exec \
     --bind "$ENV_ROOT/agents/codex/AGENTS.md:/home/sandbox/.codex/AGENTS.md:ro" \
     --bind "$ENV_ROOT/agents/codex/rules:/home/sandbox/.codex/rules:ro" \
     "$IMAGE" \
-    bash -lc '
+    bash -lc 'agent_bin=$(bash /opt/agentrun/install-agent.sh codex) || exit $?; export PATH="$agent_bin:$PATH";
         set -euo pipefail
         test -f /home/sandbox/.codex/config.toml
         test -w /home/sandbox/.codex/config.toml

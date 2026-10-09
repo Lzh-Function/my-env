@@ -26,15 +26,14 @@ tests/fixtures/           smoke-test goal ファイルおよびダミー reposit
 
 ### Image ビルド（初回必須）
 
-`.sif` は git 管理外のため、各ユーザーが compute node でビルドする必要があります。`runtime/apptainer/base-agent.sif` が存在しない場合、`doctor` は `[FAIL]` を出し、agent を起動できません。
+`.sif` は git 管理外のため、各ユーザーが compute node でビルドする必要があります。`runtime/apptainer/base-system.sif` が存在しない場合、`doctor` は `[FAIL]` を出し、agent を起動できません。
 
 ```bash
 runtime/apptainer/build-images.sh                                                   # dry-run（確認のみ）
-srun --partition <partition> runtime/apptainer/build-images.sh --run                # 両方ビルド（必要な層だけ）
-srun --partition <partition> runtime/apptainer/build-images.sh --run --force agent  # agent 層のみ強制再ビルド（agent CLI 更新時）
+srun --partition <partition> runtime/apptainer/build-images.sh --run                # system image をビルド
 ```
 
-`base-system.sif` → `base-agent.sif` の順にビルドされます。ダウンロードを含むため数十分かかります。agent CLI のバージョンアップ時は `agent` を指定することで `base-system.sif` の再ビルドをスキップできます。完了後は `agentrun doctor --agent <name>` の `image:base-agent.sif` が `[OK]` になります。
+`base-system.sif` のみをビルドします。agent CLI は各ジョブの起動時に公式 installer から最新版をインストールします。バージョン更新に image の再ビルドは不要です。
 
 ### 認証情報のセットアップ（初回必須）
 
@@ -93,13 +92,12 @@ Quick Start の「[Image ビルド（初回必須）](#image-ビルド初回必�
 `build-images.sh` は `SLURM_JOB_ID` が設定されていない環境（login node）での実行を拒否します。`srun` または `sbatch` で compute node に投入してください。
 
 ```bash
-runtime/apptainer/build-images.sh [--force] [system|agent]                                # dry-run
-srun --partition <partition> runtime/apptainer/build-images.sh --run                      # 両方ビルド（必要な層だけ）
-srun --partition <partition> runtime/apptainer/build-images.sh --run --force              # 両方を強制再ビルド
-srun --partition <partition> runtime/apptainer/build-images.sh --run --force agent        # agent 層のみ強制再ビルド
+runtime/apptainer/build-images.sh [--force]                                # dry-run
+srun --partition <partition> runtime/apptainer/build-images.sh --run                      # system image をビルド
+srun --partition <partition> runtime/apptainer/build-images.sh --run --force              # system image を強制再ビルド
 ```
 
-`--force` なしでは、`.def`（agent 層は `base-system.sif` も）より古い `.sif` だけが作り直されます。agent CLI の更新など `.def` を変えずに作り直したいときは `--force` を付けてください。
+`--force` なしでは、`base-system.def` より古い `.sif` だけを作り直します。
 
 ## ドキュメント
 
@@ -107,3 +105,18 @@ srun --partition <partition> runtime/apptainer/build-images.sh --run --force age
 | ---------------------------------------------- | ---------------------------------------------------------------------------- |
 | [docs/USER_MANUAL.md](docs/USER_MANUAL.md)     | コマンドリファレンス、run directory 構造、agent 差分、トラブルシューティング |
 | [docs/operations-ja.md](docs/operations-ja.md) | 検証済みステータス、mount レイアウト、認証バインディング詳細                 |
+
+### Wizard の戻る・パス補完・再開
+
+wizard の各ステップで「← 戻る」または `:back` を使うと前の入力へ戻れます。`:cancel`、Esc、Ctrl+C はキャンセルです。bind のホスト側パスは Tab で補完できます。
+CLI の Bash 補完は `install.sh --apply` で登録されます。現在のシェルでは `source runtime/agentrun/agentrun.bash` で有効にできます（`--bind` の source、`--repo`、`--goal`）。
+
+```bash
+agentrun resume --list
+agentrun resume RUN_ID --preview
+agentrun resume RUN_ID --time 02:00:00 --mem 16000M --cpus 4
+agentrun resume  # 対話的に選択
+```
+
+wizard の mode でも `resume` を選べます。会話データは `.agent-runs/.sessions` に保存し、元のログを残して新しい run で再開します。保存前の旧 run は再開対象になりません。
+起動時の installer ログは `live/agent_install.log`、インストールした CLI の情報は `artifacts/agent-cli.json` に保存します。compute node から公式 installer に接続できる必要があります。
