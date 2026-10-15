@@ -1,0 +1,16 @@
+{
+  "extends": "./settings.json",
+  "runtimeProfile": "assist",
+  "permissions": {
+    "deny": [
+      "Bash(git push *)",
+      "Bash(pip *)",
+      "Bash(sudo *)",
+      "Bash(apt *)",
+      "Read(~/.ssh/**)",
+      "Read(.env)",
+      "Read(.env.*)"
+    ]
+  }
+}
+

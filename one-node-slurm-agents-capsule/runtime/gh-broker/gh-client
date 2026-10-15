@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""`gh` inside the capsule: forwards the command to the GitHub CLI broker.
+
+Bound over /usr/local/bin/gh when the broker is enabled. No GitHub credentials
+exist in the capsule; the broker (outside this container) runs allowlisted
+commands with the token and returns their output.
+
+- --body-file PATH / -F PATH are read here and sent as stdin, so the broker
+  never opens a path chosen by the agent.
+- The repository is taken from --repo/-R, GH_REPO, or the `origin` remote of
+  the current git repository, and passed to the broker as OWNER/REPO.
+- `pr create` without --head/-H gets --head <current branch>, since the broker
+  runs gh outside any git checkout and cannot detect it.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+
+SOCKET_PATH = os.environ.get("AGENTRUN_GH_BROKER_SOCKET", "/opt/gh-broker/gh.sock")
+BODY_FILE_FLAGS = ("--body-file", "-F")
+REMOTE_RE = re.compile(r"github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(\.git)?/?$")
+
+
+def fail(message: str, code: int = 1) -> int:
+    print(f"gh (agentrun broker client): {message}", file=sys.stderr)
+    return code
+
+
+def inline_body_files(argv: list[str]) -> tuple[list[str], bytes]:
+    """Replace --body-file PATH with --body-file - and return the file contents."""
+    out: list[str] = []
+    stdin = b""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        name, eq, value = arg.partition("=")
+        if name in BODY_FILE_FLAGS and argv[:1] in (["issue"], ["pr"]):
+            if not eq:
+                value = argv[i + 1] if i + 1 < len(argv) else ""
+                i += 1
+            if value == "-":
+                stdin = sys.stdin.buffer.read()
+            else:
+                with open(value, "rb") as fh:
+                    stdin = fh.read()
+            out += ["--body-file", "-"]
+        else:
+            out.append(arg)
+        i += 1
+    return out, stdin
+
+
+def git_output(*args: str) -> str:
+    try:
+        return subprocess.run(
+            ["git", *args], capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def add_pr_head(argv: list[str]) -> list[str]:
+    if argv[:2] != ["pr", "create"]:
+        return argv
+    if any(a in ("--head", "-H") or a.startswith(("--head=", "-H")) for a in argv[2:]):
+        return argv
+    branch = git_output("symbolic-ref", "--quiet", "--short", "HEAD")
+    if not branch:
+        return argv
+    return [*argv, "--head", branch]
+
+
+def detect_repo(argv: list[str]) -> str | None:
+    for i, arg in enumerate(argv):
+        name, eq, value = arg.partition("=")
+        if name in ("--repo", "-R"):
+            return value if eq else (argv[i + 1] if i + 1 < len(argv) else None)
+    if os.environ.get("GH_REPO"):
+        return os.environ["GH_REPO"]
+    match = REMOTE_RE.search(git_output("remote", "get-url", "origin"))
+    return match.group(1) if match else None
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    argv = add_pr_head(argv)
+    try:
+        argv, stdin = inline_body_files(argv)
+    except OSError as exc:
+        return fail(f"cannot read body file: {exc}")
+    request = {
+        "argv": argv,
+        "stdin": base64.b64encode(stdin).decode(),
+        "repo": detect_repo(argv),
+    }
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.connect(SOCKET_PATH)
+            sock.sendall(json.dumps(request).encode())
+            sock.shutdown(socket.SHUT_WR)
+            chunks = []
+            while chunk := sock.recv(65536):
+                chunks.append(chunk)
+    except OSError as exc:
+        return fail(f"GitHub CLI broker is not available ({exc}). "
+                    "No GitHub credentials exist in this capsule.")
+    try:
+        response = json.loads(b"".join(chunks))
+        sys.stdout.buffer.write(base64.b64decode(response["stdout"]))
+        sys.stderr.buffer.write(base64.b64decode(response["stderr"]))
+        return int(response["code"])
+    except (ValueError, KeyError, TypeError) as exc:
+        return fail(f"bad response from broker: {exc}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

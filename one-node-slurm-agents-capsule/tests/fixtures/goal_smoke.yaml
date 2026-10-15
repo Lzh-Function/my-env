@@ -1,0 +1,19 @@
+project: agentrun-smoke
+mode: experiment
+goal:
+  objective: Run a minimal smoke experiment and write metrics.
+  success_criteria:
+    - metrics.json exists
+    - report.md exists
+budgets:
+  walltime: "00:15:00"
+  cpu_cores: 2
+  memory: 8G
+  max_trials: 1
+  max_disk_gb: 2
+outputs:
+  required:
+    - artifacts/report.md
+    - artifacts/metrics.json
+    - live/command_log.jsonl
+

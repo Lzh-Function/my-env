@@ -1,0 +1,19 @@
+project: agentrun-gpu-smoke
+mode: experiment
+goal:
+  objective: Check GPU visibility inside the capsule.
+  success_criteria:
+    - GPU visibility result is written to metrics.json
+budgets:
+  walltime: "00:30:00"
+  gpu_count: 1
+  cpu_cores: 4
+  memory: 16G
+  max_trials: 1
+  max_disk_gb: 2
+outputs:
+  required:
+    - artifacts/report.md
+    - artifacts/metrics.json
+    - live/command_log.jsonl
+

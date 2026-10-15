@@ -1,0 +1,166 @@
+{
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70"
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git branch *)",
+      "Bash(git worktree *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(echo *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(date *)",
+      "Bash(wc *)",
+      "Bash(which *)",
+      "Bash(type *)",
+      "Bash(sbatch *)",
+      "Bash(srun *)",
+      "Bash(squeue *)",
+      "Bash(scancel *)",
+      "Bash(sinfo *)",
+      "Bash(sacct *)",
+      "Bash(scontrol *)"
+    ],
+    "deny": [
+      "Read(.git/**)",
+      "Edit(.git/**)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Edit(.env)",
+      "Edit(.env.*)",
+      "Read(./secrets/**)",
+      "Edit(./secrets/**)",
+      "Read(~/.ssh/**)",
+      "Edit(~/.ssh/**)",
+      "Read(~/.bashrc)",
+      "Edit(~/.bashrc)",
+      "Read(.workspace_rc)",
+      "Edit(.workspace_rc)",
+      "Bash(ssh *)",
+      "Bash(sudo *)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/*)",
+      "Bash(rm -rf /*)",
+      "Bash(git config *)",
+      "Bash(git push *)",
+      "Bash(pip *)",
+      "Bash(conda *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/git_worktree_auto_create.py"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/update_run_status.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/post_edit_format.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/block_dangerous_command.py"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/check_login_node.py"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/check_pip_forbidden.py"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/check_sbatch_forbidden.py"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/git_branch_guard.py",
+            "if": "Bash(git *)"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/block_dangerous_command.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/block_dangerous_command.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/stop_notify.py"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/summarize_session.py"
+          }
+        ]
+      }
+    ]
+  },
+  "language": "japanese",
+  "spinnerTipsEnabled": false,
+  "effortLevel": "high",
+  "theme": "dark",
+  "showTurnDuration": true,
+  "skipDangerousModePermissionPrompt": true,
+  "remoteControlAtStartup": true,
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh",
+    "padding": 1
+  }
+}

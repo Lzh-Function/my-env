@@ -1,0 +1,86 @@
+Bootstrap: docker
+From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+
+%labels
+    Author mizuno-group
+    Version 0.1.0
+    Description CUDA system runtime; agent CLIs are installed at job startup
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    # libfuse3-3/liblzo2-2/squashfuse は、capsule の中でさらに apptainer exec を
+    # 実行するときに squashfuse_ll が必要とする。これが無いと、たとえ /dev/fuse を
+    # bind しても inner .sif の mount が共有ライブラリ解決で失敗する。
+    apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        fuse3 \
+        git \
+        jq \
+        less \
+        libfuse3-3 \
+        liblzo2-2 \
+        locales \
+        nodejs \
+        npm \
+        python3 \
+        python3-venv \
+        squashfuse \
+        tini \
+        wget
+
+    # GitHub CLI: 公式の apt repository から入れる（手順は
+    # https://github.com/cli/cli/blob/trunk/docs/install_linux.md の Debian 節）。
+    # keyring は公式ドキュメント記載の SHA256 と照合し、一致しなければ build を止める。
+    mkdir -p -m 755 /etc/apt/keyrings
+    gh_keyring=/etc/apt/keyrings/githubcli-archive-keyring.gpg
+    wget -nv -O "$gh_keyring" https://cli.github.com/packages/githubcli-archive-keyring.gpg
+    echo "6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b  $gh_keyring" | sha256sum -c -
+    chmod go+r "$gh_keyring"
+    mkdir -p -m 755 /etc/apt/sources.list.d
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=$gh_keyring] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list
+    apt-get update
+    apt-get install -y --no-install-recommends gh
+    gh --version
+    rm -rf /var/lib/apt/lists/*
+
+    useradd --create-home --shell /bin/bash sandbox
+    mkdir -p /workspace /runs /scratch /cache /output
+    chown -R sandbox:sandbox /workspace /runs /scratch /cache /output /home/sandbox || true
+
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    mv /root/.local/bin/uv /usr/local/bin/uv
+    chmod +x /usr/local/bin/uv
+    if [ -f /root/.local/bin/uvx ]; then
+        mv /root/.local/bin/uvx /usr/local/bin/uvx
+        chmod +x /usr/local/bin/uvx
+    fi
+
+    cat > /etc/profile.d/sandbox-env.sh << 'ENVEOF'
+#!/bin/bash
+export PYTHONUSERBASE=/output/.local
+export PATH=/output/.local/bin:/usr/local/bin:/usr/bin:/opt/conda/bin:$PATH
+export PYTHONUNBUFFERED=1
+
+if command -v python3 &>/dev/null; then
+    PYVER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    export PYTHONPATH=/output/.local/lib/python${PYVER}/site-packages:${PYTHONPATH:-}
+fi
+
+mkdir -p "$HOME/.local/bin"
+for cmd in uv uvx; do
+    if command -v "$cmd" &>/dev/null && [ ! -e "$HOME/.local/bin/$cmd" ]; then
+        ln -sf "$(command -v "$cmd")" "$HOME/.local/bin/$cmd"
+    fi
+done
+ENVEOF
+    chmod +x /etc/profile.d/sandbox-env.sh
+
+%environment
+    export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
+    export PYTHONUNBUFFERED=1
