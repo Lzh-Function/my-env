@@ -52,7 +52,8 @@ def init(run, agent, repo, mode, source=None):
     if agent not in MOUNTS:
         raise ValueError("Unsupported agent: " + str(agent))
     data = {"version": 1, "run_id": run.name, "session_key": run.name, "created_at": time.time(),
-            "agent": agent, "repo": str(Path(repo).resolve()), "mode": mode}
+            "agent": agent, "repo": str(Path(repo).resolve()), "mode": mode,
+            "launcher_cwd": str(Path.cwd().resolve())}
     if source:
         old = manifest(source)
         session = discover(source, old)

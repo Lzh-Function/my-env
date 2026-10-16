@@ -90,10 +90,15 @@ Batch HOME cleanup still runs on the compute node. Markdown includes public
 messages and expandable tool inputs/outputs. Native JSONL stays in `.agent-runs/.sessions/`.
 
 ```text
-.agent-runs/<run>/artifacts/conversation.md    per-run Markdown snapshot
-.agent-runs/.history/<run_id>/conversation.md stable copy, independent of run renaming
-.agent-runs/.history/index.sqlite3            searchable snapshots and metadata
+~/.agentrun/history/runs/<archive_id>/conversation.md  Markdown snapshot
+~/.agentrun/history/runs/<archive_id>/metadata.json    run and transcript metadata
+~/.agentrun/history/index.sqlite3                     shared index for all projects
 ```
+
+Set `AGENTRUN_HISTORY_DIR` to override this common directory. Each run's
+`live/history_export.json` records the archive paths. Metadata includes the host
+directory where `agentrun` was invoked (`launcher_cwd`) separately from the
+repository selected by `--repo` (`repo`).
 
 Use `agentrun history RUN_ID` to export again. If the submission host restarts,
 resume collection there with `agentrun history --watch RUN_ID`. See

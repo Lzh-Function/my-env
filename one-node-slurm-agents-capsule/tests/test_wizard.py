@@ -64,6 +64,7 @@ class WizardTests(unittest.TestCase):
         host_home = self.root / "host-home"
         host_home.mkdir()
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", HOME=str(host_home),
+                        AGENTRUN_HISTORY_DIR=str(self.root / "central-history"),
                         WIZARD_UI="plain", TEST_RESUME_STEP="resume", TERM="dumb", INPUTRC="/dev/null")
         self.args = ["wizard", "--agent", "claude", "--time", "02:00:00",
                      "--mem", "12000M", "--cpus", "2"]

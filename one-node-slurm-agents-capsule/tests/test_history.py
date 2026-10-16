@@ -6,6 +6,7 @@ import json
 import os
 import re
 import signal
+import shutil
 from pathlib import Path
 import socket
 import sqlite3
@@ -48,6 +49,10 @@ class HistoryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="conversation archive with spaces ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.history_root = self.root / "central history"
+        environment = patch.dict(os.environ, AGENTRUN_HISTORY_DIR=str(self.history_root))
+        environment.start()
+        self.addCleanup(environment.stop)
         self.parent = self.root / ".agent-runs"
         self.parent.mkdir()
         self.run = self.parent / "first-run"
@@ -68,10 +73,11 @@ class HistoryTests(unittest.TestCase):
         ])
 
     def markdown(self):
-        return (self.run / "artifacts/conversation.md").read_text()
+        status = json.loads((self.run / "live/history_export.json").read_text())
+        return Path(status["markdown"]).read_text()
 
     def database_rows(self):
-        with sqlite3.connect(self.parent / ".history/index.sqlite3") as db:
+        with sqlite3.connect(self.history_root / "index.sqlite3") as db:
             return db.execute("SELECT run_id, markdown_path, markdown, metadata_json FROM conversations").fetchall()
 
     def test_codex_full_transcript_commands_and_optional_fields(self):
@@ -108,7 +114,68 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(row[2], text)
         self.assertIsInstance(json.loads(row[3])["transcripts"][0]["source"], dict)
         self.assertEqual(Path(row[1]).stat().st_mode & 0o777, 0o600)
-        self.assertEqual((self.parent / ".history/index.sqlite3").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.history_root / "index.sqlite3").stat().st_mode & 0o777, 0o600)
+
+    def test_default_root_and_override(self):
+        with patch.dict(os.environ, HOME=str(self.root / "host-home")):
+            os.environ.pop("AGENTRUN_HISTORY_DIR")
+            self.assertEqual(history_export.history_root(), self.root / "host-home/.agentrun/history")
+            os.environ["AGENTRUN_HISTORY_DIR"] = "~/custom-history"
+            self.assertEqual(history_export.history_root(), self.root / "host-home/custom-history")
+
+    def test_projects_share_index_without_run_id_collisions_or_local_copies(self):
+        self.codex()
+        first = collector.archive(self.run)
+        other = self.root / "other project/.agent-runs" / self.run.name
+        other.mkdir(parents=True)
+        # Even the same --repo may be launched using distinct run parents.
+        sessions.init(other, "codex", str(self.root), "assist")
+        store = sessions.state_dir(other, sessions.manifest(other))
+        write_jsonl(store / ".codex/sessions/other.jsonl", [message("assistant", "other project answer")])
+        second = collector.archive(other)
+        self.assertEqual(first["database"], second["database"])
+        self.assertNotEqual(first["archive_id"], second["archive_id"])
+        self.assertNotEqual(first["markdown"], second["markdown"])
+        self.assertNotEqual(collector.control_path(self.run.parent, self.run.name),
+                            collector.control_path(other.parent, other.name))
+        self.assertEqual(len(self.database_rows()), 2)
+        self.assertIn("first answer", Path(first["markdown"]).read_text())
+        self.assertIn("other project answer", Path(second["markdown"]).read_text())
+        for run in (self.run, other):
+            self.assertFalse((run.parent / ".history").exists())
+            self.assertFalse((run / "artifacts/conversation.md").exists())
+        # The archive does not depend on the project surviving afterwards.
+        shutil.rmtree(self.parent)
+        self.assertIn("first answer", Path(first["markdown"]).read_text())
+        self.assertEqual(len(self.database_rows()), 2)
+
+    def test_launcher_cwd_is_independent_of_repo_and_export_location(self):
+        launcher_cwd = self.root / "launch directory"
+        launcher_cwd.mkdir()
+        repo = self.root / "target repository"
+        repo.mkdir()
+        result = subprocess.run([sys.executable, str(ROOT / "runtime/agentrun/sessions.py"),
+                                 "init", str(self.run), "codex", str(repo), "assist"],
+                                cwd=launcher_cwd, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sessions.manifest(self.run)["launcher_cwd"], str(launcher_cwd))
+        collector.archive(self.run)
+        metadata = json.loads(self.database_rows()[0][3])
+        self.assertEqual(metadata["launcher_cwd"], str(launcher_cwd))
+        self.assertEqual(metadata["repo"], str(repo))
+        self.assertIn(str(launcher_cwd), self.markdown())
+        with sqlite3.connect(self.history_root / "index.sqlite3") as db:
+            self.assertEqual(db.execute("SELECT launcher_cwd, repo FROM conversations").fetchone(),
+                             (str(launcher_cwd), str(repo)))
+
+    def test_old_manifest_has_unknown_launcher_cwd(self):
+        self.codex()
+        self.data.pop("launcher_cwd")
+        sessions.save(self.run, self.data)
+        collector.archive(self.run)
+        self.assertIsNone(json.loads(self.database_rows()[0][3])["launcher_cwd"])
+        with sqlite3.connect(self.history_root / "index.sqlite3") as db:
+            self.assertIsNone(db.execute("SELECT launcher_cwd FROM conversations").fetchone()[0])
 
     def test_function_output_string_and_event_only_legacy_messages(self):
         self.codex([
@@ -240,7 +307,7 @@ class HistoryTests(unittest.TestCase):
         with patch.object(collector, "query_active", side_effect=[RuntimeError("unavailable"), KeyboardInterrupt]), \
              patch.object(collector.time, "sleep"), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(KeyboardInterrupt):
             collector.watch(self.parent, self.data["run_id"])
-        self.assertFalse((self.run / "artifacts/conversation.md").exists())
+        self.assertFalse((self.run / "live/history_export.json").exists())
 
     def test_collector_rejects_another_host(self):
         self.codex()
@@ -369,17 +436,18 @@ print('123')
         while not (run / "live/history_export.json").exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertTrue((run / "live/history_export.json").exists(), result.stdout)
-        control = next((self.parent / ".history/jobs").glob("*.json"))
+        control = next((self.history_root / "jobs").glob("*.json"))
         while json.loads(control.read_text())["status"] != "archived" and time.monotonic() < deadline:
             time.sleep(0.01)
         self.assertEqual(json.loads(control.read_text())["status"], "archived")
         status = json.loads((run / "live/history_export.json").read_text())
         self.assertEqual(status["status"], "success", status)
         self.assertEqual(status["archive_host"], socket.gethostname())
-        self.assertIn("batch conversation persisted", (run / "artifacts/conversation.md").read_text())
+        self.assertIn("batch conversation persisted", Path(status["markdown"]).read_text())
+        self.assertEqual(sessions.manifest(run)["launcher_cwd"], str(self.root))
         self.assertEqual((run / "live/exit_code.txt").read_text().strip(), "17")
         self.assertEqual(json.loads((run / "live/status.json").read_text())["status"], "failed")
-        with sqlite3.connect(self.parent / ".history/index.sqlite3") as db:
+        with sqlite3.connect(self.history_root / "index.sqlite3") as db:
             self.assertEqual(db.execute("SELECT count(*) FROM conversations").fetchone()[0], 1)
 
 

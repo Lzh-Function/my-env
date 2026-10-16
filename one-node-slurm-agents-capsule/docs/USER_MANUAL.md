@@ -548,16 +548,32 @@ completion. The collector follows the original run ID if the wrapper appends a
 human-readable title to the directory. A per-run lock prevents duplicate collectors.
 
 ```text
-.agent-runs/<run>/artifacts/conversation.md       readable snapshot for this run
 .agent-runs/<run>/live/history_export.json        export status, host, paths, warnings
 .agent-runs/<run>/live/history_export.log         interactive export diagnostics
 .agent-runs/<run>/live/session_finished.txt       batch wrapper cleanup marker
-.agent-runs/.history/<run_id>/conversation.md     stable Markdown copy
-.agent-runs/.history/<run_id>/metadata.json       run and native transcript metadata
-.agent-runs/.history/index.sqlite3               conversations table
-.agent-runs/.history/jobs/<run_id>.json           batch job ID, origin host, collector status
-.agent-runs/.history/jobs/<run_id>.log            batch collector diagnostics
+~/.agentrun/history/runs/<archive_id>/conversation.md  readable snapshot
+~/.agentrun/history/runs/<archive_id>/metadata.json    run and native transcript metadata
+~/.agentrun/history/index.sqlite3                     conversations table for all projects
+~/.agentrun/history/jobs/<archive_id>.json             batch job ID, origin host, collector status
+~/.agentrun/history/jobs/<archive_id>.log              batch collector diagnostics
 ```
+
+All projects share the host user's `~/.agentrun/history/`. Override it with
+`export AGENTRUN_HISTORY_DIR=/absolute/path/to/history` before launching
+`agentrun`; use the same setting for manual exports and collector recovery.
+Detached collectors inherit the resolved directory. The archive ID combines the
+original run ID with a hash of the absolute `.agent-runs` parent path, so matching
+run IDs in different projects do not overwrite each other. Exported Markdown is
+stored only in the common directory; each run's status file provides its paths.
+Existing project-local archives are left in place. Re-export their runs to add
+them to the common index.
+
+The manifest and archive metadata record `launcher_cwd`, the absolute host
+directory where `agentrun` was invoked, separately from `repo`, the repository
+selected with `--repo` and mounted at `/workspace`. Exporting later from another
+directory does not change these values. Older manifests without `launcher_cwd`
+export it as `null`; their original invocation directory cannot be recovered
+reliably from the repository or the container's native transcript `cwd`.
 
 The Markdown contains user messages and public assistant messages in transcript
 order, with expandable tool inputs/results, command output, exit information
@@ -584,8 +600,10 @@ Native JSONL and persisted companion files remain in `.sessions/` and `scratch/`
 
 Each run creates one snapshot and one row in the SQLite `conversations` table.
 Re-export updates that row. A resumed run gets a new snapshot linked through its
-session key; earlier run snapshots remain unchanged. The stable copy and SQLite
-path survive the wrapper's run-directory rename. Archive directories are private
+session key; earlier run snapshots remain unchanged. The Markdown and SQLite
+paths survive the wrapper's run-directory rename and deletion of the project.
+Re-export still requires the project's manifest and persisted native history.
+Archive directories are private
 and archive files are created with mode `0600`.
 
 ```bash
@@ -606,15 +624,20 @@ An export failure is recorded in `live/history_export.json` and the diagnostic
 log. It does not change the agent's exit code or prevent the existing HOME cleanup.
 The original persisted history remains available for a retry.
 
-The SQLite index stores `run_id`, `agent`, `repo`, `session_key`, `markdown_path`,
-`metadata_json`, `markdown`, and `updated_at`. For example, search its text locally:
+The SQLite index stores `archive_id` (primary key), `run_id`, `run_parent`, `agent`,
+`repo`, `launcher_cwd`, `session_key`, `markdown_path`, `metadata_json`, `markdown`,
+and `updated_at`. For example, search its text locally:
 
 ```python
+import os
+from pathlib import Path
 import sqlite3
 
-with sqlite3.connect(".agent-runs/.history/index.sqlite3") as db:
+root = Path(os.environ.get("AGENTRUN_HISTORY_DIR", "~/.agentrun/history")).expanduser()
+with sqlite3.connect(root / "index.sqlite3") as db:
     rows = db.execute(
-        "SELECT run_id, agent, markdown_path FROM conversations WHERE markdown LIKE ?",
+        "SELECT archive_id, agent, repo, launcher_cwd, markdown_path "
+        "FROM conversations WHERE markdown LIKE ?",
         ("%experiment%",),
     ).fetchall()
 ```

@@ -270,7 +270,8 @@ class ResumeIntegrationTests(unittest.TestCase):
                     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
                 def execute(args, step):
-                    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", TEST_RESUME_STEP=step)
+                    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", TEST_RESUME_STEP=step,
+                               AGENTRUN_HISTORY_DIR=str(root / "central-history"))
                     proc = subprocess.Popen([str(LAUNCHER), *args], cwd=root, env=env,
                                             stdin=slave, stdout=slave, stderr=slave,
                                             preexec_fn=controlling_terminal)
@@ -292,7 +293,8 @@ class ResumeIntegrationTests(unittest.TestCase):
                 self.assertEqual(rc, 1, output)
                 original = (root / ".agent-runs/latest").resolve()
                 self.assertFalse((original / "home").exists())
-                archive = (original / "artifacts/conversation.md").read_text()
+                original_archive = Path(json.loads((original / "live/history_export.json").read_text())["markdown"])
+                archive = original_archive.read_text()
                 self.assertIn("saved before kill", archive)
                 self.assertEqual(json.loads((original / "live/history_export.json").read_text())["archive_host"], socket.gethostname())
                 preview = subprocess.run([str(LAUNCHER), "resume", original.name, "--preview"],
@@ -307,9 +309,10 @@ class ResumeIntegrationTests(unittest.TestCase):
                 self.assertEqual((original / "live/stdout.log").read_text(), "original logs")
                 self.assertFalse((resumed / "home").exists())
                 self.assertEqual(sessions.manifest(resumed)["native_id"], ID)
-                self.assertEqual((original / "artifacts/conversation.md").read_text(), archive)
-                self.assertIn("saved before kill", (resumed / "artifacts/conversation.md").read_text())
-                with sqlite3.connect(root / ".agent-runs/.history/index.sqlite3") as db:
+                self.assertEqual(original_archive.read_text(), archive)
+                resumed_archive = Path(json.loads((resumed / "live/history_export.json").read_text())["markdown"])
+                self.assertIn("saved before kill", resumed_archive.read_text())
+                with sqlite3.connect(root / "central-history/index.sqlite3") as db:
                     self.assertEqual(db.execute("SELECT count(*) FROM conversations").fetchone()[0], 2)
                 self.assertEqual(termios.tcgetattr(slave), before)
             finally:

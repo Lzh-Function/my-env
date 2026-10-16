@@ -83,6 +83,7 @@ class InteractiveTerminalTests(unittest.TestCase):
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
         env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
+                   AGENTRUN_HISTORY_DIR=str(self.root / "central-history"),
                    TEST_SRUN_MODE=mode, TEST_SRUN_PID=str(self.root / "srun.pid"),
                    TEST_EXPORT_FAILURE="1" if export_failure else "0")
         # Exercise real planning and launching, with credential staging stubbed.

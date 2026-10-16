@@ -15,7 +15,7 @@ import sys
 import time
 
 import sessions
-from history_export import atomic_text, export_run, json_text
+from history_export import archive_key, atomic_text, export_run, history_root, json_text
 
 
 def archive(run):
@@ -26,9 +26,9 @@ def archive(run):
 def control_path(parent, run_id):
     if not sessions.NATIVE_ID.fullmatch(run_id):
         raise ValueError("Invalid run ID for history collection")
-    directory = parent / ".history/jobs"
+    directory = history_root() / "jobs"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return directory / (run_id + ".json")
+    return directory / (archive_key(parent, run_id) + ".json")
 
 
 def find_run(parent, run_id):
@@ -123,10 +123,12 @@ def submit(run):
     atomic_text(control, json_text(info) + "\n")
     with control.with_suffix(".log").open("a") as log:
         try:
+            # Resolve relative configuration once, before detaching the collector.
+            child_env = dict(os.environ, AGENTRUN_HISTORY_DIR=str(history_root()))
             child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "watch",
                                       str(run.parent), data["run_id"]],
                                      stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                     start_new_session=True, close_fds=True)
+                                     start_new_session=True, close_fds=True, env=child_env)
         except OSError as error:
             info.update(status="collector_start_failed", error=str(error))
             atomic_text(control, json_text(info) + "\n")
