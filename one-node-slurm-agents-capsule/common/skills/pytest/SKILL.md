@@ -9,7 +9,7 @@ description:
 
 ## Running tests
 
-There is no system Python. Always run pytest through `uv`:
+System Python is reserved for capsule infrastructure. Run project tests through `uv`:
 
 ```bash
 # Run all tests

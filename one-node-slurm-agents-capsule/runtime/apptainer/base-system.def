@@ -4,7 +4,7 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 %labels
     Author mizuno-group
     Version 0.1.0
-    Description CUDA system runtime; agent CLIs are installed at job startup
+    Description CUDA system runtime with Rust and Japanese LuaLaTeX; agent CLIs are installed at job startup
 
 %post
     set -eux
@@ -14,8 +14,11 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
     # libfuse3-3/liblzo2-2/squashfuse は、capsule の中でさらに apptainer exec を
     # 実行するときに squashfuse_ll が必要とする。これが無いと、たとえ /dev/fuse を
     # bind しても inner .sif の mount が共有ライブラリ解決で失敗する。
+    # System Python supports capsule hooks, agent startup metadata, and the
+    # GitHub broker. Research utilities run through uv without extra packages.
     apt-get install -y --no-install-recommends \
         bash \
+        build-essential \
         ca-certificates \
         curl \
         fuse3 \
@@ -27,11 +30,36 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
         locales \
         nodejs \
         npm \
+        pkg-config \
         python3 \
         python3-venv \
         squashfuse \
         tini \
         wget
+
+    # --no-install-recommends のため、日本語フォントと biblatex も明示する。
+    # texlive-lang-japanese に LuaTeX-ja / ltjsarticle が含まれる。
+    apt-get install -y --no-install-recommends \
+        biber \
+        fontconfig \
+        fonts-ipaexfont \
+        latexmk \
+        poppler-utils \
+        texlive-bibtex-extra \
+        texlive-fonts-recommended \
+        texlive-lang-japanese \
+        texlive-latex-extra \
+        texlive-luatex \
+        texlive-science
+    fc-cache -f
+
+    # toolchain は image 内で共有し、cargo の cache / install 先は各 run の HOME を使う。
+    # stable は image の build 時点で解決する。更新時は image を再ビルドする。
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
+    RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo \
+        sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable --no-modify-path
+    chmod -R a+rX /opt/rustup /opt/cargo
+    rm -f /tmp/rustup-init.sh
 
     # GitHub CLI: 公式の apt repository から入れる（手順は
     # https://github.com/cli/cli/blob/trunk/docs/install_linux.md の Debian 節）。
@@ -64,7 +92,8 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
     cat > /etc/profile.d/sandbox-env.sh << 'ENVEOF'
 #!/bin/bash
 export PYTHONUSERBASE=/output/.local
-export PATH=/output/.local/bin:/usr/local/bin:/usr/bin:/opt/conda/bin:$PATH
+export RUSTUP_HOME=/opt/rustup
+export PATH="$HOME/.cargo/bin:/opt/cargo/bin:/output/.local/bin:/usr/local/bin:/usr/bin:/opt/conda/bin:$PATH"
 export PYTHONUNBUFFERED=1
 
 if command -v python3 &>/dev/null; then
@@ -82,5 +111,66 @@ ENVEOF
     chmod +x /etc/profile.d/sandbox-env.sh
 
 %environment
-    export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
+    export RUSTUP_HOME=/opt/rustup
+    export PATH="$HOME/.cargo/bin:/opt/cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
     export PYTHONUNBUFFERED=1
+
+%test
+    set -eu
+    smoke_dir=$(mktemp -d)
+    trap 'rm -rf "$smoke_dir"' EXIT
+    cd "$smoke_dir"
+    # run ごとに空の writable home を bind する運用でも動くことを確認する。
+    export HOME="$smoke_dir/home"
+    mkdir -p "$HOME" rust-smoke/src
+
+    rustc --version
+    cargo --version
+    cat > rust-smoke/Cargo.toml << 'TOMLEOF'
+[package]
+name = "capsule-rust-smoke"
+version = "0.1.0"
+edition = "2024"
+TOMLEOF
+    cat > rust-smoke/src/main.rs << 'RUSTEOF'
+fn main() { println!("capsule Rust OK"); }
+RUSTEOF
+    test "$(cargo run --offline --quiet --manifest-path rust-smoke/Cargo.toml)" = 'capsule Rust OK'
+    cargo install --offline --quiet --path rust-smoke
+    test "$("$HOME/.cargo/bin/capsule-rust-smoke")" = 'capsule Rust OK'
+
+    cat > references.bib << 'BIBEOF'
+@book{smoke,
+  author = {{Capsule Team}},
+  title = {Capsule Bibliography Check},
+  year = {2026}
+}
+BIBEOF
+    cat > document.tex << 'TEXEOF'
+\documentclass{ltjsarticle}
+\usepackage[ipaex]{luatexja-preset}
+\usepackage{siunitx}
+\usepackage[backend=biber]{biblatex}
+\addbibresource{references.bib}
+\begin{document}
+日本語組版の動作確認。
+\textsf{日本語ゴシックの確認。}
+\qty{1.0}{\second}
+\cite{smoke}
+\printbibliography
+\end{document}
+TEXEOF
+    latexmk -lualatex -interaction=nonstopmode -halt-on-error document.tex
+    test -s document.bbl
+    pdfinfo document.pdf
+    pdffonts document.pdf > document.fonts
+    cat document.fonts
+    grep -F 'IPAexMincho' document.fonts
+    grep -F 'IPAexGothic' document.fonts
+    awk 'NR > 2 { count++; if ($(NF-4) != "yes") exit 1 } END { if (!count) exit 1 }' document.fonts
+    pdftotext document.pdf document.txt
+    grep -F '日本語組版の動作確認' document.txt
+    grep -F '日本語ゴシックの確認' document.txt
+    grep -F 'Capsule Bibliography Check' document.txt
+    pdftoppm -f 1 -singlefile -scale-to 800 -png document.pdf document
+    test -s document.png

@@ -1,0 +1,78 @@
+\documentclass[11pt,a4paper]{ltjsarticle}
+\input{preamble.tex}
+\geometry{top=24mm,bottom=25mm,left=26mm,right=26mm}
+\hypersetup{pdftitle={Technical Research Report (synthetic data)},pdfauthor={Research Team}}
+\title{\sffamily\bfseries\color{researchnavy}研究実験レポート\\[4pt]
+\large Technical Research Report}
+\author{Research Team \quad Laboratory / Project}
+\date{2026年10月15日 \quad [サンプル・架空データ]}
+\begin{document}
+\maketitle
+\begin{abstract}
+この文書は実験報告書のレイアウト確認用サンプルである。\textbf{数値は全て架空データ}であり、実際に実施された研究を報告するものではない。
+入力データ、実験条件、評価指標、結果、考察、制約を分けて記録する構造を提供する。
+\end{abstract}
+\tableofcontents
+\vspace{4mm}
+\section{研究目的と背景}
+目的は「結果を後から検証可能な形式で保存する」ことである。
+化学構造表記法の歴史的な例としてSMILESの原著を引用する\cite{weininger1988smiles}。
+既存報告との比較では、データセットの版、分割、乱数シードを必ず明記する。
+\begin{researchnote}
+\textbf{このサンプルに関する注意：} 学習曲線、指標表、記載日付は全て表示確認のためのダミー情報である。科学的な主張・実測結果として使用しないこと。
+\end{researchnote}
+\section{実験条件}
+\begin{table}[H]
+\centering
+\caption{再現性情報の記録例}\label{tab:setup}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+項目 & 内容（全て記述例）\\
+\midrule
+データ & Synthetic demonstration metrics\\
+モデル & Example encoder--decoder (not trained)\\
+評価指標 & Illustrative loss\\
+乱数シード & 42 (placeholder)\\
+実行環境 & Not executed; template only\\
+\bottomrule
+\end{tabularx}
+\end{table}
+\section{結果}
+\subsection{時系列の可視化}
+\cref{fig:curve}はPDF形式のベクター図である。軸・凡例・キャプションに指標の定義を明記する。
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.88\linewidth]{figures/example-curve.pdf}
+\caption{合成データによる学習曲線の例。\textbf{非実測値。}}\label{fig:curve}
+\end{figure}
+\subsection{指標の比較}
+\begin{table}[htbp]
+\centering
+\caption{架空の条件別指標（小さいほどよいと仮定）}\label{tab:metrics}
+\begin{tabular}{lSS}
+\toprule
+{条件} & {初期 Loss} & {最終 Loss}\\
+\midrule
+Baseline & 1.75 & 0.73\\
+Variant A & 1.68 & 0.49\\
+Variant B & 1.60 & 0.35\\
+\bottomrule
+\end{tabular}
+\end{table}
+\section{考察と限界}
+観測事実と仮説を分けて書く。効果量、推定不確実性、代替説明、交絡、失敗例を列挙する。
+実験が未実施の場合は、未実施と明示する。本サンプルに実験結果は含まれない。
+\section{次のアクション}
+\begin{enumerate}
+\item 実データへの差し替えと、図の再生成。
+\item 実験構成・コミットID・シード・評価手順の追加。
+\item 引用情報を実際に参照した文献に合わせて修正。
+\end{enumerate}
+\printbibliography[title={参考文献}]
+\appendix
+\section{補足：損失関数の数式例}
+\begin{equation}\label{eq:loss}
+\mathcal{L}(\theta)=-\frac{1}{T}\sum_{t=1}^{T}\log p_\theta(x_t\mid x_{<t}).
+\end{equation}
+\cref{eq:loss}は組版検証用の数式である。
+\end{document}

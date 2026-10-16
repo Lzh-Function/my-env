@@ -18,13 +18,18 @@ is 0.
 ```text
 /workspace          the target repository (read/write)
 /runs               run ledger (read/write) — write all outputs here
-/scratch            ephemeral scratch space (read/write)
-/cache              persistent cache (read/write across runs on the same node)
+/scratch            per-run scratch space (read/write)
+/cache              per-run cache (read/write; not shared across runs)
 /home/sandbox/ai-agent-config/common/hooks    shared hooks (read-only)
 /home/sandbox/ai-agent-config/common/skills   shared skills (read-only)
 ```
 
 All output paths below are relative to `/runs`.
+
+The host mounts `.agent-runs/<run_id>/scratch` and
+`.agent-runs/<run_id>/cache` at `/scratch` and `/cache`. Their contents belong to
+that run and remain in its directory until removed; later runs get separate
+directories, even on the same node.
 
 ## Files required by every run
 
@@ -42,6 +47,7 @@ These must exist when the job exits regardless of mode.
 | `artifacts/report.md` | markdown | **must be non-empty** |
 | `artifacts/git_diff.patch` | patch | `git diff` output; empty if no changes |
 | `artifacts/metrics.json` | JSON | summary metrics; `{}` is acceptable |
+| `artifacts/run_title.txt` | plain text | **must be non-empty**; one lowercase line, about five words |
 
 ## Additional files per mode
 
@@ -51,6 +57,11 @@ These must exist when the job exits regardless of mode.
 | `campaign` | `artifacts/proposed_next.yaml`, `artifacts/proposed_train.sbatch` |
 | `review` | `reviews/review_findings.json` |
 | `multi-review` | `reviews/claude.md`, `reviews/codex.md`, `reviews/antigravity.md`, `reviews/summary.md`, `reviews/disagreements.json`, `reviews/final_recommendation.md` |
+
+The launcher also creates `capsule.yaml`, `prompt.txt`, and `goal.yaml`, and the
+job runner writes `live/exit_code.txt` and `live/slurm_job_id.txt`.
+`verify-run` checks these runtime records as well as the agent outputs above.
+Prepare-only or unfinished runs may not pass verification yet.
 
 ## `live/status.json` format
 
@@ -121,9 +132,16 @@ If no changes were made, write an empty file:
 : > /runs/artifacts/git_diff.patch
 ```
 
+## `artifacts/run_title.txt`
+
+At completion, write a short summary of the work: one lowercase line, about five
+words, for example `trained cifar baseline model`. The runner uses it when naming
+the finished run directory. `verify-run` rejects a missing or empty title.
+
 ## Common mistakes
 
 - Writing outputs to `/workspace` instead of `/runs` — verify-run only checks `/runs`
 - Leaving `live/status.json` as `{}` — must have a `status` field
 - Leaving `artifacts/report.md` empty — verify-run explicitly checks non-empty
+- Leaving `artifacts/run_title.txt` empty — verify-run explicitly checks non-empty
 - Writing invalid JSON/JSONL — verify-run runs `jq` on status.json, metrics.json, and command_log.jsonl

@@ -1,0 +1,61 @@
+% Shared scientific report preamble (LuaLaTeX only).
+% Encoding: UTF-8. No shell-escape is required.
+\usepackage{fontspec}
+\usepackage{luatexja-fontspec}
+\defaultfontfeatures{Ligatures=TeX}
+% Standard TeX Live OpenType fonts; keep the Skill independent of system fontconfig.
+\setmainfont{lmroman10-regular.otf}[
+  BoldFont=lmroman10-bold.otf,
+  ItalicFont=lmroman10-italic.otf,
+  BoldItalicFont=lmroman10-bolditalic.otf]
+\setsansfont{lmsans10-regular.otf}[BoldFont=lmsans10-bold.otf]
+\setmonofont{lmmono10-regular.otf}[Scale=0.88]
+\setmainjfont{HaranoAjiMincho-Regular.otf}[BoldFont=HaranoAjiMincho-Bold.otf]
+\setsansjfont{HaranoAjiGothic-Medium.otf}[BoldFont=HaranoAjiGothic-Bold.otf]
+
+\usepackage[a4paper,margin=25mm,headheight=16pt]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{graphicx}
+\usepackage{booktabs,tabularx,array,multirow}
+\usepackage{siunitx}
+\sisetup{detect-all=true,group-separator={,},group-minimum-digits=4}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{fancyhdr}
+\usepackage{listings}
+\usepackage[most]{tcolorbox}
+\usepackage{csquotes}
+\usepackage[backend=biber,style=numeric,sorting=none,giveninits=true,maxbibnames=10]{biblatex}
+\addbibresource{references.bib}
+\usepackage[unicode=true,pdfencoding=auto,colorlinks=true,linkcolor=blue!40!black,citecolor=blue!40!black,urlcolor=blue!45!black]{hyperref}
+\usepackage[nameinlink,noabbrev]{cleveref}
+
+\definecolor{researchnavy}{HTML}{183153}
+\definecolor{researchteal}{HTML}{117E83}
+\definecolor{researchgray}{HTML}{596579}
+\definecolor{researchpale}{HTML}{F2F7F9}
+\definecolor{researchline}{HTML}{CAD5DE}
+\captionsetup{font=small,labelfont={bf,color=researchnavy},skip=6pt}
+\setlength{\parindent}{1em}
+\setlength{\parskip}{0.18em}
+\setlist[itemize]{topsep=4pt,itemsep=2pt}
+\setlist[enumerate]{topsep=4pt,itemsep=2pt}
+\renewcommand{\arraystretch}{1.17}
+\setlength{\emergencystretch}{1.5em}
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,frame=single,rulecolor=\color{researchline},backgroundcolor=\color{researchpale},numbers=left,numberstyle=\tiny\color{researchgray},xleftmargin=2em,framexleftmargin=1.8em}
+\newtcolorbox{researchnote}[1][]{enhanced,breakable,colback=researchpale,colframe=researchteal!60!white,boxrule=0.45pt,arc=1.5mm,left=3mm,right=3mm,top=2mm,bottom=2mm,#1}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\footnotesize\sffamily\color{researchgray}\nouppercase{\leftmark}}
+\fancyhead[R]{\footnotesize\sffamily\color{researchgray}Research Report}
+\fancyfoot[C]{\footnotesize\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\setlength{\headheight}{16pt}

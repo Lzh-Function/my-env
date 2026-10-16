@@ -1,0 +1,76 @@
+\documentclass[11pt,a4paper,oneside,openany]{ltjsbook}
+\input{preamble.tex}
+\geometry{top=25mm,bottom=26mm,inner=30mm,outer=25mm}
+\hypersetup{pdftitle={Scientific Monograph (demonstration)},pdfauthor={Research Team}}
+\fancyhead[L]{\footnotesize\sffamily\color{researchgray}\nouppercase{\leftmark}}
+\begin{document}
+\begin{titlepage}
+\centering
+\vspace*{42mm}
+{\sffamily\large\color{researchteal} RESEARCH MONOGRAPH \par}
+\vspace{12mm}
+{\sffamily\bfseries\fontsize{25}{33}\selectfont\color{researchnavy}表現学習の基礎と\\[4mm]実験的評価\par}
+\vspace{12mm}
+{\Large Foundations and Evaluation\par}
+\vfill
+{\large Research Team \quad Laboratory / Project\par}
+\vspace{8mm}
+{\large 2026年10月15日\par}
+\vspace{5mm}
+{\color{researchgray}\small 本文と数値は組版確認のための例示であり、研究成果ではありません。\par}
+\end{titlepage}
+\frontmatter
+\chapter*{はじめに}
+本書は技術要覧や研究チュートリアルのためのテンプレートである。
+表示例に含まれる学習曲線と数値は全て\textbf{架空データ}である。
+\tableofcontents
+\mainmatter
+\chapter{背景と定義}
+\section{表現学習の目的}
+データ $x$ を特徴表現 $z=f_\theta(x)$ に写像することを考える。
+記号の意味、仮定、対象データの適用範囲を冒頭で明記する。
+化学表記法の参考文献としてSMILESの原著\cite{weininger1988smiles}を示す。
+\begin{definition}[表現写像]
+入力空間 $\mathcal{X}$ から潜在空間 $\mathcal{Z}$ への写像 $f_\theta:\mathcal{X}\to\mathcal{Z}$ を表現写像という。
+\end{definition}
+\begin{researchnote}[title={読み進める際の注意}]
+本書に示すグラフは、学術的な事実の主張ではなく組版機能のデモンストレーションである。
+\end{researchnote}
+\section{損失関数}
+系列 $x_{1:T}$ の平均的な負の対数尤度を次のように定義する。
+\begin{equation}\label{eq:loss}
+\mathcal{L}(\theta)=-\frac{1}{T}\sum_{t=1}^T\log p_\theta(x_t\mid x_{<t}).
+\end{equation}
+\chapter{実験的評価の設計}
+\section{比較条件とグラフ}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.84\linewidth]{figures/example-curve.pdf}
+\caption{表示例として作成した合成データの損失曲線。}\label{fig:curve}
+\end{figure}
+\cref{fig:curve}でベクター図の品質を確認する。実運用では、評価データと作図スクリプトを両方保存する。
+\section{仮説と検証の分離}
+観測結果は数値と一緒に記し、解釈・仮説・今後の検証は別の段落に記す。
+\begin{table}[htbp]
+\centering
+\caption{条件別の架空損失値（検証対象ではない）}\label{tab:results}
+\begin{tabular}{lSS}
+\toprule
+{条件} & {初期値} & {最終値}\\
+\midrule
+Baseline & 1.75 & 0.73\\
+Variant A & 1.68 & 0.49\\
+Variant B & 1.60 & 0.35\\
+\bottomrule
+\end{tabular}
+\end{table}
+\chapter{再現性と記録}
+\section{必須記録}
+\begin{enumerate}
+\item データセット識別子と版、学習・評価分割。
+\item コードのコミットID、環境、ハイパーパラメータ。
+\item 評価指標の定義、シード、統計の扱い。
+\end{enumerate}
+\backmatter
+\printbibliography[title={参考文献},heading=bibintoc]
+\end{document}

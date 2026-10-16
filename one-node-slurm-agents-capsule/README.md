@@ -99,6 +99,8 @@ srun --partition <partition> runtime/apptainer/build-images.sh --run --force    
 
 `--force` なしでは、`base-system.def` より古い `.sif` だけを作り直します。
 
+image には rustup のビルド時点の stable Rust（`rustc` / `cargo`）と、日本語 LuaLaTeX 環境（LuaTeX-ja、latexmk、Biber、Poppler、IPAex 明朝・ゴシック）を含みます。追加前の image は再ビルドしてください。使い方とビルド時の動作確認は [USER_MANUAL](docs/USER_MANUAL.md#rust--日本語-lualatex) を参照してください。
+
 ## ドキュメント
 
 | ドキュメント                                   | 内容                                                                         |

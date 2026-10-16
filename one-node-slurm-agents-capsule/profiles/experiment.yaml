@@ -12,10 +12,12 @@ outputs:
     - live/stdout.log
     - live/stderr.log
     - live/command_log.jsonl
+    - live/events.jsonl
     - live/current_task.md
     - artifacts/report.md
     - artifacts/git_diff.patch
     - artifacts/metrics.json
+    - artifacts/run_title.txt
     - artifacts/proposed_next.yaml
 policy:
   forbid:

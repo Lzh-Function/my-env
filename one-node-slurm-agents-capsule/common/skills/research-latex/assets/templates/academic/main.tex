@@ -1,0 +1,53 @@
+\documentclass[10pt,a4paper,twocolumn]{ltjsarticle}
+\input{preamble.tex}
+\geometry{top=22mm,bottom=23mm,left=19mm,right=19mm,columnsep=8mm}
+\fancyhead[L]{\footnotesize\sffamily\color{researchgray}RESEARCH NOTE}
+\hypersetup{pdftitle={Example Academic Paper (synthetic data)},pdfauthor={Research Team}}
+\title{\sffamily\bfseries\color{researchnavy}表現学習モデルにおける実験評価の例\\[4pt]
+\large Example Evaluation of Representation Learning Models}
+\author{Research Team\\\small Laboratory / Affiliation}
+\date{2026年10月15日 \quad [サンプル・架空データ]}
+\begin{document}
+\twocolumn[{\maketitle
+\begin{center}\begin{minipage}{0.91\textwidth}
+\small\noindent\textbf{Abstract.}\quad
+本稿はLaTeX組版テンプレートの検証を目的とした例示文書である。
+図表に示す数値は全て\textbf{人工的に作成した架空データ}であり、実際の研究成果ではない。
+\end{minipage}\end{center}\vspace{6mm}}]
+\section{Introduction}
+研究レポートでは、再現性を確保するため、手法・データ・指標・図表を明確に区別する。
+化学構造の表記法としてSMILESが広く利用される\cite{weininger1988smiles}。
+本テンプレートは学術論文に近い二段組で、引用と相互参照を確認できるようにした。
+\section{Methods}
+架空の系列 $x_1,\ldots,x_T$ に対して、平均損失を
+\begin{equation}\label{eq:loss}
+\mathcal{L}(\theta)=-\frac{1}{T}\sum_{t=1}^{T}\log p_\theta(x_t\mid x_{<t})
+\end{equation}
+と定義する。\cref{eq:loss}は例示であり、以下の数値と対応する実験を実施したものではない。
+\section{Illustrative Results}
+\cref{tab:demo}に合成データの概要を示す。
+\begin{table}[t]
+\centering\small
+\caption{架空データを使った表の表示例（数値は非実測）}\label{tab:demo}
+\begin{tabular}{lSS}
+\toprule
+{条件} & {初期値} & {最終値}\\
+\midrule
+Baseline & 1.75 & 0.73\\
+Variant A & 1.68 & 0.49\\
+Variant B & 1.60 & 0.35\\
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/example-curve.pdf}
+\caption{架空の損失曲線（データ生成スクリプト付き）。}\label{fig:curve}
+\end{figure}
+\cref{fig:curve}は配置検証用のベクター図である。
+\section{Discussion}
+例示図表から科学的結論を導かないこと。実レポートでは、比較条件、信頼区間、統計的検定、実験環境、限界を記述する。
+\section{Conclusion}
+LaTeXの組版、引用、数式、表、図の出力を確認した。
+\printbibliography[title={References}]
+\end{document}

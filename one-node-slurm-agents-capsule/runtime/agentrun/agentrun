@@ -176,67 +176,36 @@ profile_time() {
 
 profile_required_outputs() {
     case "$1" in
-        assist)
-            printf '%s\n' \
-                live/status.json \
-                live/heartbeat.txt \
-                live/stdout.log \
-                live/stderr.log \
-                live/command_log.jsonl \
-                artifacts/report.md \
-                artifacts/git_diff.patch \
-                artifacts/metrics.json
-            ;;
+        assist|experiment|campaign|review|multi-review|smoke-test) ;;
+        *) return 1 ;;
+    esac
+    printf '%s\n' \
+        live/status.json \
+        live/heartbeat.txt \
+        live/stdout.log \
+        live/stderr.log \
+        live/command_log.jsonl \
+        live/events.jsonl \
+        live/current_task.md \
+        artifacts/report.md \
+        artifacts/git_diff.patch \
+        artifacts/metrics.json \
+        artifacts/run_title.txt
+    case "$1" in
         experiment)
-            printf '%s\n' \
-                live/status.json \
-                live/heartbeat.txt \
-                live/stdout.log \
-                live/stderr.log \
-                live/command_log.jsonl \
-                live/current_task.md \
-                artifacts/report.md \
-                artifacts/git_diff.patch \
-                artifacts/metrics.json \
-                artifacts/proposed_next.yaml
-            ;;
+            printf '%s\n' artifacts/proposed_next.yaml ;;
         campaign)
-            printf '%s\n' \
-                live/status.json \
-                live/heartbeat.txt \
-                artifacts/report.md \
-                artifacts/metrics.json \
-                artifacts/proposed_next.yaml \
-                artifacts/proposed_train.sbatch
-            ;;
+            printf '%s\n' artifacts/proposed_next.yaml artifacts/proposed_train.sbatch ;;
         review)
-            printf '%s\n' \
-                live/status.json \
-                live/stdout.log \
-                reviews/review_findings.json
-            ;;
+            printf '%s\n' reviews/review_findings.json ;;
         multi-review)
             printf '%s\n' \
-                live/status.json \
                 reviews/antigravity.md \
                 reviews/claude.md \
                 reviews/codex.md \
                 reviews/summary.md \
                 reviews/disagreements.json \
-                reviews/final_recommendation.md
-            ;;
-        smoke-test)
-            printf '%s\n' \
-                live/status.json \
-                live/heartbeat.txt \
-                live/stdout.log \
-                live/stderr.log \
-                live/command_log.jsonl \
-                artifacts/report.md \
-                artifacts/git_diff.patch \
-                artifacts/metrics.json
-            ;;
-        *) return 1 ;;
+                reviews/final_recommendation.md ;;
     esac
 }
 
@@ -502,17 +471,8 @@ Resources: $resources
 User goal:
 $prompt
 
-Required live outputs:
-- /runs/live/status.json
-- /runs/live/heartbeat.txt
-- /runs/live/command_log.jsonl
-- /runs/live/current_task.md
-
-Required final outputs:
-- /runs/artifacts/report.md
-- /runs/artifacts/git_diff.patch
-- /runs/artifacts/metrics.json
-- /runs/artifacts/run_title.txt
+Required outputs (paths are inside the capsule):
+$(profile_required_outputs "$mode" | sed 's|^|- /runs/|')
 
 Run title: At the very end, write a ~5-word summary of what you accomplished (single line, lowercase, e.g. "trained cifar baseline model") to /runs/artifacts/run_title.txt.
 
@@ -1953,22 +1913,7 @@ command_dry_run() {
     cat "$_ptmp"
     rm -f "$_ptmp"
     printf '\n--- expected artifacts ---\n'
-    for path in \
-        live/status.json \
-        live/heartbeat.txt \
-        live/stdout.log \
-        live/stderr.log \
-        live/command_log.jsonl \
-        live/events.jsonl \
-        live/current_task.md \
-        artifacts/report.md \
-        artifacts/git_diff.patch \
-        artifacts/metrics.json \
-        artifacts/proposed_next.yaml \
-        reviews/summary.md
-    do
-        printf '%s\n' "$path"
-    done
+    profile_required_outputs "$mode"
 }
 
 run_interactive_session() {
@@ -2127,6 +2072,7 @@ printf '{"event":"slurm-job","status":"running"}\n' > "$run_dir/live/events.json
 printf 'Smoke test completed on compute node.\n' > "$run_dir/live/current_task.md"
 : > "$run_dir/artifacts/git_diff.patch"
 printf '# Smoke Test Report\n\nPassed on Slurm job %s.\n' "\${SLURM_JOB_ID:-}" > "$run_dir/artifacts/report.md"
+printf 'verified capsule smoke test execution\n' > "$run_dir/artifacts/run_title.txt"
 printf '{"smoke_test":true,"status":"passed","agent":"%s","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/artifacts/metrics.json"
 printf '{"status":"success","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/status.json"
 printf '0\n' > "$run_dir/live/exit_code.txt"
@@ -2254,7 +2200,7 @@ command_verify_run() {
         return 1
     fi
     printf '[OK] run directory: %s\n' "$run_dir"
-    for path in capsule.yaml prompt.txt goal.yaml live/status.json live/heartbeat.txt live/stdout.log live/stderr.log live/command_log.jsonl live/events.jsonl live/current_task.md artifacts/report.md artifacts/git_diff.patch artifacts/metrics.json; do
+    for path in capsule.yaml prompt.txt goal.yaml; do
         if [ -e "$run_dir/$path" ]; then
             printf '[OK] %s\n' "$path"
         else
@@ -2262,12 +2208,14 @@ command_verify_run() {
             failed=1
         fi
     done
-    if [ -s "$run_dir/artifacts/report.md" ]; then
-        printf '[OK] nonempty:artifacts/report.md\n'
-    else
-        printf '[FAIL] nonempty:artifacts/report.md\n'
-        failed=1
-    fi
+    for path in artifacts/report.md artifacts/run_title.txt; do
+        if [ -s "$run_dir/$path" ]; then
+            printf '[OK] nonempty:%s\n' "$path"
+        else
+            printf '[FAIL] nonempty:%s\n' "$path"
+            failed=1
+        fi
+    done
     local mode
     mode="$(sed -n 's/^mode:[[:space:]]*//p' "$run_dir/capsule.yaml" 2>/dev/null | sed -n '1p')"
     if [ -n "$mode" ] && profile_required_outputs "$mode" >/dev/null 2>&1; then

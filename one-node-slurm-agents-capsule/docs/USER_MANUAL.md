@@ -43,6 +43,53 @@ agentrun doctor --agent <name>   # 使用する agent を指定する（例: cla
 
 `doctor` の `image:base-system.sif` が `[OK]` になれば準備完了です。
 
+### Rust / 日本語 LuaLaTeX
+
+`runtime/apptainer/base-system.def` に以下を含めています。追加前にビルドした `.sif` は compute node で再ビルドしてください。
+
+| 用途 | 導入内容 |
+| --- | --- |
+| Rust | rustup の build 時点の stable（minimal profile: `rustc` / `cargo` / 標準ライブラリ）、`build-essential`、`pkg-config` |
+| LaTeX 組版 | `texlive-luatex`、`texlive-latex-extra`、`texlive-fonts-recommended`、`texlive-science`（`siunitx` など） |
+| 日本語組版 | `texlive-lang-japanese`（LuaTeX-ja、`ltjsarticle` を含む） |
+| 自動ビルド | `latexmk` |
+| 文献処理 | `biber`、`texlive-bibtex-extra`（`biblatex` を含む） |
+| PDF 検証・画像化 | `poppler-utils`（`pdfinfo`、`pdffonts`、`pdftotext`、`pdftoppm` など） |
+| 日本語フォント | `fonts-ipaexfont`（IPAex 明朝・ゴシック）、`fontconfig` |
+
+Rust の toolchain は `/opt/rustup`、rustup / cargo の実行ファイルは `/opt/cargo/bin` に置き、通常の capsule 起動時に `PATH` と `RUSTUP_HOME` を設定します。cargo の cache と `cargo install` の出力は run ごとの `$HOME/.cargo` に保存され、`$HOME/.cargo/bin` も `PATH` に入ります。image 内の toolchain を更新する場合は `build-images.sh --run --force` で再ビルドしてください。Rust のバージョンは build 時点の stable によって変わります。
+
+capsule 内での確認・利用例:
+
+```bash
+rustc --version
+cargo --version
+cargo build --release
+
+# LuaLaTeX を指定する。biblatex で backend=biber を使う文書では Biber も自動実行される。
+latexmk -lualatex -interaction=nonstopmode -halt-on-error main.tex
+pdfinfo main.pdf
+pdffonts main.pdf
+pdftotext main.pdf main.txt
+pdftoppm -f 1 -singlefile -png -r 150 main.pdf main-page1
+```
+
+日本語文書では、例えば次のように IPAex フォントを指定できます。
+
+```latex
+\documentclass{ltjsarticle}
+\usepackage[ipaex]{luatexja-preset}
+\begin{document}
+日本語の本文。\textsf{ゴシック体の本文。}
+\end{document}
+```
+
+definition の `%test` は、空の writable HOME を使って Rust 2024 edition のプログラムを offline でコンパイル・実行し、`cargo install` の保存先も確認します。日本語明朝・ゴシックと文献を含む文書を `latexmk` + LuaLaTeX + Biber でビルドし、Poppler で PDF 情報・IPAex フォントの使用とフォント埋め込み・日本語と文献のテキスト抽出・PNG 変換を確認します。通常の image build 時に自動実行されます。既存 image に対して再実行する場合も compute node で行ってください。
+
+```bash
+srun --partition <partition> apptainer test --cleanenv --containall runtime/apptainer/base-system.sif
+```
+
 ### 認証情報のセットアップ（初回必須）
 
 `agentrun` は各 agent の認証情報を `$HOME/.agentrun/auth/<agent>/`（auth store）に管理します。
@@ -554,14 +601,31 @@ agentrun multi-review --submit --agent codex --partition <partition> --agents cl
 - `--agents` は requested agents として prompt に入るだけです。
 - 複数 agent を自動起動して比較・集約する機能は未実装です。
 
-profile ごとの主な期待成果物:
+Every profile requires these common outputs (paths relative to `/runs`):
 
 ```text
-assist        live/status.json, live/stdout.log, artifacts/report.md, artifacts/metrics.json
-experiment    assist の成果物 + live/current_task.md + artifacts/proposed_next.yaml
-campaign      live/status.json, artifacts/report.md, artifacts/proposed_next.yaml, artifacts/proposed_train.sbatch
-review        live/status.json, live/stdout.log, reviews/review_findings.json
-multi-review  live/status.json, reviews/*.md, reviews/disagreements.json, reviews/final_recommendation.md
+live/status.json           live/heartbeat.txt
+live/stdout.log            live/stderr.log
+live/command_log.jsonl     live/events.jsonl
+live/current_task.md
+artifacts/report.md        artifacts/git_diff.patch
+artifacts/metrics.json     artifacts/run_title.txt
+```
+
+`artifacts/report.md` and `artifacts/run_title.txt` must be non-empty. The title is
+one lowercase line of about five words. The launcher-generated batch prompt,
+profile definitions, shared rules, and `agentrun-contract` skill use this contract;
+`verify-run` checks it along with the runtime metadata and job completion records.
+
+Additional outputs by profile:
+
+```text
+assist        no additional outputs
+experiment    artifacts/proposed_next.yaml
+campaign      artifacts/proposed_next.yaml, artifacts/proposed_train.sbatch
+review        reviews/review_findings.json
+multi-review  reviews/{claude,codex,antigravity}.md, reviews/summary.md,
+              reviews/disagreements.json, reviews/final_recommendation.md
 ```
 
 ## Wizard Mode
@@ -663,6 +727,7 @@ live/slurm_job_id.txt   Slurm job id。prepare-only では空のことがある
 artifacts/report.md             人間向けの最終 report。verify-run では非空が期待される
 artifacts/git_diff.patch        agent が作った diff。変更なしなら空
 artifacts/metrics.json          metrics / summary metadata。初期値は {}
+artifacts/run_title.txt         required, non-empty, single lowercase line of about five words
 artifacts/environment.txt       submitted job の environment dump
 artifacts/container.txt         apptainer version など container 情報
 artifacts/data_manifest.txt     入出力データの manifest 用。未使用なら空
@@ -684,7 +749,7 @@ reviews/final_recommendation.md   final recommendation
 
 `home/` は container の `/home/sandbox` です。auth file や writable config はここに一時配置されます。`submit.sbatch` には cleanup trap が入っており、job 終了時に `<run_dir>/home/` は削除されます。
 
-`scratch/` と `cache/` は run ごとの一時領域です。container 内ではそれぞれ `/scratch`, `/cache` に mount されます。
+`scratch/` and `cache/` are separate directories for each run, mounted at `/scratch` and `/cache`. Their contents remain with that run directory until removed. They are not shared automatically with later runs, even on the same node.
 
 初期作成直後や prepare-only run では、空ファイル、`{}`、`initialized` だけのファイルが多く残ります。これは異常ではありません。`--submit` した job が進むにつれて `live/` と `artifacts/` が更新されます。
 
@@ -960,11 +1025,55 @@ URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれ
 | ----- | ---- |
 | `uv` | Python プロジェクト・パッケージ・スクリプトの管理に使う `uv` コマンドのガイドです。`uv add`/`uv run`/`uvx` の使い分けや、venv の作成・管理方法を説明します。 |
 | `agentrun-contract` | agentrun カプセル内で agent が書くべき出力ファイル・フォーマット・書き込みタイミングの一覧です。`live/status.json`・`artifacts/report.md` などの必須ファイルとモード別の追加要件、`verify-run` が何をチェックするかを記述します。 |
-| `git-worktree` | git worktree の基本操作と、agentrun の `git_worktree_auto_create.py` hook によるブランチ作成時の自動 worktree 生成の挙動を説明します。コンテナ内でのパス制約（sibling ディレクトリは bind されない）についても記述します。 |
-| `slurm` | カプセル内部から見える SLURM 環境変数・実行可能なコマンド（`squeue`/`sinfo`/`scontrol`）と、`sbatch`/`salloc` がブロックされる理由を説明します。代替手段として `artifacts/proposed_train.sbatch` を書く方法も記述します。 |
 | `ruff` | Python ファイルを編集した後の lint・format 手順です。`post_edit_format.py` hook はフォーマッタを自動実行しないため、`uvx ruff check --fix` と `uvx ruff format` を手動実行する必要があることを説明します。 |
 | `experiment-report` | `experiment`・`campaign`・`review`・`multi-review` 各モードで書くべきモード固有ファイルのスキーマです。`artifacts/proposed_next.yaml`・`artifacts/proposed_train.sbatch`・`reviews/review_findings.json`・`reviews/disagreements.json` などのフォーマットを記述します。 |
-| `pytest` | `uv run pytest` を使ったテスト実行パターンと、テスト結果を `/runs/live/stdout.log` および `artifacts/metrics.json` に記録する方法を説明します。システム Python がないコンテナ環境での注意点も含みます。 |
+| `pytest` | `uv run pytest` を使ったテスト実行パターンと、テスト結果を `/runs/live/stdout.log` および `artifacts/metrics.json` に記録する方法を説明します。Project tests run through uv; system Python is reserved for capsule infrastructure. |
+| `research-latex` | Creates Japanese and English research PDFs with academic, technical, and monograph templates, LuaLaTeX, Biber, structural validation, and page rendering for visual inspection. Bundled examples contain synthetic data. |
+| `yomiyasu` | Refines Japanese prose while preserving meaning, with local lint and before/after review tools. Numeric values and research claims require separate verification. |
+
+The default skill set contains seven skills: `uv`, `agentrun-contract`, `ruff`, `experiment-report`, `pytest`, `research-latex`, and `yomiyasu`.
+
+`research-latex` is shared by Claude, Codex, and Antigravity through the existing read-only skill mounts. Skill files become available in newly started runs without rebuilding the image. Its `siunitx` dependency requires an image built with `texlive-science`; rebuild older images before using the templates.
+
+System Python remains installed for capsule hooks, agent startup metadata, and the GitHub broker. Research-latex uses `uv run --no-project python` with no additional Python packages; TeX Live and Poppler remain OS packages.
+
+Inside a capsule, use `uv` to run the standard-library CLI and keep generated reports outside the read-only skill directory:
+
+```bash
+SKILL_ROOT=/home/sandbox/ai-agent-config/common/skills/research-latex
+REPORT_DIR=/runs/artifacts/research-report
+uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" doctor
+uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" init --template technical --output "$REPORT_DIR"
+# Replace synthetic examples with actual research content before delivery.
+uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" build --project "$REPORT_DIR"
+uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" render --project "$REPORT_DIR" --all --dpi 150
+```
+
+Inspect every rendered page before delivering a report; structural validation does not check visual layout.
+
+
+### Japanese prose editing with yomiyasu
+
+`yomiyasu` is shared by Claude, Codex, and Antigravity. It is bundled from
+[nanaism/yomiyasu at commit 60bf877](https://github.com/nanaism/yomiyasu/tree/60bf877acebc86651e0b67d70112a66245f87758/skills/yomiyasu),
+including its MIT license, Unicode license notice, reference documents, and local
+checking scripts. The capsule-specific notes and command examples use uv; the
+checking scripts are unchanged from that commit.
+
+```bash
+SKILL_ROOT=/home/sandbox/ai-agent-config/common/skills/yomiyasu
+uv run --no-project python "$SKILL_ROOT/scripts/yomiyasu_lint.py" /runs/artifacts/report.md
+uv run --no-project python "$SKILL_ROOT/scripts/yomiyasu_diff.py" /runs/before.md /runs/after.md --stance=説明
+```
+
+Use it when writing or revising Japanese prose. Preserve the requested report
+format and structured output schemas. Lint findings are review candidates;
+compare research numbers, units, formulas, citations, and claim strength with the
+sources separately. For LaTeX documents, review the prose without changing TeX
+commands or math, then compile and inspect the PDF with research-latex.
+
+The tools use only the Python standard library. No additional OS/Python packages
+or SIF rebuild are needed; the skill is available in newly started capsules.
 
 ## Hooks Maintenance
 

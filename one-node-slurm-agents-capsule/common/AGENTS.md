@@ -7,13 +7,14 @@ These rules apply to Antigravity, Claude Code, Codex, and any future agent launc
 - You are running inside an Apptainer capsule on a Slurm compute node.
 - The workspace repository is mounted at `/workspace`. Work only within `/workspace`.
 - Run directory (logs and outputs) is mounted at `/runs`. Write all live state and artifacts there.
-- Submitting new Slurm jobs (`sbatch`, `salloc`) from inside the capsule is blocked. To propose a follow-up job, write `artifacts/proposed_job.sbatch` instead.
+- Submitting new Slurm jobs (`sbatch`, `salloc`) from inside the capsule is blocked. To propose a follow-up job, write `/runs/artifacts/proposed_train.sbatch` instead.
 
 ## Python and Environment
 
 - Python environments are managed with `uv`. Do not use `pip install` directly; use `uv add` or `uv run`.
-- No system Python is available. Always use the project venv (e.g. `source .venv/bin/activate` or `uv run`).
-- You are already on a compute node. Run Python directly — do not wrap commands in `srun` or `sbatch`.
+- System Python is reserved for capsule infrastructure (hooks, agent startup, and the GitHub broker). Run project code through `uv run` or the project venv.
+- For standard-library utilities such as research-latex, use `uv run --no-project python ...`; no additional Python packages are required.
+- You are already on a compute node. Run Python through uv locally; do not wrap commands in `srun` or `sbatch`.
 
 ## Git Safety
 
@@ -31,9 +32,10 @@ These rules apply to Antigravity, Claude Code, Codex, and any future agent launc
 
 - Write live state under `/runs/live`.
 - Write final outputs under `/runs/artifacts`.
-- Required live outputs: `status.json`, `heartbeat.txt`, `stdout.log`, `stderr.log`, `command_log.jsonl`.
+- Required live outputs: `status.json`, `heartbeat.txt`, `stdout.log`, `stderr.log`, `command_log.jsonl`, `events.jsonl`, `current_task.md`.
 - Required final outputs: `report.md`, `git_diff.patch`, `metrics.json`, `run_title.txt`.
 - `run_title.txt`: write a ~5-word summary of what you accomplished (single line, lowercase, e.g. `trained cifar baseline model`).
+- `report.md` and `run_title.txt` must be non-empty. Additional outputs depend on the run mode; see the `agentrun-contract` skill.
 - The `status` field in `status.json` must be one of: `"success"`, `"failed"`, `"cancelled"`, `"timeout"`. Use `"success"` when all required outputs are written without error.
 
 # BASE GUIDELINES

@@ -9,6 +9,7 @@ import re
 import select
 import signal
 import shlex
+import struct
 import subprocess
 import tempfile
 import termios
@@ -63,11 +64,11 @@ class WizardTests(unittest.TestCase):
         host_home = self.root / "host-home"
         host_home.mkdir()
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", HOME=str(host_home),
-                        WIZARD_UI="plain", TEST_RESUME_STEP="resume")
+                        WIZARD_UI="plain", TEST_RESUME_STEP="resume", TERM="dumb", INPUTRC="/dev/null")
         self.args = ["wizard", "--agent", "claude", "--time", "02:00:00",
                      "--mem", "12000M", "--cpus", "2"]
 
-    def execute(self, args, answers="", env=None, command=None):
+    def execute(self, args, answers="", env=None, command=None, columns=80):
         master, slave = pty.openpty()
         proc = None
         try:
@@ -75,30 +76,41 @@ class WizardTests(unittest.TestCase):
                 os.setsid()
                 fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
             before = termios.tcgetattr(slave)
             proc = subprocess.Popen(command or [str(LAUNCHER), *args], cwd=self.root, env=env or self.env,
                                     stdin=slave, stdout=slave, stderr=slave, preexec_fn=controlling_terminal)
             replies = answers.splitlines()
             sent = 0
-            prompts = re.compile(rb'#\? \(Enter=1, :back, :cancel\) |(?:\x1b\[\?2004h)?> |\(:back, :cancel\): ')
+            # Input headings are emitted once per field. Readline may redraw
+            # "> " repeatedly or hide it when a long default scrolls sideways.
+            prompts = re.compile(
+                rb'\x1b\[1;36m[^\r\n]*:cancel=[^\r\n]*\x1b\[0m\r?\n'
+                rb'|#\? \(Enter=1, :back, :cancel\) |\(:back, :cancel\): '
+            )
             output = bytearray()
             deadline = time.monotonic() + 10
             while proc.poll() is None:
                 if time.monotonic() > deadline:
-                    self.fail(repr(output))
+                    self.fail(f"Sent {sent}/{len(replies)} replies: {output!r}")
                 if select.select([master], [], [], 0.05)[0]:
                     output.extend(os.read(master, 65536))
-                    matches = list(prompts.finditer(output))
-                    while sent < len(matches) and sent < len(replies):
-                        reply = replies[sent].encode()
-                        # Readline の編集可能な既定値を置換する（Enter だけなら採用）。
-                        if matches[sent].group().endswith(b'> ') and reply:
-                            reply = b'\x15' + reply
-                        os.write(master, reply + b'\n')
-                        sent += 1
+                matches = list(prompts.finditer(output))
+                if sent < len(matches) and sent < len(replies):
+                    # Wait until Readline has disabled canonical input. Sending
+                    # Ctrl+U earlier lets the terminal consume it before the
+                    # editable default exists, so the answer gets appended.
+                    if termios.tcgetattr(slave)[3] & termios.ICANON:
+                        continue
+                    reply = replies[sent].encode()
+                    if reply:
+                        reply = b'\x15' + reply
+                    os.write(master, reply + b'\n')
+                    sent += 1
             while select.select([master], [], [], 0)[0]:
                 output.extend(os.read(master, 65536))
             self.assertEqual(termios.tcgetattr(slave), before)
+            self.assertEqual(sent, len(replies), output.decode(errors="replace"))
             return proc.returncode, output.decode(errors="replace")
         finally:
             if proc is not None and proc.poll() is None:
@@ -166,11 +178,14 @@ class WizardTests(unittest.TestCase):
         path.mkdir()
         script = 'source "$1"; value="$(wizard_path_input "Host path" "$2")"; printf "PATH_VALUE=<%s>\\n" "$value"'
         command = ["bash", "-c", script, "bash", str(LAUNCHER), str(path)]
-        for answer in ("\n", f"{path}\n"):
-            with self.subTest(answer=answer):
-                rc, output = self.execute([], answer, command=command)
-                self.assertEqual(rc, 0, output)
-                self.assertIn(f"PATH_VALUE=<{path}>", output)
+        for terminal in ("dumb", "xterm-256color"):
+            for columns in (24, 80, 240):
+                for answer in ("\n", f"{path}\n"):
+                    with self.subTest(terminal=terminal, columns=columns, answer=answer):
+                        rc, output = self.execute([], answer, command=command, columns=columns,
+                                                  env=dict(self.env, TERM=terminal))
+                        self.assertEqual(rc, 0, output)
+                        self.assertIn(f"PATH_VALUE=<{path}>", output)
         self.assertFalse((self.root / "injected").exists())
 
     def test_declining_resume_creates_nothing(self):
