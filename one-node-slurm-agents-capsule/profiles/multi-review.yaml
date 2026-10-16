@@ -18,7 +18,6 @@ outputs:
     - artifacts/git_diff.patch
     - artifacts/metrics.json
     - artifacts/run_title.txt
-    - reviews/antigravity.md
     - reviews/claude.md
     - reviews/codex.md
     - reviews/summary.md

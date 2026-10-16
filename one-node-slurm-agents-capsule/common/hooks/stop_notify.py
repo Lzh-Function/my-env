@@ -15,19 +15,12 @@ SLACK_WEBHOOK_URL = "SLACK_WEBHOOK_URL" # Set your Slack Incoming Webhook URL he
 
 
 def detect_agent(payload: dict) -> str:
-    if "conversationId" in payload:
-        return "Antigravity"
     if "model" in payload or "turn_id" in payload:
         return "Codex"
     return "Claude Code"
 
 
-def extract_summary(payload: dict, agent: str) -> str:
-    if agent == "Antigravity":
-        reason = payload.get("terminationReason", "")
-        if reason and reason != "model_stop":
-            return f"終了理由: {reason}"
-        return "作業が完了しました。"
+def extract_summary(payload: dict) -> str:
     # Claude Code and Codex both provide last_assistant_message
     msg = payload.get("last_assistant_message", "")
     if not msg:
@@ -44,7 +37,7 @@ def main() -> int:
         payload = {}
 
     agent = detect_agent(payload)
-    summary = extract_summary(payload, agent)
+    summary = extract_summary(payload)
     hostname = socket.gethostname().split(".")[0]
     text = f"*[{hostname}] {agent} 完了* :white_check_mark:\n{summary}"
     body = json.dumps({"text": text}).encode()

@@ -12,7 +12,7 @@ set -euo pipefail
 ENV_ROOT="${AI_AGENT_ENV_DIR:?AI_AGENT_ENV_DIR must be exported by submit_creator_tests.sh}"
 cd "$ENV_ROOT"
 
-AGENTS=(antigravity codex claude)
+AGENTS=(codex claude)
 AGENT="${AGENTS[$SLURM_ARRAY_TASK_ID]}"
 RUN_DIR="$ENV_ROOT/.agent-runs/creator-agent-smoke/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_${AGENT}"
 IMAGE="$ENV_ROOT/runtime/apptainer/base-system.sif"
@@ -20,8 +20,6 @@ IMAGE="$ENV_ROOT/runtime/apptainer/base-system.sif"
 mkdir -p \
     "$RUN_DIR/home/.claude" \
     "$RUN_DIR/home/.codex" \
-    "$RUN_DIR/home/.gemini" \
-    "$RUN_DIR/home/.antigravity" \
     "$RUN_DIR/live" \
     "$RUN_DIR/artifacts" \
     "$RUN_DIR/workspace" \
@@ -34,9 +32,6 @@ case "$AGENT" in
         ;;
     codex)
         AGENT_COMMAND='codex --version'
-        ;;
-    antigravity)
-        AGENT_COMMAND='if command -v agy >/dev/null 2>&1; then agy --help; elif command -v antigravity >/dev/null 2>&1; then antigravity --help; else gemini --help; fi'
         ;;
     *)
         printf 'unknown agent: %s\n' "$AGENT" >&2

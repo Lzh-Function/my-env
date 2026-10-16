@@ -8,21 +8,16 @@ import re
 import sys
 
 
-def block(reason: str, decision: str = "deny") -> int:
-    print(json.dumps({"decision": decision, "reason": reason}, ensure_ascii=False))
+def block(reason: str) -> int:
+    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
     return 2
 
 
 def main() -> int:
     raw = sys.stdin.read()
-    decision = "deny"
     try:
         payload = json.loads(raw)
-        if "toolCall" in payload:
-            cmd = payload["toolCall"].get("args", {}).get("CommandLine", "")
-        else:
-            decision = "block"
-            cmd = payload.get("tool_input", {}).get("command", "")
+        cmd = payload.get("tool_input", {}).get("command", "")
     except json.JSONDecodeError:
         cmd = raw
 
@@ -31,16 +26,16 @@ def main() -> int:
         return 0
 
     if re.search(r"git\s+merge\b", cmd) and not re.search(r"git\s+merge\s+--(abort|continue|quit)\b", cmd):
-        return block("git merge は禁止されています。ユーザーに委ねてください。", decision)
+        return block("git merge は禁止されています。ユーザーに委ねてください。")
 
     if re.search(r"git\s+rebase\b", cmd) and not re.search(r"git\s+rebase\s+--(abort|continue|quit|skip)\b", cmd):
-        return block("git rebase は禁止されています。ユーザーに委ねてください。", decision)
+        return block("git rebase は禁止されています。ユーザーに委ねてください。")
 
     if re.search(r"(^|\s|/)\.git(/|\s|$)", cmd):
-        return block(".git ディレクトリへの直接操作は禁止されています。", decision)
+        return block(".git ディレクトリへの直接操作は禁止されています。")
 
     if re.search(r"git\s+push\b", cmd):
-        return block("git push は禁止されています。ユーザーが最終的な push を実行してください。", decision)
+        return block("git push は禁止されています。ユーザーが最終的な push を実行してください。")
 
     return 0
 

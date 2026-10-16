@@ -24,11 +24,7 @@ def main() -> int:
     raw = sys.stdin.read()
     try:
         payload = json.loads(raw)
-        if "toolCall" in payload:
-            # Antigravity: run_command PostToolUse
-            cmd = payload["toolCall"].get("args", {}).get("CommandLine", "")
-        else:
-            cmd = payload.get("tool_input", {}).get("command", "")
+        cmd = payload.get("tool_input", {}).get("command", "")
     except json.JSONDecodeError:
         cmd = raw
 

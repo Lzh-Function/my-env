@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
-DEFAULT_AGENT="antigravity"
+DEFAULT_AGENT="codex"
+SUPPORTED_AGENTS=(codex claude)
 PROFILES="assist experiment campaign review multi-review"
 
 usage() {
@@ -11,7 +12,6 @@ Usage:
   agentrun agents
   agentrun sync-claude
   agentrun sync-codex
-  agentrun sync-antigravity
   agentrun validate
   agentrun doctor [--agent NAME|--all]
   agentrun dry-run MODE [options] PROMPT
@@ -37,7 +37,7 @@ Usage:
   agentrun auth reset --agent NAME
 
 Options:
-  --agent NAME        antigravity, claude, or codex
+  --agent NAME        codex or claude (default: codex)
   --repo PATH         repository path, default: .
   --goal PATH         goal.yaml path
   --gpus N            GPU count, default: 0
@@ -69,21 +69,30 @@ is_profile() {
     esac
 }
 
-agent_candidates() {
-    case "$1" in
-        antigravity) printf 'agy antigravity gemini\n' ;;
-        claude) printf 'claude\n' ;;
-        codex) printf 'codex\n' ;;
-        *) return 1 ;;
-    esac
+is_supported_agent() {
+    local candidate
+    for candidate in "${SUPPORTED_AGENTS[@]}"; do
+        [ "$1" != "$candidate" ] || return 0
+    done
+    return 1
 }
 
-agent_role() {
-    case "$1" in
-        antigravity) printf 'primary\n' ;;
-        claude|codex) printf 'secondary\n' ;;
-        *) return 1 ;;
-    esac
+require_supported_agent() {
+    is_supported_agent "$1" || {
+        printf 'unknown agent: %s (supported: codex, claude)\n' "$1" >&2
+        return 2
+    }
+}
+
+validate_agent_list() {
+    local remaining="$1" agent
+    [ -n "$remaining" ] || return 0
+    while :; do
+        agent="${remaining%%,*}"
+        require_supported_agent "$agent" || return $?
+        [[ "$remaining" == *,* ]] || break
+        remaining="${remaining#*,}"
+    done
 }
 
 first_available() {
@@ -137,13 +146,6 @@ agent_command() {
                 printf '%s\n' 'cd /workspace && codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --cd /workspace -c '\''sqlite_home="/home/sandbox/.codex/sqlite"'\'' "$(cat /runs/prompt.txt)"'
             else
                 printf '%s\n' 'cd /workspace && codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --cd /workspace -c '\''sqlite_home="/home/sandbox/.codex/sqlite"'\'' "$(cat /runs/prompt.txt)"'
-            fi
-            ;;
-        antigravity)
-            if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
-                printf 'cd /workspace && if command -v agy >/dev/null 2>&1; then agy --dangerously-skip-permissions -i "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --dangerously-skip-permissions -i "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi\n'
-            else
-                printf 'cd /workspace && if command -v agy >/dev/null 2>&1; then agy --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; elif command -v antigravity >/dev/null 2>&1; then antigravity --print --dangerously-skip-permissions "$(cat /runs/prompt.txt)"; else gemini "$(cat /runs/prompt.txt)"; fi\n'
             fi
             ;;
         *) printf 'unknown agent: %s\n' "$agent" >&2; return 2 ;;
@@ -200,7 +202,6 @@ profile_required_outputs() {
             printf '%s\n' reviews/review_findings.json ;;
         multi-review)
             printf '%s\n' \
-                reviews/antigravity.md \
                 reviews/claude.md \
                 reviews/codex.md \
                 reviews/summary.md \
@@ -246,9 +247,7 @@ make_layout() {
         "$run_dir/home/.claude" \
         "$run_dir/home/.codex" \
         "$run_dir/home/.codex/skills" \
-        "$run_dir/home/.agents" \
-        "$run_dir/home/.gemini/antigravity-cli" \
-        "$run_dir/home/.antigravity"
+        "$run_dir/home/.agents"
     : > "$run_dir/live/stdout.log"
     : > "$run_dir/live/stderr.log"
     : > "$run_dir/live/command_log.jsonl"
@@ -270,7 +269,6 @@ make_layout() {
     : > "$run_dir/artifacts/run_title.txt"
     : > "$run_dir/reviews/claude.md"
     : > "$run_dir/reviews/codex.md"
-    : > "$run_dir/reviews/antigravity.md"
     printf '{}\n' > "$run_dir/reviews/review_findings.json"
     : > "$run_dir/reviews/summary.md"
     printf '{}\n' > "$run_dir/reviews/disagreements.json"
@@ -294,22 +292,6 @@ stage_auth_file() {
     fi
 }
 
-auth_mounts() {
-    local agent="$1"
-    case "$agent" in
-        claude)
-            # credentials are copied to run_dir/home at submit time; --home mount delivers them
-            ;;
-        codex)
-            # credentials are copied to run_dir/home at submit time; --home mount delivers them
-            ;;
-        antigravity)
-            # credentials are copied to run_dir/home at submit time; --home mount delivers them
-            ;;
-    esac
-    return 0
-}
-
 copy_auth_credentials() {
     local run_dir="$1" agent="$2"
     local store_root
@@ -321,12 +303,6 @@ copy_auth_credentials() {
             ;;
         codex)
             stage_auth_file "$store_root" "codex" ".codex/auth.json" "$run_dir"
-            ;;
-        antigravity)
-            stage_auth_file "$store_root" "antigravity" ".gemini/antigravity-cli/antigravity-oauth-token" "$run_dir"
-            stage_auth_file "$store_root" "antigravity" ".gemini/antigravity-cli/installation_id" "$run_dir"
-            [ -f "$run_dir/container_config/settings.json" ] && \
-                cp "$run_dir/container_config/settings.json" "$run_dir/home/.gemini/antigravity-cli/settings.json"
             ;;
     esac
 }
@@ -355,19 +331,6 @@ generate_container_config() {
                 }
               }) | del(.extends)
             ' "$base" "$overlay" > "$config_dir/settings.json"
-        else
-            cp "$base" "$config_dir/settings.json"
-        fi
-    elif [ "$agent" = "antigravity" ]; then
-        local base="$ROOT_DIR/agents/antigravity/settings.json"
-        local overlay=""
-        if [ "$mode" = "assist" ] && [ -f "$ROOT_DIR/agents/antigravity/settings.assist.json" ]; then
-            overlay="$ROOT_DIR/agents/antigravity/settings.assist.json"
-        elif [ "$mode" = "experiment" ] && [ -f "$ROOT_DIR/agents/antigravity/settings.experiment.json" ]; then
-            overlay="$ROOT_DIR/agents/antigravity/settings.experiment.json"
-        fi
-        if [ -n "$overlay" ] && command -v jq >/dev/null 2>&1; then
-            jq -s '.[0] * .[1]' "$base" "$overlay" > "$config_dir/settings.json"
         else
             cp "$base" "$config_dir/settings.json"
         fi
@@ -418,14 +381,6 @@ home_config_mounts() {
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/requirements.toml" "/etc/codex/requirements.toml"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/AGENTS.md" "/home/sandbox/.codex/AGENTS.md"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/rules" "/home/sandbox/.codex/rules"
-            ;;
-        antigravity)
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/GEMINI.md" "/home/sandbox/.gemini/GEMINI.md"
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/AGENTS.md" "/home/sandbox/.gemini/AGENTS.md"
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/config/hooks.json"
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.gemini/antigravity-cli/hooks"
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/skills" "/home/sandbox/.gemini/antigravity-cli/skills"
-            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/statusline.sh" "/home/sandbox/.gemini/antigravity-cli/statusline.sh"
             ;;
     esac
 }
@@ -643,7 +598,7 @@ apptainer_command() {
     if [ -f "$run_dir/session.json" ] && [ -n "${RESUME_SOURCE:-}" ]; then
         cmd="$(session_tool command "$run_dir")" || return $?
     fi
-    cmd="AGENTRUN_AGENT_BIN=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$agent")) || exit \$?; export PATH=\"\$AGENTRUN_AGENT_BIN:\$PATH\"; hash -r; unset -f claude codex agy antigravity gemini; ${cmd}"
+    cmd="AGENTRUN_AGENT_BIN=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$agent")) || exit \$?; export PATH=\"\$AGENTRUN_AGENT_BIN:\$PATH\"; hash -r; unset -f claude codex; ${cmd}"
     if gh_broker_enabled; then
         gh_broker_launch_lines "$run_dir" "$image"
     fi
@@ -671,7 +626,6 @@ apptainer_command() {
             "$GH_BROKER_CONTAINER_DIR" "$GH_BROKER_SRC/gh-client"
     fi
     printf ' --bind %q:/opt/agentrun/install-agent.sh:ro' "$ROOT_DIR/runtime/agentrun/install-agent.sh"
-    auth_mounts "$agent"
     home_config_mounts "$agent" "$run_dir" "$mode"
     local session_mounts session_src session_dst
     session_mounts="$(session_tool mounts "$run_dir" "$agent")" || return $?
@@ -782,21 +736,12 @@ EOF
 
 command_agents() {
     printf 'Available agents:\n'
-    for agent in antigravity claude codex; do
-        local candidates found role
-        candidates="$(agent_candidates "$agent")"
-        role="$(agent_role "$agent")"
-        found=""
-        for cmd in $candidates; do
-            if command -v "$cmd" >/dev/null 2>&1; then
-                found="$(command -v "$cmd")"
-                break
-            fi
-        done
-        if [ -n "$found" ]; then
-            printf '  %-12s %-9s available %s\n' "$agent" "$role" "$found"
+    local agent found
+    for agent in "${SUPPORTED_AGENTS[@]}"; do
+        if found="$(command -v "$agent")"; then
+            printf '  %-12s available %s\n' "$agent" "$found"
         else
-            printf '  %-12s %-9s missing   %s\n' "$agent" "$role" "$candidates"
+            printf '  %-12s missing   %s\n' "$agent" "$agent"
         fi
     done
 }
@@ -834,16 +779,6 @@ check_agent_auth() {
                 "$store_root/.codex/auth.json" \
                 "$HOME/.codex/auth.json" \
                 "codex:.codex/auth.json"
-            ;;
-        antigravity)
-            _check_auth_file \
-                "$store_root/.gemini/antigravity-cli/antigravity-oauth-token" \
-                "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" \
-                "antigravity:antigravity-oauth-token"
-            _check_auth_file \
-                "$store_root/.gemini/antigravity-cli/installation_id" \
-                "$HOME/.gemini/antigravity-cli/installation_id" \
-                "antigravity:installation_id"
             ;;
         *)
             printf '[FAIL] auth:%s - unknown agent\n' "$agent"
@@ -1165,184 +1100,6 @@ validate_codex_sync() {
 }
 
 
-antigravity_hooks_manifest() {
-    printf '%s\n' "$ROOT_DIR/agents/antigravity/hooks.manifest.json"
-}
-
-render_antigravity_hooks_json() {
-    local output="$1"
-    # Stop/PreInvocation/PostInvocation: flat handler list (no matcher/hooks wrapper)
-    # PreToolUse/PostToolUse: {matcher, hooks} structure
-    jq '
-      .hooks |
-      group_by(.event) |
-      map(
-        . as $group |
-        ($group[0].event) as $event |
-        if ($event == "Stop" or $event == "PreInvocation" or $event == "PostInvocation") then
-          {
-            key: ("agentrun-" + $event),
-            value: {
-              ($event): [
-                $group[].entries[] |
-                {"type": "command", "command": ("~/.gemini/antigravity-cli/hooks/" + .script)}
-              ]
-            }
-          }
-        else
-          {
-            key: ("agentrun-" + $event),
-            value: {
-              ($event): [
-                $group[] | {
-                  matcher: .matcher,
-                  hooks: [
-                    .entries[] |
-                    {"type": "command", "command": ("~/.gemini/antigravity-cli/hooks/" + .script)}
-                  ]
-                }
-              ]
-            }
-          }
-        end
-      ) |
-      from_entries
-    ' "$(antigravity_hooks_manifest)" > "$output"
-}
-
-validate_antigravity_hook_manifest() {
-    local manifest hook failed=0
-    manifest="$(antigravity_hooks_manifest)"
-    if [ ! -f "$manifest" ]; then
-        printf '[FAIL] agents/antigravity/hooks.manifest.json\n'
-        return 1
-    fi
-    if ! jq -e '
-      type == "object" and
-      (.hooks | type == "array" and all(.[]; (
-        .event | type == "string"
-      ) and (
-        .matcher | type == "string"
-      ) and (
-        .entries | type == "array" and all(.[]; (.script | type == "string"))
-      ))) and
-      ((.ignored // []) | type == "array" and all(.[]; type == "string"))
-    ' "$manifest" >/dev/null; then
-        printf '[FAIL] antigravity-hooks-manifest:shape\n'
-        return 1
-    fi
-    while IFS= read -r hook; do
-        [ -n "$hook" ] || continue
-        case "$hook" in
-            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
-                printf '[FAIL] antigravity-hooks-manifest:invalid-name:%s\n' "$hook"
-                failed=1
-                continue
-                ;;
-        esac
-        if [ -x "$ROOT_DIR/common/hooks/$hook" ]; then
-            printf '[OK] antigravity-hooks-manifest:%s\n' "$hook"
-        else
-            printf '[FAIL] antigravity-hooks-manifest:%s\n' "$hook"
-            failed=1
-        fi
-    done < <(jq -r '[.hooks[].entries[].script] | unique[]' "$manifest")
-    while IFS= read -r hook; do
-        [ -n "$hook" ] || continue
-        case "$hook" in
-            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
-                printf '[FAIL] antigravity-hooks-manifest:invalid-ignored-name:%s\n' "$hook"
-                failed=1
-                continue
-                ;;
-        esac
-        if [ -e "$ROOT_DIR/common/hooks/$hook" ]; then
-            printf '[OK] antigravity-hooks-ignored:%s\n' "$hook"
-        else
-            printf '[FAIL] antigravity-hooks-ignored:%s\n' "$hook"
-            failed=1
-        fi
-    done < <(jq -r '(.ignored // [])[]' "$manifest")
-    local covered unclassified=0
-    covered="$(jq -r '[.hooks[].entries[].script, (.ignored // [])[]] | unique[]' "$manifest")"
-    for hook_path in "$ROOT_DIR"/common/hooks/*.py; do
-        [ -e "$hook_path" ] || continue
-        hook="$(basename "$hook_path")"
-        if printf '%s\n' "$covered" | grep -Fxq "$hook"; then
-            :
-        else
-            printf '[FAIL] antigravity-hooks-unclassified:%s - add it to hooks or ignored\n' "$hook"
-            unclassified=1
-            failed=1
-        fi
-    done
-    if [ "$unclassified" -eq 0 ]; then
-        printf '[OK] antigravity-hooks-classified:all-common-hooks\n'
-    fi
-    return "$failed"
-}
-
-command_sync_antigravity() {
-    if [ "$#" -ne 0 ]; then
-        printf 'sync-antigravity takes no arguments\n' >&2
-        return 2
-    fi
-    if ! command -v jq >/dev/null 2>&1; then
-        printf 'jq is required for sync-antigravity\n' >&2
-        return 1
-    fi
-    validate_antigravity_hook_manifest >/dev/null
-    local tmp
-    tmp="$(mktemp)"
-    render_antigravity_hooks_json "$tmp"
-    mv "$tmp" "$ROOT_DIR/agents/antigravity/hooks.json"
-    chmod 0644 "$ROOT_DIR/agents/antigravity/hooks.json"
-    ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/antigravity/AGENTS.md"
-    ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/antigravity/GEMINI.md"
-    ln -sfnT ../../common/skills "$ROOT_DIR/agents/antigravity/skills"
-    printf '[OK] synced agents/antigravity/hooks.json from agents/antigravity/hooks.manifest.json\n'
-    printf '[OK] synced agents/antigravity/AGENTS.md -> ../../common/AGENTS.md\n'
-    printf '[OK] synced agents/antigravity/GEMINI.md -> ../../common/AGENTS.md\n'
-    printf '[OK] synced agents/antigravity/skills -> ../../common/skills\n'
-}
-
-validate_antigravity_sync() {
-    local failed=0 tmp
-    if validate_antigravity_hook_manifest; then
-        printf '[OK] antigravity-hooks-manifest\n'
-    else
-        failed=1
-    fi
-    tmp="$(mktemp)"
-    render_antigravity_hooks_json "$tmp"
-    if cmp -s "$tmp" "$ROOT_DIR/agents/antigravity/hooks.json"; then
-        printf '[OK] antigravity-hooks-generated:agents/antigravity/hooks.json\n'
-    else
-        printf '[FAIL] antigravity-hooks-generated:agents/antigravity/hooks.json - run agentrun sync-antigravity\n'
-        failed=1
-    fi
-    rm -f "$tmp"
-    if [ "$(readlink "$ROOT_DIR/agents/antigravity/AGENTS.md" 2>/dev/null || true)" = "../../common/AGENTS.md" ]; then
-        printf '[OK] antigravity-agents-link:agents/antigravity/AGENTS.md\n'
-    else
-        printf '[FAIL] antigravity-agents-link:agents/antigravity/AGENTS.md - run agentrun sync-antigravity\n'
-        failed=1
-    fi
-    if [ "$(readlink "$ROOT_DIR/agents/antigravity/GEMINI.md" 2>/dev/null || true)" = "../../common/AGENTS.md" ]; then
-        printf '[OK] antigravity-agents-link:agents/antigravity/GEMINI.md\n'
-    else
-        printf '[FAIL] antigravity-agents-link:agents/antigravity/GEMINI.md - run agentrun sync-antigravity\n'
-        failed=1
-    fi
-    if [ "$(readlink "$ROOT_DIR/agents/antigravity/skills" 2>/dev/null || true)" = "../../common/skills" ]; then
-        printf '[OK] antigravity-skills-link:agents/antigravity/skills\n'
-    else
-        printf '[FAIL] antigravity-skills-link:agents/antigravity/skills - run agentrun sync-antigravity\n'
-        failed=1
-    fi
-    return "$failed"
-}
-
 is_remote_skill_source() {
     case "$1" in
         http://*|https://*|git@*|ssh://*|git://*|*.git) return 0 ;;
@@ -1440,7 +1197,6 @@ command_skill_install() {
     if [ "$installed" -gt 0 ]; then
         command_sync_claude
         command_sync_codex
-        command_sync_antigravity
     fi
 
     printf 'skill-install: installed=%d skipped=%d\n' "$installed" "$skipped"
@@ -1460,10 +1216,6 @@ command_validate() {
         agents/codex/config.experiment.toml \
         agents/codex/hooks.manifest.json \
         agents/codex/requirements.toml \
-        agents/antigravity/AGENTS.md \
-        agents/antigravity/hooks.manifest.json \
-        agents/antigravity/hooks.json \
-        agents/antigravity/GEMINI.md \
         runtime/apptainer/base-system.def \
         runtime/agentrun/sessions.py \
         runtime/agentrun/wizard.sh \
@@ -1539,7 +1291,6 @@ command_validate() {
         -type l -print)
     validate_claude_sync || missing=1
     validate_codex_sync || missing=1
-    validate_antigravity_sync || missing=1
     return "$missing"
 }
 
@@ -1620,7 +1371,7 @@ command_doctor() {
     local agent="$DEFAULT_AGENT" all=0 gpus=0 failed=0
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --agent) agent="$2"; shift 2 ;;
+            --agent) require_supported_agent "$2" || return $?; agent="$2"; shift 2 ;;
             --all) all=1; shift ;;
             --gpus) gpus="$2"; shift 2 ;;
             *) shift ;;
@@ -1647,7 +1398,7 @@ command_doctor() {
         command_agents | grep -E "(^Available| $agent[[:space:]])" || true
     fi
     if [ "$all" -eq 1 ]; then
-        for auth_agent in antigravity claude codex; do
+        for auth_agent in "${SUPPORTED_AGENTS[@]}"; do
             check_agent_auth "$auth_agent" || failed=1
         done
     else
@@ -1719,7 +1470,7 @@ parse_run_args() {
     esac
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --agent) AGENT="$2"; shift 2 ;;
+            --agent) require_supported_agent "$2" || return $?; AGENT="$2"; shift 2 ;;
             --repo) REPO="$2"; shift 2 ;;
             --goal) GOAL="$2"; shift 2 ;;
             --gpus) GPUS="$2"; shift 2 ;;
@@ -1734,10 +1485,10 @@ parse_run_args() {
             --no-secrets) no_secrets=1; shift ;;
             --no-gh-broker) no_gh_broker=1; shift ;;
             --show-mounts) SHOW_MOUNTS=1; shift ;;
-            --reviewers) REVIEWERS="$2"; shift 2 ;;
+            --reviewers) validate_agent_list "$2" || return $?; REVIEWERS="$2"; shift 2 ;;
             --target-diff) TARGET_DIFF="$2"; shift 2 ;;
             --target-report) TARGET_REPORT="$2"; shift 2 ;;
-            --agents) REQUESTED_AGENTS="$2"; shift 2 ;;
+            --agents) validate_agent_list "$2" || return $?; REQUESTED_AGENTS="$2"; shift 2 ;;
             --submit) SUBMIT=1; shift ;;
             --) shift; PROMPT="$*"; break ;;
             --*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
@@ -1890,8 +1641,6 @@ command_dry_run() {
         printf '  %s\n' "$bind"
     done
     if [ "$SHOW_MOUNTS" -eq 1 ]; then
-        auth_mounts "$AGENT"
-        printf '\n'
         home_config_mounts "$AGENT" "$run_dir" "$mode"
         printf '\n'
     fi
@@ -2029,7 +1778,7 @@ command_smoke_test() {
     local submit=0 partition="${AGENTRUN_SLURM_PARTITION:-}" time_limit="00:10:00" mem="4000M"
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --agent) agent="$2"; shift 2 ;;
+            --agent) require_supported_agent "$2" || return $?; agent="$2"; shift 2 ;;
             --partition) partition="$2"; shift 2 ;;
             --time) time_limit="$2"; shift 2 ;;
             --mem) mem="$2"; shift 2 ;;
@@ -2311,11 +2060,6 @@ _auth_login_agent() {
         codex)
             cmd="codex login"
             ;;
-        antigravity)
-            printf 'note: agy has no dedicated login subcommand.\n'
-            printf 'Starting agy interactively. Authenticate, then type /exit to quit.\n\n'
-            cmd="agy"
-            ;;
         *)
             printf '[FAIL] unknown agent: %s\n' "$agent" >&2
             return 1
@@ -2345,12 +2089,6 @@ _auth_import_agent() {
         codex)
             _auth_import_file "$HOME/.codex/auth.json" "$store_root/.codex/auth.json"
             ;;
-        antigravity)
-            _auth_import_file "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" \
-                "$store_root/.gemini/antigravity-cli/antigravity-oauth-token"
-            _auth_import_file "$HOME/.gemini/antigravity-cli/installation_id" \
-                "$store_root/.gemini/antigravity-cli/installation_id"
-            ;;
         *)
             printf '[FAIL] unknown agent: %s\n' "$agent" >&2
             return 1
@@ -2379,10 +2117,6 @@ _auth_status_agent() {
         codex)
             _show_status ".codex/auth.json"
             ;;
-        antigravity)
-            _show_status ".gemini/antigravity-cli/antigravity-oauth-token"
-            _show_status ".gemini/antigravity-cli/installation_id"
-            ;;
     esac
     unset -f _show_status
 }
@@ -2391,19 +2125,18 @@ command_auth() {
     local subcmd="${1:-}"
     [ -n "$subcmd" ] || { printf 'usage: agentrun auth login|import|status|reset\n' >&2; exit 2; }
     shift || true
-    local all_agents=("claude" "codex" "antigravity")
     case "$subcmd" in
         login)
             local agent_arg="" do_all=0
             while [ "$#" -gt 0 ]; do
                 case "$1" in
-                    --agent) agent_arg="$2"; shift 2 ;;
+                    --agent) require_supported_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     --all) do_all=1; shift ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ "$do_all" -eq 1 ]; then
-                for a in "${all_agents[@]}"; do _auth_login_agent "$a"; done
+                for a in "${SUPPORTED_AGENTS[@]}"; do _auth_login_agent "$a"; done
             elif [ -n "$agent_arg" ]; then
                 _auth_login_agent "$agent_arg"
             else
@@ -2414,13 +2147,13 @@ command_auth() {
             local agent_arg="" do_all=0
             while [ "$#" -gt 0 ]; do
                 case "$1" in
-                    --agent) agent_arg="$2"; shift 2 ;;
+                    --agent) require_supported_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     --all) do_all=1; shift ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ "$do_all" -eq 1 ]; then
-                for a in "${all_agents[@]}"; do _auth_import_agent "$a"; done
+                for a in "${SUPPORTED_AGENTS[@]}"; do _auth_import_agent "$a"; done
             elif [ -n "$agent_arg" ]; then
                 _auth_import_agent "$agent_arg"
             else
@@ -2431,21 +2164,21 @@ command_auth() {
             local agent_arg=""
             while [ "$#" -gt 0 ]; do
                 case "$1" in
-                    --agent) agent_arg="$2"; shift 2 ;;
+                    --agent) require_supported_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ -n "$agent_arg" ]; then
                 _auth_status_agent "$agent_arg"
             else
-                for a in "${all_agents[@]}"; do _auth_status_agent "$a"; done
+                for a in "${SUPPORTED_AGENTS[@]}"; do _auth_status_agent "$a"; done
             fi
             ;;
         reset)
             local agent_arg=""
             while [ "$#" -gt 0 ]; do
                 case "$1" in
-                    --agent) agent_arg="$2"; shift 2 ;;
+                    --agent) require_supported_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
@@ -2472,7 +2205,6 @@ main() {
     case "$command" in
         agents) command_agents "$@" ;;
         sync-claude) command_sync_claude "$@" ;;
-        sync-antigravity) command_sync_antigravity "$@" ;;
         sync-codex) command_sync_codex "$@" ;;
         validate) command_validate "$@" ;;
         doctor) command_doctor "$@" ;;

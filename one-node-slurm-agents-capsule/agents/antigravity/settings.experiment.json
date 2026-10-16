@@ -1,7 +1,0 @@
-{
-  "safety": {
-    "allow_git_push": false,
-    "allow_direct_sbatch_from_capsule": false,
-    "allow_pip": false
-  }
-}

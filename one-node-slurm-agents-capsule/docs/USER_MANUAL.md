@@ -1,6 +1,6 @@
 # USER_MANUAL
 
-このマニュアルは、`agentrun` を使って Claude Code / Codex / Antigravity を Slurm compute node 上の Apptainer sandbox 内で実行するための利用手順です。
+このマニュアルは、`agentrun` を使って Claude Code / Codex を Slurm compute node 上の Apptainer sandbox 内で実行するための利用手順です。
 
 このリポジトリの主目的は **Slurm compute node + Apptainer sandbox で agent を安全に動かすこと** です。login node や host 上で agent CLI を直接使う運用は主経路ではありません。
 
@@ -38,7 +38,7 @@ srun --partition <partition> runtime/apptainer/build-images.sh --run --force    
 ```bash
 agentrun agents
 agentrun validate
-agentrun doctor --agent <name>   # 使用する agent を指定する（例: claude, codex, antigravity）
+agentrun doctor --agent <name>   # 使用する agent を指定する（例: claude, codex）
 ```
 
 `doctor` の `image:base-system.sif` が `[OK]` になれば準備完了です。
@@ -99,7 +99,6 @@ srun --partition <partition> apptainer test --cleanenv --containall runtime/appt
 ```bash
 agentrun auth login --agent claude
 agentrun auth login --agent codex
-agentrun auth login --agent antigravity   # agy を対話起動して認証後 /exit
 agentrun auth status
 ```
 
@@ -110,7 +109,7 @@ agentrun auth login --all
 agentrun auth status
 ```
 
-`auth login` が使用する host 側 CLI (`claude`, `codex`, `agy`) は `$PATH` に存在する必要があります。インストール先の例: `$HOME/.local/bin/`
+`auth login` が使用する host 側 CLI (`claude`, `codex`) は `$PATH` に存在する必要があります。インストール先の例: `$HOME/.local/bin/`
 
 **既に host 側でログイン済みの場合** は `auth import` のみ実行します。
 
@@ -125,8 +124,6 @@ agentrun auth status --agent claude
 claude      $HOME/.claude/.credentials.json
             $HOME/.claude.json
 codex       $HOME/.codex/auth.json
-antigravity $HOME/.gemini/antigravity-cli/antigravity-oauth-token
-            $HOME/.gemini/antigravity-cli/installation_id
 ```
 
 以後のジョブは store から認証情報を staging します。host 側の元ファイルは参照されません（store に存在しない場合のみ fallback します）。
@@ -380,7 +377,6 @@ host 側の run directory:
 - `doctor`
 - `sync-claude`
 - `sync-codex`
-- `sync-antigravity`
 - run status/log/list/open/verify
 - smoke-test scaffold
 
@@ -399,15 +395,16 @@ host 側の run directory:
 agentrun agents
 ```
 
-利用可能な agent CLI を表示します。
+利用可能な agent CLI を表示します。対応する agent は `codex` と `claude` で、省略時は `codex` を使います。
+
+`--agent`、`--reviewers`、`--agents` はこの2種類だけを受け付けます。未対応の名前はエラーになります。wizard の保存済み agent が未対応なら `codex` に戻し、未対応の名前を含む保存済み reviewer / agents リストは空に戻します。
 
 例:
 
 ```text
 Available agents:
-  antigravity  primary   available /home/li/.local/bin/agy
-  claude       secondary available /home/li/.local/bin/claude
-  codex        secondary available /home/li/.local/bin/codex
+  codex        available /home/li/.local/bin/codex
+  claude       available /home/li/.local/bin/claude
 ```
 
 ## Validate
@@ -430,7 +427,6 @@ agentrun validate
 ```bash
 agentrun sync-claude
 agentrun sync-codex
-agentrun sync-antigravity
 agentrun validate
 ```
 
@@ -461,7 +457,7 @@ secrets と GitHub CLI broker のチェックも WARN 止まりです。どち�
 
 login node 上で `apptainer` や `uv` が見つからない場合は WARN です。compute node や image 内で提供される構成もあるため、WARN は即失敗とは限りません。
 
-**`--all` を指定すると 3 agent 全ての auth を検証します。**使用しない agent の auth ファイルが未設定の場合、その agent の auth チェックが `[FAIL]` になります。使用する agent だけを確認する場合は `--agent NAME` を使ってください。
+**`--all` を指定すると 2 agent 全ての auth を検証します。**使用しない agent の auth ファイルが未設定の場合、その agent の auth チェックが `[FAIL]` になります。使用する agent だけを確認する場合は `--agent NAME` を使ってください。
 
 auth check の対象（store ファーストで確認、store になければ host fallback）:
 
@@ -469,8 +465,6 @@ auth check の対象（store ファーストで確認、store になければ ho
 claude      $HOME/.agentrun/auth/claude/.claude/.credentials.json
             $HOME/.agentrun/auth/claude/.claude.json
 codex       $HOME/.agentrun/auth/codex/.codex/auth.json
-antigravity $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity-oauth-token
-            $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
 ```
 
 store にも host にも存在しない場合のみ `[FAIL]` になります。store には `agentrun auth import --agent NAME` でインポートしてください。
@@ -589,9 +583,9 @@ agentrun experiment --submit --agent codex --partition <partition> --goal goal.y
 
 ```bash
 agentrun experiment --submit --agent codex --partition <partition> --goal tests/fixtures/goal_smoke.yaml --repo . "Run the goal"
-agentrun campaign --submit --agent antigravity --partition <partition> --goal path/to/goal.yaml --repo . "Run campaign"
+agentrun campaign --submit --agent codex --partition <partition> --goal path/to/goal.yaml --repo . "Run campaign"
 agentrun review --submit --agent claude --partition <partition> --target-diff path/to/diff.patch --repo . "Review this diff"
-agentrun multi-review --submit --agent codex --partition <partition> --agents claude,codex,antigravity --repo . "Collect review notes"
+agentrun multi-review --submit --agent codex --partition <partition> --agents claude,codex --repo . "Collect review notes"
 ```
 
 重要:
@@ -624,7 +618,7 @@ assist        no additional outputs
 experiment    artifacts/proposed_next.yaml
 campaign      artifacts/proposed_next.yaml, artifacts/proposed_train.sbatch
 review        reviews/review_findings.json
-multi-review  reviews/{claude,codex,antigravity}.md, reviews/summary.md,
+multi-review  reviews/{claude,codex}.md, reviews/summary.md,
               reviews/disagreements.json, reviews/final_recommendation.md
 ```
 
@@ -741,7 +735,6 @@ artifacts/proposed_train.sbatch campaign の training job 提案
 reviews/review_findings.json      review の構造化 findings。初期値は {}
 reviews/claude.md                 Claude review 用 placeholder
 reviews/codex.md                  Codex review 用 placeholder
-reviews/antigravity.md            Antigravity review 用 placeholder
 reviews/summary.md                review summary
 reviews/disagreements.json        agent 間 disagreement 用。初期値は {}
 reviews/final_recommendation.md   final recommendation
@@ -763,8 +756,6 @@ staging 対象の auth file:
 claude      $HOME/.agentrun/auth/claude/.claude/.credentials.json
             $HOME/.agentrun/auth/claude/.claude.json
 codex       $HOME/.agentrun/auth/codex/.codex/auth.json
-antigravity $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity-oauth-token
-            $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
 ```
 
 各 agent CLI は `refresh_token` を持っているため、job 実行中に access token が期限切れになっても自動更新されます。token の期限が切れた・認証が失われた場合は、再ログインして store を更新します。
@@ -896,61 +887,6 @@ common/skills/*                      -> <run_dir>/home/.codex/skills/* symlink
 
 Codex config は run home に copy されるため writable です。trust/config persistence error が出る場合は `/home/sandbox/.codex/config.toml` が read-only bind mount になっていないか確認してください。
 
-### Antigravity
-
-container path:
-
-```text
-/home/sandbox/.gemini/AGENTS.md
-/home/sandbox/.gemini/GEMINI.md
-/home/sandbox/.gemini/config/hooks.json
-/home/sandbox/.gemini/antigravity-cli/settings.json
-/home/sandbox/.gemini/antigravity-cli/hooks/
-/home/sandbox/.gemini/antigravity-cli/skills/
-```
-
-host files:
-
-```text
-agents/antigravity/AGENTS.md                 -> ../../common/AGENTS.md
-agents/antigravity/GEMINI.md                 -> ../../common/AGENTS.md
-agents/antigravity/skills                    -> ../../common/skills
-agents/antigravity/settings.json             base config
-agents/antigravity/settings.assist.json      assist overlay
-agents/antigravity/settings.experiment.json  experiment overlay
-agents/antigravity/hooks.manifest.json       hook source manifest
-agents/antigravity/hooks.json                generated hook config
-```
-
-commands:
-
-```text
-interactive assist   cd /workspace && agy --dangerously-skip-permissions -i
-batch                cd /workspace && agy --print --dangerously-skip-permissions
-```
-
-`agy` が見つからない場合は `antigravity`、それもなければ `gemini` に fallback します。
-
-auth (store):
-
-```text
-$HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity-oauth-token
-$HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
-```
-
-mounts and staged files:
-
-```text
-agents/antigravity/AGENTS.md       -> /home/sandbox/.gemini/AGENTS.md:ro
-agents/antigravity/GEMINI.md       -> /home/sandbox/.gemini/GEMINI.md:ro
-agents/antigravity/hooks.json      -> /home/sandbox/.gemini/config/hooks.json:ro
-common/hooks                       -> /home/sandbox/.gemini/antigravity-cli/hooks:ro
-agents/antigravity/skills          -> /home/sandbox/.gemini/antigravity-cli/skills:ro
-container_config/settings.json     -> <run_dir>/home/.gemini/antigravity-cli/settings.json
-```
-
-Antigravity の `settings.json` は `/home/sandbox/.gemini/settings.json` には bind mount しません。read-only config による書き込みエラーを避けるため、run home に copy して使います。
-
 ## Common Instructions
 
 共通 instruction は以下を編集します。
@@ -964,8 +900,6 @@ common/AGENTS.md
 ```text
 agents/claude/CLAUDE.md       -> ../../common/AGENTS.md
 agents/codex/AGENTS.md        -> ../../common/AGENTS.md
-agents/antigravity/AGENTS.md  -> ../../common/AGENTS.md
-agents/antigravity/GEMINI.md  -> ../../common/AGENTS.md
 ```
 
 編集後:
@@ -993,7 +927,6 @@ skill directory を追加・削除した場合は、symlink refresh のため sy
 ```bash
 agentrun sync-claude
 agentrun sync-codex
-agentrun sync-antigravity
 agentrun validate
 ```
 
@@ -1015,7 +948,7 @@ agentrun skill-install https://github.com/softaworks/agent-toolkit.git react-dev
 agentrun skill-install ../some-skills-repo react-dev --force
 ```
 
-URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれかにマッチした場合で、この場合のみ `git clone --depth 1` を一時ディレクトリに対して行い、コピー完了後に即座に削除します（`common/skills/` にはクローン全体ではなく `skills/*` の中身だけが残ります）。取り込みに成功した skill が1件以上あれば、内部で `sync-claude` / `sync-codex` / `sync-antigravity` を自動実行します。取り込み後は `agentrun validate` で確認してください。
+URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれかにマッチした場合で、この場合のみ `git clone --depth 1` を一時ディレクトリに対して行い、コピー完了後に即座に削除します（`common/skills/` にはクローン全体ではなく `skills/*` の中身だけが残ります）。取り込みに成功した skill が1件以上あれば、内部で `sync-claude` / `sync-codex` を自動実行します。取り込み後は `agentrun validate` で確認してください。
 
 ### デフォルト Skill の解説
 
@@ -1033,7 +966,7 @@ URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれ
 
 The default skill set contains seven skills: `uv`, `agentrun-contract`, `ruff`, `experiment-report`, `pytest`, `research-latex`, and `yomiyasu`.
 
-`research-latex` is shared by Claude, Codex, and Antigravity through the existing read-only skill mounts. Skill files become available in newly started runs without rebuilding the image. Its `siunitx` dependency requires an image built with `texlive-science`; rebuild older images before using the templates.
+`research-latex` is shared by Claude Code and Codex through the existing read-only skill mounts. Skill files become available in newly started runs without rebuilding the image. Its `siunitx` dependency requires an image built with `texlive-science`; rebuild older images before using the templates.
 
 System Python remains installed for capsule hooks, agent startup metadata, and the GitHub broker. Research-latex uses `uv run --no-project python` with no additional Python packages; TeX Live and Poppler remain OS packages.
 
@@ -1054,7 +987,7 @@ Inspect every rendered page before delivering a report; structural validation do
 
 ### Japanese prose editing with yomiyasu
 
-`yomiyasu` is shared by Claude, Codex, and Antigravity. It is bundled from
+`yomiyasu` is shared by Claude Code and Codex. It is bundled from
 [nanaism/yomiyasu at commit 60bf877](https://github.com/nanaism/yomiyasu/tree/60bf877acebc86651e0b67d70112a66245f87758/skills/yomiyasu),
 including its MIT license, Unicode license notice, reference documents, and local
 checking scripts. The capsule-specific notes and command examples use uv; the
@@ -1088,7 +1021,6 @@ common/hooks/
 ```text
 agents/claude/hooks.manifest.json
 agents/codex/hooks.manifest.json
-agents/antigravity/hooks.manifest.json
 ```
 
 既存 hook の中身だけを編集する場合:
@@ -1102,7 +1034,6 @@ hook を追加・削除・リネームした場合:
 ```bash
 agentrun sync-claude
 agentrun sync-codex
-agentrun sync-antigravity
 agentrun validate
 ```
 
@@ -1116,11 +1047,11 @@ agentrun validate
 
 #### PreToolUse: コマンド実行フィルタ
 
-これらは agent がコマンド実行ツール（Claude/Codex の `Bash`、Antigravity の `run_command`）を呼ぶ前に発火します。
+これらは agent がコマンド実行ツール（Claude/Codex の `Bash`）を呼ぶ前に発火します。
 
 | hook | 役割 |
 | ---- | ---- |
-| `block_dangerous_command.py` | `rm -rf /`・`rm -rf ~`、`mkfs`、`ssh`、`sudo` と、秘密ファイル（`.ssh/`、`id_rsa`/`id_ed25519`、`auth.json`、`.credentials.json`、`.env`/`.env.*`、`secrets/`、`.bashrc` など）へのアクセスをブロックします。判定はファイル名・パスだけで、`token`・`secret` といった単語（`AutoTokenizer`、`--max-new-tokens` など）では止めません。環境変数の値は対象外です。コマンド実行ツールとファイル系ツール（Read/Edit/Write/view_file など）の両方に適用されます。Codex の `apply_patch` は patch 本文ではなく、対象ファイルのパス（`*** Update File:` などの行）だけを判定します。 |
+| `block_dangerous_command.py` | `rm -rf /`・`rm -rf ~`、`mkfs`、`ssh`、`sudo` と、秘密ファイル（`.ssh/`、`id_rsa`/`id_ed25519`、`auth.json`、`.credentials.json`、`.env`/`.env.*`、`secrets/`、`.bashrc` など）へのアクセスをブロックします。判定はファイル名・パスだけで、`token`・`secret` といった単語（`AutoTokenizer`、`--max-new-tokens` など）では止めません。環境変数の値は対象外です。コマンド実行ツールとファイル系ツール（Read/Edit/Write/apply_patch など）の両方に適用されます。Codex の `apply_patch` は patch 本文ではなく、対象ファイルのパス（`*** Update File:` などの行）だけを判定します。 |
 | `check_login_node.py` | Slurm login node 上での compute 系コマンド（`python`、`pytest`、`jupyter`、`torchrun` 等）をブロックします。`SLURM_JOB_ID` が設定されていない場合のみ動作するため、compute node 内では pass-through になります。 |
 | `check_pip_forbidden.py` | `pip` の直接呼び出しと `uv pip install`/`uninstall`/`sync`/`compile` をブロックします。パッケージ管理は `uv add`/`uv remove` を使います。`uv pip list`/`show`/`freeze`/`check` は許可されます。 |
 | `check_sbatch_forbidden.py` | Slurm allocation の内部（`SLURM_JOB_ID` が設定されている環境）での `sbatch`/`salloc` 呼び出しをブロックします。ネストした job 投入を防ぎます。 |
@@ -1137,7 +1068,7 @@ agentrun validate
 
 #### PostToolUse: ファイル編集後
 
-ファイル編集ツール（Claude/Codex の `Edit`/`Write`、Antigravity の `write_to_file` 等）が完了した後に発火します。
+ファイル編集ツール（Claude の `Edit` / `Write`、Codex の `apply_patch`）が完了した後に発火します。
 
 | hook | 役割 |
 | ---- | ---- |
@@ -1149,7 +1080,7 @@ agent セッションが終了するときに発火します。
 
 | hook | 役割 |
 | ---- | ---- |
-| `stop_notify.py` | Slack Incoming Webhook で完了通知を送ります。スクリプト内の `SLACK_WEBHOOK_URL` に実際の URL を設定してください。未設定のままでも hook は失敗せず、通知をスキップします。agent 種別（Claude / Codex / Antigravity）を payload から自動検出します。 |
+| `stop_notify.py` | Slack Incoming Webhook で完了通知を送ります。スクリプト内の `SLACK_WEBHOOK_URL` に実際の URL を設定してください。未設定のままでも hook は失敗せず、通知をスキップします。agent 種別（Claude / Codex）を payload から自動検出します。 |
 | `summarize_session.py` | `artifacts/report.md` が存在しない場合にプレースホルダを作成します。agent が report を出力しなかったときに `verify-run` を通過させるための最低限の保護です。 |
 
 ## Smoke Tests
@@ -1201,7 +1132,7 @@ job の途中や次回実行時に認証エラーになった場合は、再ロ�
 agentrun auth login --agent NAME
 ```
 
-`auth login` は host CLI でのログイン（`claude auth login` / `codex login` / `agy` 対話起動）と store へのインポートを一括で実行します。
+`auth login` は host CLI でのログイン（`claude auth login` / `codex login`）と store へのインポートを一括で実行します。
 
 ### capsule の中で `apptainer exec` が失敗する（nested apptainer / squashfuse_ll エラー）
 
@@ -1278,7 +1209,7 @@ agentrun dry-run assist --agent codex --show-mounts "hook check"
 agentrun validate
 ```
 
-Codex の実効 hook 経路は `/etc/codex/requirements.toml` です。Claude は `/home/sandbox/.claude/hooks/`、Antigravity は `/home/sandbox/.gemini/antigravity-cli/hooks/` を使います。
+Codex の実効 hook 経路は `/etc/codex/requirements.toml` です。Claude は `/home/sandbox/.claude/hooks/` を使います。
 
 ## Command Reference
 
@@ -1299,7 +1230,6 @@ agentrun smoke-test [--agent NAME] [--submit]
 agentrun init-goal
 agentrun sync-claude
 agentrun sync-codex
-agentrun sync-antigravity
 agentrun skill-install SOURCE_DIR|GIT_URL [SKILL_NAME...] [--force]
 agentrun status
 agentrun logs [--follow]
@@ -1312,7 +1242,7 @@ agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 主要 option:
 
 ```text
---agent NAME              antigravity, claude, codex
+--agent NAME              codex, claude (default: codex)
 --repo PATH               /workspace に mount する repository。default: .
 --goal PATH               goal.yaml
 --gpus N                  GPU count。default: 0

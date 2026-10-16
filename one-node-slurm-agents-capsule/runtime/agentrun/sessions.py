@@ -16,8 +16,6 @@ MOUNTS = {
     "codex": (".codex/sessions", ".codex/archived_sessions", ".codex/sqlite"),
     "claude": (".claude/projects", ".claude/file-history", ".claude/todos",
                ".claude/tasks", ".claude/plans"),
-    "antigravity": (".gemini/antigravity-cli/cache", ".gemini/antigravity-cli/brain",
-                    ".gemini/tmp"),
 }
 NATIVE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
@@ -51,6 +49,8 @@ def save(run, data):
 
 
 def init(run, agent, repo, mode, source=None):
+    if agent not in MOUNTS:
+        raise ValueError("Unsupported agent: " + str(agent))
     data = {"version": 1, "run_id": run.name, "session_key": run.name, "created_at": time.time(),
             "agent": agent, "repo": str(Path(repo).resolve()), "mode": mode}
     if source:
@@ -109,9 +109,7 @@ def text_content(content):
 
 def messages(path, cli):
     result = []
-    record = read_json(path) if cli == "gemini" else {}
-    entries = (record.get("messages", []) if isinstance(record, dict) else []) if cli == "gemini" else jsonl(path)
-    for entry in entries:
+    for entry in jsonl(path):
         if not isinstance(entry, dict):
             continue
         if cli == "codex":
@@ -124,8 +122,6 @@ def messages(path, cli):
         if not isinstance(item, dict):
             continue
         role = item.get("role", entry.get("type", ""))
-        if role in ("gemini", "model"):
-            role = "assistant"
         if role not in ("user", "assistant"):
             continue
         if cli == "codex" and (item.get("type", "message") != "message"
@@ -148,35 +144,20 @@ def discover(run, data, latest=False):
         paths = store.glob(".claude/projects/*/*.jsonl")
         cli = "claude"
     else:
-        paths = store.glob(".gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl")
-        cli = "agy"
+        raise ValueError("Unsupported agent: " + str(agent))
     for path in paths:
-        ident = path.parents[2].name if cli == "agy" else ""
-        if cli in ("codex", "claude"):
-            for entry in jsonl(path, head=True):
-                if cli == "codex" and entry.get("type") == "session_meta":
-                    meta = entry.get("payload", {})
-                    ident = meta.get("id", meta.get("session_id", "")) if isinstance(meta, dict) else ""
-                    break
-                if cli == "claude" and entry.get("sessionId"):
-                    ident = entry["sessionId"]
-                    break
+        ident = ""
+        for entry in jsonl(path, head=True):
+            if cli == "codex" and entry.get("type") == "session_meta":
+                meta = entry.get("payload", {})
+                ident = meta.get("id", meta.get("session_id", "")) if isinstance(meta, dict) else ""
+                break
+            if cli == "claude" and entry.get("sessionId"):
+                ident = entry["sessionId"]
+                break
         if isinstance(ident, str) and NATIVE_ID.fullmatch(ident):
             candidates.append({"id": ident, "cli": cli, "path": path,
                                "mtime": path.stat().st_mtime})
-    if agent == "antigravity":
-        cache_path = store / ".gemini/antigravity-cli/cache/last_conversations.json"
-        cache = read_json(cache_path)
-        ident = cache.get("/workspace", "") if isinstance(cache, dict) else ""
-        if isinstance(ident, str) and NATIVE_ID.fullmatch(ident) and not any(c["id"] == ident for c in candidates):
-            candidates.append({"id": ident, "cli": "agy", "path": None,
-                               "mtime": cache_path.stat().st_mtime})
-        for path in store.glob(".gemini/tmp/*/chats/session-*.json"):
-            record = read_json(path)
-            ident = record.get("sessionId", "") if isinstance(record, dict) else ""
-            if isinstance(ident, str) and NATIVE_ID.fullmatch(ident):
-                candidates.append({"id": ident, "cli": "gemini", "path": path,
-                                   "mtime": path.stat().st_mtime})
     if latest and data.get("native_id"):
         candidates = [c for c in candidates if c["mtime"] >= data.get("created_at", 0)
                       or (c["id"] == data["native_id"] and c["cli"] == data["native_cli"])]
@@ -186,7 +167,7 @@ def discover(run, data, latest=False):
     if not candidates:
         return None
     selected = max(candidates, key=lambda c: c["mtime"])
-    selected["messages"] = messages(selected["path"], selected["cli"]) if selected["path"] else []
+    selected["messages"] = messages(selected["path"], selected["cli"])
     return selected
 
 
@@ -232,6 +213,8 @@ def command(run):
     data = manifest(run)
     ident = data.get("native_id")
     cli = data.get("native_cli")
+    if cli != data["agent"]:
+        raise ValueError("Session CLI does not match its agent")
     if not ident or not NATIVE_ID.fullmatch(ident):
         raise ValueError("再開用の会話 ID がありません")
     if cli == "codex":
@@ -240,11 +223,6 @@ def command(run):
                "-c", 'sqlite_home="/home/sandbox/.codex/sqlite"']
     elif cli == "claude":
         cmd = ["claude", "--resume", ident, "--dangerously-skip-permissions"]
-    elif cli == "gemini":
-        cmd = ["gemini", "--resume", ident]
-    elif cli == "agy":
-        flags = shlex.join(["--conversation", ident, "--dangerously-skip-permissions"])
-        return f"cd /workspace && if command -v agy >/dev/null 2>&1; then agy {flags}; else antigravity {flags}; fi"
     else:
         raise ValueError("未対応の CLI: " + str(cli))
     return "cd /workspace && " + shlex.join(cmd)

@@ -5,8 +5,6 @@ Handles all agent tool formats:
   - Claude/Codex Bash:      tool_input.command
   - Claude Read/Edit/Write: tool_input.file_path
   - Codex apply_patch:      tool_input.command (the patch text; only its file headers are checked)
-  - Antigravity run_command: toolCall.args.CommandLine
-  - Antigravity view/write:  toolCall.args.AbsolutePath / TargetFile
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ import sys
 # capsule are readable by the agent by design.
 SECRET_PATH_RE = re.compile(
     r"(\.ssh/|\bid_rsa\b|\bid_ed25519\b|\bauth\.json\b|\.credentials\.json\b"
-    r"|antigravity-oauth-token|(^|[\s/'\"=:])\.env(\.[\w.-]+)?($|[\s/'\";|&)])"
+    r"|(^|[\s/'\"=:])\.env(\.[\w.-]+)?($|[\s/'\";|&)])"
     r"|(^|[\s/'\"=:])secrets/|\.bashrc\b|\.workspace_rc\b)",
     re.IGNORECASE,
 )
@@ -39,10 +37,6 @@ PATCH_PATH_RE = re.compile(r"^\*\*\* (?:Add File|Update File|Delete File|Move to
 
 def _get_targets(payload: dict) -> tuple[str, list[str]]:
     """Return (shell command, file paths) from any hook payload format."""
-    if "toolCall" in payload:
-        args = payload["toolCall"].get("args", {})
-        path = args.get("AbsolutePath") or args.get("TargetFile") or ""
-        return args.get("CommandLine", ""), [path] if path else []
     inp = payload.get("tool_input", {})
     command = inp.get("command", "")
     if not isinstance(command, str):
@@ -56,17 +50,14 @@ def _get_targets(payload: dict) -> tuple[str, list[str]]:
 
 def main() -> int:
     raw = sys.stdin.read()
-    decision = "deny"
     try:
         payload = json.loads(raw)
-        if "toolCall" not in payload:
-            decision = "block"
         cmd, paths = _get_targets(payload)
     except json.JSONDecodeError:
         cmd, paths = raw, []
 
     def block(reason: str) -> int:
-        print(json.dumps({"decision": decision, "reason": reason}))
+        print(json.dumps({"decision": "block", "reason": reason}))
         print(reason, file=sys.stderr)
         return 2
 

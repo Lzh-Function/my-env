@@ -30,7 +30,7 @@ case "$MODE" in
             printf 'error: runtime/apptainer/base-system.sif is missing; run "%s build" first\n' "$0" >&2
             exit 2
         fi
-        sbatch --export=ALL,AI_AGENT_ENV_DIR="$ENV_ROOT" --array=0-2 tests/slurm/agent-cli-smoke.sbatch
+        sbatch --export=ALL,AI_AGENT_ENV_DIR="$ENV_ROOT" --array=0-1 tests/slurm/agent-cli-smoke.sbatch
         ;;
     codex-auth)
         if [ ! -e runtime/apptainer/base-system.sif ]; then

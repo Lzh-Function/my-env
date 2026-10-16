@@ -239,7 +239,7 @@ wizard_step() {
             ;;
         agent)
             local -a agents=("$AGENT")
-            for choice in claude codex antigravity; do [ "$choice" = "$AGENT" ] || agents+=("$choice"); done
+            for choice in "${SUPPORTED_AGENTS[@]}"; do [ "$choice" = "$AGENT" ] || agents+=("$choice"); done
             choice="$(wizard_select 'Select agent' "${agents[@]}")" || return $?
             AGENT="$choice" ;;
         session)
@@ -298,10 +298,10 @@ wizard_step() {
         prompt)
             if [ "$mode" = assist ] && [ "$SUBMIT" -eq 0 ]; then PROMPT=''
             else wizard_ask PROMPT 'Task prompt' "$PROMPT" wizard_valid_prompt; fi ;;
-        reviewers) wizard_ask REVIEWERS 'Reviewers (comma-separated agent list)' "$REVIEWERS" ;;
+        reviewers) wizard_ask REVIEWERS 'Reviewers (codex,claude; comma-separated)' "$REVIEWERS" validate_agent_list ;;
         target_diff) wizard_ask TARGET_DIFF 'Target diff path' "$TARGET_DIFF" ;;
         target_report) wizard_ask TARGET_REPORT 'Target report path' "$TARGET_REPORT" ;;
-        agents) wizard_ask REQUESTED_AGENTS 'Multi-review agents (comma-separated)' "$REQUESTED_AGENTS" ;;
+        agents) wizard_ask REQUESTED_AGENTS 'Multi-review agents (codex,claude; comma-separated)' "$REQUESTED_AGENTS" validate_agent_list ;;
         confirm) wizard_finish ;;
     esac
 }
@@ -386,7 +386,7 @@ command_wizard() {
         case "$key" in agent) AGENT="${WIZARD_LAST[agent]:-$AGENT}" ;; submit) SUBMIT="${WIZARD_LAST[submit]:-$SUBMIT}" ;; agents) REQUESTED_AGENTS="${WIZARD_LAST[agents]:-$REQUESTED_AGENTS}" ;; esac
     done
     [[ "$SUBMIT" =~ ^[01]$ ]] || SUBMIT=0
-    case "$AGENT" in claude|codex|antigravity) ;; *) AGENT="$DEFAULT_AGENT" ;; esac
+    is_supported_agent "$AGENT" || AGENT="$DEFAULT_AGENT"
     if [ -z "${WIZARD_EXPLICIT[bind]:-}" ]; then EXTRA_BINDS=("${WIZARD_LAST_BINDS[@]+"${WIZARD_LAST_BINDS[@]}"}"); fi
     if [ -z "${WIZARD_EXPLICIT[no-gh-broker]:-}" ] && [ "${WIZARD_LAST[gh_broker]:-1}" = 0 ]; then GH_BROKER_DISABLED=1; resolve_gh_broker; fi
     [ -n "${WIZARD_EXPLICIT[partition]:-}" ] || PARTITION="${WIZARD_LAST[partition]:-$PARTITION}"
@@ -401,6 +401,8 @@ command_wizard() {
         [ -n "${WIZARD_EXPLICIT[target-diff]:-}" ] || TARGET_DIFF="${WIZARD_LAST[target_diff]:-}"
         [ -n "${WIZARD_EXPLICIT[target-report]:-}" ] || TARGET_REPORT="${WIZARD_LAST[target_report]:-}"
     fi
+    validate_agent_list "$REQUESTED_AGENTS" 2>/dev/null || REQUESTED_AGENTS=''
+    validate_agent_list "$REVIEWERS" 2>/dev/null || REVIEWERS=''
     wizard_banner 'agentrun wizard - Enter accepts the value; :back goes back; Ctrl+C / Esc / :cancel cancels' || wizard_abort
     local mode='' profile='' source='' selected='' step=0 rc=0 finished=0
     [ "$same_dir" -eq 0 ] || selected="${WIZARD_LAST[resume_id]:-}"

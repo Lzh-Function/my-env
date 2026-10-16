@@ -123,30 +123,29 @@ class SessionTests(unittest.TestCase):
         self.assertNotIn("HIDDEN", output)
         self.assertIn("claude --resume " + ID, sessions.command(run))
 
-    def test_antigravity_cache_and_live_transcript(self):
-        run, store = self.new_run("antigravity")
-        cache = store / ".gemini/antigravity-cli/cache/last_conversations.json"
-        cache.write_text(json.dumps({"/workspace": ID}))
-        self.assertEqual(sessions.discover(run, sessions.manifest(run))["id"], ID)
-        self.assertIn("末尾の発言なし", self.cli("preview", run).stdout)
-        transcript = store / f".gemini/antigravity-cli/brain/{ID}/.system_generated/logs/transcript.jsonl"
-        write_jsonl(transcript, [{"role": "user", "content": "AGY の依頼"},
-                                {"role": "assistant", "content": "AGY の最後の発言"}])
-        self.cli("finalize", run)
-        self.assertIn("AGY の最後の発言", self.cli("preview", run).stdout)
-        cmd = sessions.command(run)
-        self.assertIn("--conversation " + ID, cmd)
-        self.assertNotIn("--resume", cmd)
+    def test_unsupported_agent_state_is_rejected_without_breaking_listing(self):
+        run, store = self.new_run()
+        codex_history(store)
+        unsupported = self.parent / "unsupported-run"
+        unsupported.mkdir()
+        with self.assertRaisesRegex(ValueError, "Unsupported agent"):
+            sessions.init(unsupported, "unsupported", str(self.root), "assist")
+        self.assertFalse((unsupported / "session.json").exists())
+        data = sessions.manifest(run)
+        data.update(agent="unsupported", run_id=unsupported.name)
+        sessions.save(unsupported, data)
+        result = self.cli("list", self.parent)
+        self.assertIn("unsupported-run", result.stdout)
+        self.assertIn("test-run  codex", result.stdout)
+        self.cli("fields", unsupported, expected=2)
+        self.cli("command", unsupported, expected=2)
 
-    def test_gemini_fallback_native_session(self):
-        run, store = self.new_run("antigravity")
-        path = store / ".gemini/tmp/project-hash/chats/session-2026.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"sessionId": ID, "messages": [
-            {"type": "user", "content": "依頼"}, {"type": "gemini", "content": "Gemini の発言"}]}))
-        self.cli("finalize", run)
-        self.assertIn("Gemini の発言", self.cli("preview", run).stdout)
-        self.assertEqual(sessions.command(run), "cd /workspace && gemini --resume " + ID)
+    def test_session_command_rejects_mismatched_cli(self):
+        run, store = self.new_run()
+        data = sessions.manifest(run)
+        data.update(native_id=ID, native_cli="unsupported")
+        sessions.save(run, data)
+        self.cli("command", run, expected=2)
 
     def test_old_and_corrupt_runs_do_not_break_listing(self):
         old = self.parent / "old-run"

@@ -1,6 +1,6 @@
 # AI Agent Environment
 
-Claude Code / Codex / Antigravity を Slurm compute node 上の Apptainer sandbox 内で実行するための設定・ランタイムリポジトリです。
+Claude Code / Codex を Slurm compute node 上の Apptainer sandbox 内で実行するための設定・ランタイムリポジトリです。
 
 詳細な利用手順は **[docs/USER_MANUAL.md](docs/USER_MANUAL.md)** を参照してください。
 
@@ -8,12 +8,14 @@ Claude Code / Codex / Antigravity を Slurm compute node 上の Apptainer sandbo
 
 ```text
 common/AGENTS.md          全 agent 共通ルール
-agents/                   Claude, Codex, Antigravity 固有の設定・shim
+agents/                   Claude Code, Codex 固有の設定・shim
 profiles/                 assist / experiment / campaign / review / multi-review の runtime profile
 runtime/agentrun/         login-node-safe agentrun shell launcher
 runtime/apptainer/        Apptainer definition templates
 tests/fixtures/           smoke-test goal ファイルおよびダミー repository
 ```
+
+対応する agent は `codex` と `claude` です。省略時は `codex` を使います。
 
 ## Quick Start
 
@@ -43,7 +45,6 @@ srun --partition <partition> runtime/apptainer/build-images.sh --run            
 # 使用する agent ごとにログイン（ブラウザ / 対話認証）と store 登録をまとめて実行
 agentrun auth login --agent claude
 agentrun auth login --agent codex
-agentrun auth login --agent antigravity   # agy 対話起動 → 認証後 /exit
 
 # または全 agent を一括で
 agentrun auth login --all

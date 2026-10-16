@@ -97,7 +97,7 @@ Structured review findings. Use this schema:
 
 ## multi-review mode
 
-### `reviews/<agent>.md` (claude.md, codex.md, antigravity.md)
+### `reviews/<agent>.md` (claude.md, codex.md)
 
 Each agent writes its own review as a markdown document:
 
@@ -130,8 +130,7 @@ Document where agents disagreed:
       "topic": "Whether to use dropout here.",
       "positions": {
         "claude": "Dropout is not needed; the model is already regularized.",
-        "codex": "Dropout at 0.1 would help generalization.",
-        "antigravity": "Agreed with codex."
+        "codex": "Dropout at 0.1 would help generalization."
       }
     }
   ]
@@ -166,7 +165,7 @@ One-page summary for the operator:
 # Review Summary
 
 Reviewed: <description of what was reviewed>
-Agents: claude, codex, antigravity
+Agents: claude, codex
 Verdict: approve / request_changes / comment
 
 ## Key Findings

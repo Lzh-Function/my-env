@@ -23,18 +23,13 @@ def _is_forbidden(command: str) -> bool:
 def main() -> int:
     raw = sys.stdin.read()
     command = ""
-    decision = "deny"
     try:
         payload = json.loads(raw)
-        if "toolCall" in payload:
-            command = payload["toolCall"].get("args", {}).get("CommandLine", "")
-        else:
-            decision = "block"
-            command = payload.get("tool_input", {}).get("command", raw)
+        command = payload.get("tool_input", {}).get("command", raw)
     except json.JSONDecodeError:
         command = raw
     if _is_forbidden(command):
-        print(json.dumps({"decision": decision, "reason": "pip is forbidden. Use uv instead (uv add / uv sync / uv run). uv pip install is also forbidden."}))
+        print(json.dumps({"decision": "block", "reason": "pip is forbidden. Use uv instead (uv add / uv sync / uv run). uv pip install is also forbidden."}))
         return 2
     return 0
 

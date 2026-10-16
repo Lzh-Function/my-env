@@ -26,9 +26,6 @@ def command_fields(raw: str) -> dict:
         return {"command": raw.strip()}
     if not isinstance(payload, dict):
         return {}
-    if "toolCall" in payload:
-        call = payload["toolCall"]
-        return {"tool": call.get("name", ""), "command": call.get("args", {}).get("CommandLine", "")}
     command = payload.get("tool_input", {}).get("command", "")
     if not isinstance(command, str):
         command = " ".join(map(str, command))

@@ -56,7 +56,7 @@ These must exist when the job exits regardless of mode.
 | `experiment` | `artifacts/proposed_next.yaml` |
 | `campaign` | `artifacts/proposed_next.yaml`, `artifacts/proposed_train.sbatch` |
 | `review` | `reviews/review_findings.json` |
-| `multi-review` | `reviews/claude.md`, `reviews/codex.md`, `reviews/antigravity.md`, `reviews/summary.md`, `reviews/disagreements.json`, `reviews/final_recommendation.md` |
+| `multi-review` | `reviews/claude.md`, `reviews/codex.md`, `reviews/summary.md`, `reviews/disagreements.json`, `reviews/final_recommendation.md` |
 
 The launcher also creates `capsule.yaml`, `prompt.txt`, and `goal.yaml`, and the
 job runner writes `live/exit_code.txt` and `live/slurm_job_id.txt`.

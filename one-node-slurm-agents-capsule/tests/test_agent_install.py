@@ -34,8 +34,7 @@ elif cli == "codex":
     assert os.environ["CODEX_HOME"] == str(home / ".codex")
     assert os.environ["CODEX_INSTALL_DAEMON_ONLY"] == "0"
 else:
-    assert args == ["--dir", str(bin_dir)]
-    assert not (bin_dir / cli).exists()  # existing AGY would skip installation
+    raise AssertionError("unsupported mock CLI: " + cli)
 with Path(os.environ["TEST_INSTALL_CALLS"]).open("a") as stream:
     stream.write(json.dumps({"cli":cli, "home":str(home), "args":args}) + "\n")
 if os.environ.get("TEST_FAILURE") == "install":
@@ -71,7 +70,8 @@ if os.environ.get("TEST_FAILURE") == "fetch":
     sys.exit(22)
 args = sys.argv[1:]
 url = next(arg for arg in args if arg.startswith("https://"))
-cli = "claude" if "claude.ai" in url else "codex" if "chatgpt.com" in url else "agy"
+assert "claude.ai" in url or "chatgpt.com" in url
+cli = "claude" if "claude.ai" in url else "codex"
 template = Path(os.environ["TEST_INSTALL_TEMPLATE"]).read_text()
 Path(args[args.index("-o")+1]).write_text(template.replace("__CLI__", cli))
 '''
@@ -121,7 +121,7 @@ class AgentInstallTests(unittest.TestCase):
         return result
 
     def test_each_agent_installs_latest_in_its_own_home_and_records_version(self):
-        for agent, cli in (("claude", "claude"), ("codex", "codex"), ("antigravity", "agy")):
+        for agent, cli in (("claude", "claude"), ("codex", "codex")):
             with self.subTest(agent=agent):
                 result = self.install(agent)
                 bin_dir = Path(result.stdout.strip())
@@ -134,15 +134,15 @@ class AgentInstallTests(unittest.TestCase):
                 self.assertEqual(len(metadata["installer_sha256"]), 64)
                 self.assertIn("mock installer completed", (self.run / "live/agent_install.log").read_text())
         timeouts = [json.loads(line)[1] for line in (self.root / "timeouts.jsonl").read_text().splitlines()]
-        self.assertEqual(timeouts, ["600", "30"] * 3)
+        self.assertEqual(timeouts, ["600", "30"] * 2)
 
     def test_next_start_resolves_latest_again_without_reusing_old_binary(self):
-        first = self.install("antigravity").stdout.strip()
+        first = self.install("codex").stdout.strip()
         self.env["TEST_RELEASE"] = "2.0.0"
-        second = self.install("antigravity").stdout.strip()
+        second = self.install("codex").stdout.strip()
         self.assertNotEqual(first, second)
         metadata = json.loads((self.run / "artifacts/agent-cli.json").read_text())
-        self.assertEqual(metadata["version"], "agy 2.0.0")
+        self.assertEqual(metadata["version"], "codex 2.0.0")
         calls = [json.loads(line) for line in (self.root / "installs.jsonl").read_text().splitlines()]
         self.assertNotEqual(calls[0]["home"], calls[1]["home"])
 
