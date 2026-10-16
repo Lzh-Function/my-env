@@ -395,9 +395,9 @@ host 側の run directory:
 agentrun agents
 ```
 
-利用可能な agent CLI を表示します。対応する agent は `codex` と `claude` で、省略時は `codex` を使います。
+利用可能な agent CLI を表示します。対応する agent は `codex` と `claude` で、省略時は `claude`（Claude Code）を使います。
 
-`--agent`、`--reviewers`、`--agents` はこの2種類だけを受け付けます。未対応の名前はエラーになります。wizard の保存済み agent が未対応なら `codex` に戻し、未対応の名前を含む保存済み reviewer / agents リストは空に戻します。
+`--agent`、`--reviewers`、`--agents` はこの2種類だけを受け付けます。未対応の名前はエラーになります。wizard の保存済み agent が未対応なら `claude` に戻し、未対応の名前を含む保存済み reviewer / agents リストは空に戻します。
 
 例:
 
@@ -1242,7 +1242,7 @@ agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 主要 option:
 
 ```text
---agent NAME              codex, claude (default: codex)
+--agent NAME              codex, claude (default: claude)
 --repo PATH               /workspace に mount する repository。default: .
 --goal PATH               goal.yaml
 --gpus N                  GPU count。default: 0

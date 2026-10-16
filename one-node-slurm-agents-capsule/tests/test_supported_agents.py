@@ -41,7 +41,7 @@ class SupportedAgentTests(unittest.TestCase):
         self.assertEqual([line.split()[0] for line in result.stdout.splitlines()[1:]], ["codex", "claude"])
         result = self.run_cli("dry-run", "assist", "--no-secrets")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("selected_agent: codex", result.stdout)
+        self.assertIn("selected_agent: claude", result.stdout)
         self.assertFalse((self.root / ".agent-runs").exists())
 
     def test_both_agents_prepare_every_profile_with_shared_assets(self):

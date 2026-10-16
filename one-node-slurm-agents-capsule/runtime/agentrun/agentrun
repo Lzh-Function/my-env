@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
-DEFAULT_AGENT="codex"
+DEFAULT_AGENT="claude"
 SUPPORTED_AGENTS=(codex claude)
 PROFILES="assist experiment campaign review multi-review"
 
@@ -37,7 +37,7 @@ Usage:
   agentrun auth reset --agent NAME
 
 Options:
-  --agent NAME        codex or claude (default: codex)
+  --agent NAME        codex or claude (default: claude)
   --repo PATH         repository path, default: .
   --goal PATH         goal.yaml path
   --gpus N            GPU count, default: 0

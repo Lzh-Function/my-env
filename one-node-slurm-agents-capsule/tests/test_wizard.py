@@ -245,7 +245,7 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(rc, 0, output)
         self.assertIn("PREPARE_AGENT=codex", output)
 
-    def test_stale_agent_defaults_reset_to_codex_and_clear_reviewer_lists(self):
+    def test_stale_agent_defaults_reset_to_claude_and_clear_reviewer_lists(self):
         state_file = Path(self.env["HOME"]) / ".agentrun/wizard-last"
         state_file.parent.mkdir()
         state_file.write_text(json.dumps({"cwd": str(self.root), "agent": "unsupported",
@@ -254,11 +254,11 @@ class WizardTests(unittest.TestCase):
         answers = "1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\ny\n"
         rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
-        self.assertIn("SELECTED=codex AGENTS= REVIEWERS=", output)
+        self.assertIn("SELECTED=claude AGENTS= REVIEWERS=", output)
         self.assertNotIn("unsupported", output)
         menu = output.split("Select agent", 1)[1].split("Select launch style", 1)[0]
-        self.assertIn("1) codex", menu)
-        self.assertIn("2) claude", menu)
+        self.assertIn("1) claude", menu)
+        self.assertIn("2) codex", menu)
         self.assertIn("3) ← 戻る", menu)
 
     def test_explicit_resources_override_previous_defaults(self):

@@ -15,7 +15,7 @@ runtime/apptainer/        Apptainer definition templates
 tests/fixtures/           smoke-test goal ファイルおよびダミー repository
 ```
 
-対応する agent は `codex` と `claude` です。省略時は `codex` を使います。
+対応する agent は `codex` と `claude` です。省略時は `claude`（Claude Code）を使います。
 
 ## Quick Start
 
