@@ -1,0 +1,30 @@
+name: obsidian-drive-mirror
+
+on:
+  push:
+    paths: ["obsidian-drive-mirror/**", ".github/workflows/obsidian-drive-mirror.yml"]
+  pull_request:
+    paths: ["obsidian-drive-mirror/**", ".github/workflows/obsidian-drive-mirror.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: obsidian-drive-mirror
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: obsidian-drive-mirror/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      # Releases are published locally via `npm run release:dist` (DESIGN D-1); no secrets here.

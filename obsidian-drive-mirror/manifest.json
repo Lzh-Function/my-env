@@ -1,0 +1,9 @@
+{
+  "id": "drive-mirror",
+  "name": "Drive Mirror",
+  "version": "0.1.0",
+  "minAppVersion": "1.12.3",
+  "description": "Read-only, one-way mirror of a desktop-synced vault served by a self-hosted bridge. Local edits are discarded on sync.",
+  "author": "Lzh-Function",
+  "isDesktopOnly": false
+}
