@@ -32,5 +32,7 @@ if ! git -C "$WORK/dist" diff --cached --quiet; then
 fi
 gh release create "$VERSION" main.js manifest.json styles.css \
   --repo "$DIST_REPO" --title "$VERSION" \
-  --notes "Built from my-env@$SRC_COMMIT (obsidian-drive-mirror/)."
+  --notes "Built from my-env@$SRC_COMMIT (obsidian-drive-mirror/).${RELEASE_NOTES:+
+
+$RELEASE_NOTES}"
 echo "Released $VERSION to $DIST_REPO"

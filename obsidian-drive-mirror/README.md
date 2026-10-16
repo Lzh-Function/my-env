@@ -199,6 +199,9 @@ Tailscale を OFF にすると開けないことも確認する。
 
 ## 2. iPhone のセットアップ
 
+0. **前提: 配布用 repo `Lzh-Function/drive-mirror` に Release があること。** 無ければ開発マシンで `npm run release:dist`
+   （§4）。repo 直下に `manifest.json`、Release に `main.js` / `manifest.json` / `styles.css` が無いと BRAT はインストールできない。
+   確認: `gh release list --repo Lzh-Function/drive-mirror`
 1. **Tailscale** アプリを入れ、PC と同じ tailnet・同じユーザーでログイン。
 2. **Obsidian** で新しい Vault を作成。保存場所は「この iPhone 内」、**iCloud は使わない**。Obsidian Sync も使わない。
    この Vault は**専用**（同期のたびに Bridge の内容で上書き・削除される。ここで書いたものは消える）。
