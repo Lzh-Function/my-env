@@ -21,6 +21,7 @@ Usage:
   agentrun resume [RUN_ID|RUN_DIR] [--time HH:MM:SS] [--mem SIZE] [--cpus N] [--bind SRC:DST[:OPTIONS]]
   agentrun resume --list
   agentrun resume RUN_ID --preview
+  agentrun history [RUN_ID|RUN_DIR] [--watch]  # export now, or recover a host-side batch collector
   agentrun wizard [options] [PROMPT]         # guided/menu-driven alternative to assist|experiment|campaign|review|multi-review
   agentrun skill-install SOURCE_DIR|GIT_URL [SKILL_NAME...] [--force]
   agentrun smoke-test [--agent NAME]
@@ -589,6 +590,28 @@ session_tool() {
     python3 "$ROOT_DIR/runtime/agentrun/sessions.py" "$@"
 }
 
+history_tool() {
+    python3 "$ROOT_DIR/runtime/agentrun/history.py" "$@"
+}
+
+command_history() {
+    local target="" watch=0 run_dir
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --watch) watch=1; shift ;;
+            --*) printf 'unknown history option: %s\n' "$1" >&2; return 2 ;;
+            *) [ -z "$target" ] || { printf 'history accepts one run\n' >&2; return 2; }
+               target="$1"; shift ;;
+        esac
+    done
+    run_dir="$(session_tool resolve "$PWD/.agent-runs" "${target:-$PWD/.agent-runs/latest}")" || return $?
+    if [ "$watch" -eq 1 ]; then
+        history_tool collect "$run_dir"
+    else
+        history_tool export "$run_dir"
+    fi
+}
+
 apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-system.sif"
@@ -626,6 +649,9 @@ apptainer_command() {
             "$GH_BROKER_CONTAINER_DIR" "$GH_BROKER_SRC/gh-client"
     fi
     printf ' --bind %q:/opt/agentrun/install-agent.sh:ro' "$ROOT_DIR/runtime/agentrun/install-agent.sh"
+    if [ "$agent" = "claude" ]; then
+        printf ' --env CLAUDE_CODE_TMPDIR=/scratch/claude'
+    fi
     home_config_mounts "$agent" "$run_dir" "$mode"
     local session_mounts session_src session_dst
     session_mounts="$(session_tool mounts "$run_dir" "$agent")" || return $?
@@ -655,6 +681,9 @@ write_plan() {
     [ -z "${RESUME_SOURCE:-}" ] || session_args+=("$RESUME_SOURCE")
     session_tool "${session_args[@]}" || return $?
     generate_container_config "$run_dir" "$agent" "$mode"
+    if [ "$agent" = "claude" ]; then
+        mkdir -p "$run_dir/scratch/claude"
+    fi
     if [ "$agent" = "codex" ]; then
         link_codex_shared_assets "$run_dir"
     fi
@@ -703,6 +732,8 @@ _cleanup_home() {
         python3 "\$session_helper" finalize "\$run_dir" || true
     fi
     rm -rf "\$run_dir/home"
+    date -Iseconds > "\$run_dir/live/session_finished.txt.tmp"
+    mv "\$run_dir/live/session_finished.txt.tmp" "\$run_dir/live/session_finished.txt"
 }
 trap _cleanup_home EXIT
 printf '%s\n' "\${SLURM_JOB_ID:-}" > "\$run_dir/live/slurm_job_id.txt"
@@ -1218,6 +1249,8 @@ command_validate() {
         agents/codex/requirements.toml \
         runtime/apptainer/base-system.def \
         runtime/agentrun/sessions.py \
+        runtime/agentrun/history.py \
+        runtime/agentrun/history_export.py \
         runtime/agentrun/wizard.sh \
         runtime/agentrun/wizard-state.py \
         runtime/agentrun/path-input.py \
@@ -1687,6 +1720,8 @@ run_interactive_session() {
         fi
         if [ "$agent_started" -eq 1 ] && [ -f "$run_dir/session.json" ]; then
             session_tool finalize "$run_dir" || true
+            history_tool export "$run_dir" >> "$run_dir/live/history_export.log" 2>&1 || \
+                printf 'warning: conversation export failed; native history is retained; see %s\n' "$run_dir/live/history_export.log" >&2
             agent_started=0
         fi
         rm -rf "$run_dir/home"
@@ -1767,7 +1802,7 @@ command_prepare() {
     printf 'submit script: %s\n' "$run_dir/submit.sbatch"
     if [ "$SUBMIT" -eq 1 ]; then
         copy_auth_credentials "$run_dir" "$AGENT"
-        sbatch "$run_dir/submit.sbatch"
+        history_tool submit "$run_dir"
     elif [ "$AGENT" = "claude" ] || [ "$AGENT" = "codex" ]; then
         printf 'auth credentials were not staged; rerun with --submit to copy them before sbatch\n'
     fi
@@ -2215,6 +2250,7 @@ main() {
             ;;
         assist|experiment|campaign|review|multi-review) command_prepare "$command" "$@" ;;
         resume) command_resume "$@" ;;
+        history) command_history "$@" ;;
         wizard) command_wizard "$@" ;;
         skill-install) command_skill_install "$@" ;;
         smoke-test) command_smoke_test "$@" ;;

@@ -68,7 +68,7 @@ class InteractiveTerminalTests(unittest.TestCase):
             if select.select([master], [], [], 0.1)[0]:
                 output.extend(os.read(master, 65536))
 
-    def run_session(self, mode, host_signal=None, redirect_stdout=False):
+    def run_session(self, mode, host_signal=None, redirect_stdout=False, export_failure=False):
         master, slave = pty.openpty()
         self.addCleanup(os.close, master)
         self.addCleanup(os.close, slave)
@@ -83,10 +83,16 @@ class InteractiveTerminalTests(unittest.TestCase):
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
         env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
-                   TEST_SRUN_MODE=mode, TEST_SRUN_PID=str(self.root / "srun.pid"))
+                   TEST_SRUN_MODE=mode, TEST_SRUN_PID=str(self.root / "srun.pid"),
+                   TEST_EXPORT_FAILURE="1" if export_failure else "0")
         # Exercise real planning and launching, with credential staging stubbed.
         script = '''source "$1"
 copy_auth_credentials() { printf 'test credential' > "$1/home/.codex/auth.json"; }
+history_tool() {
+    [ -f "$2/home/.codex/auth.json" ] || { printf 'home removed before export\n' >&2; return 99; }
+    if [ "$TEST_EXPORT_FAILURE" = 1 ]; then return 2; fi
+    python3 "$ROOT_DIR/runtime/agentrun/history.py" "$@"
+}
 command_prepare assist --agent codex
 '''
         stdout = (self.root / "stdout.log").open("wb") if redirect_stdout else slave
@@ -123,6 +129,9 @@ command_prepare assist --agent codex
         runs = list((self.root / ".agent-runs").glob("*_assist_codex"))
         self.assertEqual(len(runs), 1)
         self.assertFalse((runs[0] / "home").exists())
+        self.assertNotIn("home removed before export", (runs[0] / "live/history_export.log").read_text())
+        if not export_failure:
+            self.assertTrue((runs[0] / "live/history_export.json").exists())
         self.assertTrue((runs[0] / "apptainer_exec.sh").exists())
         # Verify that the actual emulator modes the mock enabled are disabled
         # AFTER its last output, separately from restoring kernel termios.
@@ -145,6 +154,9 @@ command_prepare assist --agent codex
 
     def test_normal_exit(self):
         self.assertEqual(self.run_session("normal"), 0)
+
+    def test_export_failure_preserves_agent_exit_and_cleans_home(self):
+        self.assertEqual(self.run_session("failure", export_failure=True), 42)
 
     def test_slurm_time_limit(self):
         self.assertEqual(self.run_session("timeout"), 1)

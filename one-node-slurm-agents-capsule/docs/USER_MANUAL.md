@@ -530,6 +530,95 @@ agentrun assist --submit --agent codex --partition <partition> --repo . "Your pr
 
 agent が required artifacts を作らない場合、Slurm job が成功しても `verify-run` は失敗することがあります。特に `artifacts/report.md` は verify 対象です。
 
+## Conversation Archives
+
+Conversation conversion runs on the host that launches `agentrun`, using system
+Python's standard library. No model call, extra Python package, or image rebuild
+is needed. The existing HOME cleanup locations are preserved:
+
+- Interactive assist/resume: the launcher host finalizes the native session,
+  exports its history, and then removes the temporary HOME after `srun` returns.
+- `--submit`: the compute-node wrapper finalizes the native session and removes
+  HOME. A detached collector on the submission host waits for Slurm completion,
+  then exports the persisted history. Submitting a batch run remains asynchronous.
+
+The collector polls `squeue` every five seconds. It uses `sacct` as a fallback if
+`squeue` rejects an expired job ID. Queue query failures do not count as job
+completion. The collector follows the original run ID if the wrapper appends a
+human-readable title to the directory. A per-run lock prevents duplicate collectors.
+
+```text
+.agent-runs/<run>/artifacts/conversation.md       readable snapshot for this run
+.agent-runs/<run>/live/history_export.json        export status, host, paths, warnings
+.agent-runs/<run>/live/history_export.log         interactive export diagnostics
+.agent-runs/<run>/live/session_finished.txt       batch wrapper cleanup marker
+.agent-runs/.history/<run_id>/conversation.md     stable Markdown copy
+.agent-runs/.history/<run_id>/metadata.json       run and native transcript metadata
+.agent-runs/.history/index.sqlite3               conversations table
+.agent-runs/.history/jobs/<run_id>.json           batch job ID, origin host, collector status
+.agent-runs/.history/jobs/<run_id>.log            batch collector diagnostics
+```
+
+The Markdown contains user messages and public assistant messages in transcript
+order, with expandable tool inputs/results, command output, exit information
+when recorded, and file changes. Codex command events retain combined output
+when separate stdout/stderr fields are absent. Claude tool results support both
+structured objects and error strings; tool-result records are not displayed as
+user messages. Subagent transcripts and additional sessions created with `/new`
+are included as separate sections. Native source/originator values, including
+object-valued `source`, are retained in metadata.
+
+System/developer instructions, reasoning/thinking records, opaque image payloads,
+and duplicated API request blobs are excluded. Duplicate Codex message events
+are not rendered twice. A torn final JSONL record is skipped with an archive note;
+an invalid interior record fails the export rather than silently losing history.
+The complete file is read, independently of the tail-only `resume --preview` helper.
+
+Large Claude outputs under the persisted projects directory or run scratch can
+be included from their companion text files. Claude's temporary directory is set
+to `/scratch/claude` so background output remains accessible to the host. Paths
+outside persisted storage are not opened. The archive records missing/non-text
+companions and references to earlier paginated/forked history. It cannot restore
+output already discarded by the CLI, or reconstruct missing ancestor history.
+Native JSONL and persisted companion files remain in `.sessions/` and `scratch/`.
+
+Each run creates one snapshot and one row in the SQLite `conversations` table.
+Re-export updates that row. A resumed run gets a new snapshot linked through its
+session key; earlier run snapshots remain unchanged. The stable copy and SQLite
+path survive the wrapper's run-directory rename. Archive directories are private
+and archive files are created with mode `0600`.
+
+```bash
+agentrun history                         # export the latest run now
+agentrun history RUN_ID                  # export again, including renamed runs
+agentrun history /absolute/path/to/run
+agentrun history --watch RUN_ID          # wait/collect in the foreground on the submission host
+```
+
+The last command recovers a collector after the submission host or collector
+process stops. Run it on the same host as the original submission. For a prepared
+run submitted manually with `sbatch`, run it on the desired collection host once
+`live/slurm_job_id.txt` is populated, or use plain `history` after completion.
+The native session manifest is required; runs created before session persistence
+was introduced cannot be exported by this command.
+
+An export failure is recorded in `live/history_export.json` and the diagnostic
+log. It does not change the agent's exit code or prevent the existing HOME cleanup.
+The original persisted history remains available for a retry.
+
+The SQLite index stores `run_id`, `agent`, `repo`, `session_key`, `markdown_path`,
+`metadata_json`, `markdown`, and `updated_at`. For example, search its text locally:
+
+```python
+import sqlite3
+
+with sqlite3.connect(".agent-runs/.history/index.sqlite3") as db:
+    rows = db.execute(
+        "SELECT run_id, agent, markdown_path FROM conversations WHERE markdown LIKE ?",
+        ("%experiment%",),
+    ).fetchall()
+```
+
 ## Goal ファイル
 
 `--goal` に渡す `goal.yaml` は、agent に与える目標の構造化定義です。
@@ -1237,6 +1326,7 @@ agentrun tail
 agentrun list-runs
 agentrun open-run [RUN_DIR]
 agentrun verify-run [RUN_DIR|--run-id RUN_ID]
+agentrun history [RUN_ID|RUN_DIR] [--watch]
 ```
 
 主要 option:

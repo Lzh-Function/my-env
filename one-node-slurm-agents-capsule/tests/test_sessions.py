@@ -9,6 +9,8 @@ import pty
 import select
 import shlex
 import signal
+import socket
+import sqlite3
 import subprocess
 import tempfile
 import termios
@@ -290,6 +292,9 @@ class ResumeIntegrationTests(unittest.TestCase):
                 self.assertEqual(rc, 1, output)
                 original = (root / ".agent-runs/latest").resolve()
                 self.assertFalse((original / "home").exists())
+                archive = (original / "artifacts/conversation.md").read_text()
+                self.assertIn("saved before kill", archive)
+                self.assertEqual(json.loads((original / "live/history_export.json").read_text())["archive_host"], socket.gethostname())
                 preview = subprocess.run([str(LAUNCHER), "resume", original.name, "--preview"],
                                          cwd=root, capture_output=True, text=True)
                 self.assertEqual(preview.returncode, 0, preview.stderr)
@@ -302,6 +307,10 @@ class ResumeIntegrationTests(unittest.TestCase):
                 self.assertEqual((original / "live/stdout.log").read_text(), "original logs")
                 self.assertFalse((resumed / "home").exists())
                 self.assertEqual(sessions.manifest(resumed)["native_id"], ID)
+                self.assertEqual((original / "artifacts/conversation.md").read_text(), archive)
+                self.assertIn("saved before kill", (resumed / "artifacts/conversation.md").read_text())
+                with sqlite3.connect(root / ".agent-runs/.history/index.sqlite3") as db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM conversations").fetchone()[0], 2)
                 self.assertEqual(termios.tcgetattr(slave), before)
             finally:
                 os.close(master)

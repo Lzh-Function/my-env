@@ -82,6 +82,24 @@ agentrun dry-run assist --agent codex --partition <partition> --show-mounts
 
 `--partition` は環境変数 `AGENTRUN_SLURM_PARTITION` でも指定できます。
 
+## Conversation archives
+
+Conversations are exported automatically on the host running `agentrun`: before
+HOME cleanup for interactive runs, and after job completion for `--submit` runs.
+Batch HOME cleanup still runs on the compute node. Markdown includes public
+messages and expandable tool inputs/outputs. Native JSONL stays in `.agent-runs/.sessions/`.
+
+```text
+.agent-runs/<run>/artifacts/conversation.md    per-run Markdown snapshot
+.agent-runs/.history/<run_id>/conversation.md stable copy, independent of run renaming
+.agent-runs/.history/index.sqlite3            searchable snapshots and metadata
+```
+
+Use `agentrun history RUN_ID` to export again. If the submission host restarts,
+resume collection there with `agentrun history --watch RUN_ID`. See
+[the manual](docs/USER_MANUAL.md#conversation-archives) for collection logs and limits.
+No image rebuild or additional Python packages are required.
+
 ## コンテナ設定の仕組み
 
 `agentrun` は run ごとに `.agent-runs/<run_id>/` を作成し、container 固有の config を生成してから bind-mount します。host `$HOME` は書き換えません。
