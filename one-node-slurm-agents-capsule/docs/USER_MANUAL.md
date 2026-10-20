@@ -33,6 +33,8 @@ srun --partition <partition> runtime/apptainer/build-images.sh --run --force    
 
 判定は更新日時です。強制的に image を作り直す場合は `--force` を使います。`build-images.sh` は `SLURM_JOB_ID` がない環境でのビルドを拒否します。
 
+`--run --force` でのビルド成功後は、旧構成の `base-agent.sif` が残っていれば削除します。ビルド失敗時や dry-run では削除しません。
+
 ビルド完了後、以下で状態を確認します。
 
 ```bash
@@ -623,6 +625,11 @@ was introduced cannot be exported by this command.
 An export failure is recorded in `live/history_export.json` and the diagnostic
 log. It does not change the agent's exit code or prevent the existing HOME cleanup.
 The original persisted history remains available for a retry.
+Interactive cleanup allows up to 120 seconds for export before stopping it,
+recording a timeout failure, and continuing HOME cleanup. Retry a long export
+with `agentrun history`; manual exports do not have this cleanup deadline.
+Queue display filters such as `SQUEUE_PARTITION` are ignored by the host collector
+so they cannot make an active job appear to have finished.
 
 The SQLite index stores `archive_id` (primary key), `run_id`, `run_parent`, `agent`,
 `repo`, `launcher_cwd`, `session_key`, `markdown_path`, `metadata_json`, `markdown`,
@@ -1393,3 +1400,17 @@ agentrun resume  # 対話的に選択
 
 wizard の mode でも `resume` を選べます。会話データは `.agent-runs/.sessions` に保存し、元のログを残して新しい run で再開します。保存前の旧 run は再開対象になりません。
 起動時の installer ログは `live/agent_install.log`、インストールした CLI の情報は `artifacts/agent-cli.json` に保存します。compute node から公式 installer に接続できる必要があります。
+
+### Runtime fixes from agent-capsule
+
+同じ秒に複数回起動しても run directory を共有しません。batch・対話・resume は `--nodes=1 --ntasks=1` を明示し、同じ repository は `.agentrun.lock` で排他します。ロックFDは `srun` やコンテナへ渡しません。
+
+ホスト側の対話監視は30秒間隔で Slurm 終了を確認します。終了済みなのに `srun` が応答しない場合はローカル client を停止して端末とロックを解放します。照会障害や実行中の job は終了済みと扱いません。端末復元、セッション確定、一時HOME削除にも時間制限があります。
+
+HOME削除は最大5回再試行し、NFSの `.nfs*` などによる失敗を `live/home_cleanup.log` に記録します。15秒の削除制限後も失敗する場合は警告します。Codex の実行中の helper はコンテナ内 `/tmp/agentrun-codex.*` に置いて終了時に削除し、大きいインストーラ archive は従来の run cache 内に置きます。
+
+agent と既存の GitHub broker は計算ノードの `/etc/resolv.conf`・`/etc/hosts` を読み取り専用で bind します。明示した bind を使い、ホストの `APPTAINER_BIND*` 等による意図しない追加 mount と、GitHub token の agent 側への環境変数注入を除きます。broker の認証は従来どおり `secrets/gh.env` です。broker が起動できない場合は agent 起動前に失敗します。
+
+`artifacts/environment.txt` は Slurm resource、`PATH`・`PWD`・`HOME`・locale などの許可した項目だけを記録し、認証情報を含む環境全体は保存しません。
+
+取り込み元と採否は [Runtime Backports](RUNTIME_BACKPORTS.md) に記録しています。

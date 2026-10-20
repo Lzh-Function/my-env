@@ -82,6 +82,8 @@ set +e
 apptainer exec \
     --containall \
     --cleanenv \
+    --bind /etc/resolv.conf:/etc/resolv.conf:ro \
+    --bind /etc/hosts:/etc/hosts:ro \
     --bind "$ENV_ROOT/runtime/agentrun/install-agent.sh:/opt/agentrun/install-agent.sh:ro" \
     --home "$RUN_DIR/home:/home/sandbox" \
     --bind "$RUN_DIR/workspace:/workspace:rw" \

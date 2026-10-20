@@ -43,7 +43,9 @@ def query_active(job_ref):
     args = ["squeue", "--noheader", "--jobs", job, "--format=%i"]
     if cluster:
         args += ["--clusters", cluster]
-    result = subprocess.run(args, capture_output=True, text=True, timeout=20)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("SQUEUE_")}
+    env["LC_ALL"] = "C"
+    result = subprocess.run(args, capture_output=True, text=True, timeout=20, env=env)
     if result.returncode:
         # Some Slurm versions reject an ID once it leaves squeue. Accounting
         # may still confirm completion; a failed query alone is never enough.
@@ -109,7 +111,7 @@ def submit(run):
         raise ValueError("squeue is required for host-side batch history collection")
     data = sessions.manifest(run)
     control = control_path(run.parent, data["run_id"])
-    result = subprocess.run(["sbatch", "--parsable", str(run / "submit.sbatch")],
+    result = subprocess.run(["sbatch", "--parsable", "--nodes=1", "--ntasks=1", str(run / "submit.sbatch")],
                             capture_output=True, text=True)
     if result.stderr:
         print(result.stderr, file=sys.stderr, end="")
@@ -140,13 +142,17 @@ def submit(run):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("export", "submit", "watch", "collect"))
+    parser.add_argument("action", choices=("export", "submit", "watch", "collect", "failure"))
     parser.add_argument("path", type=Path)
     parser.add_argument("run_id", nargs="?")
     args = parser.parse_args()
     os.umask(0o077)
     path = args.path.resolve()
-    if args.action == "watch":
+    if args.action == "failure":
+        atomic_text(path / "live/history_export.json", json_text({
+            "status": "failed", "archive_host": socket.gethostname(),
+            "error": args.run_id or "Conversation export failed"}) + "\n")
+    elif args.action == "watch":
         if not args.run_id:
             raise ValueError("watch requires the original run ID")
         watch(path, args.run_id)

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+source "$ROOT_DIR/runtime/agentrun/process-cleanup.sh"
 DEFAULT_AGENT="claude"
 SUPPORTED_AGENTS=(codex claude)
 PROFILES="assist experiment campaign review multi-review"
@@ -234,6 +235,17 @@ slurm_log_directives() {
 
 run_id() {
     date +"%Y%m%d_%H%M%S_$1_$2"
+}
+
+allocate_run_dir() {
+    local path="$PWD/.agent-runs/$(run_id "$1" "$2")"
+    mkdir -p "$PWD/.agent-runs" || return $?
+    # mkdir is atomic: concurrent or same-second launches must never reuse home/logs.
+    if mkdir "$path" 2>/dev/null; then
+        printf '%s\n' "$path"
+    else
+        mktemp -d "${path}_XXXXXX"
+    fi
 }
 
 make_layout() {
@@ -563,15 +575,28 @@ gh_broker_launch_lines() {
     local run_dir="$1" image="$2"
     cat <<EOF
 GH_BROKER_DIR="\$(mktemp -d /tmp/agentrun-gh.XXXXXX)"
-apptainer exec --containall --cleanenv --env-file $(printf '%q' "$GH_ENV_FILE") --bind $(printf '%q' "$GH_BROKER_SRC"):$GH_BROKER_CONTAINER_DIR-src:ro --bind "\$GH_BROKER_DIR":$GH_BROKER_CONTAINER_DIR:rw $(printf '%q' "$image") python3 $GH_BROKER_CONTAINER_DIR-src/gh_broker.py $GH_BROKER_CONTAINER_DIR/gh.sock 2>>$(printf '%q' "$run_dir/live/gh_broker.log") &
+_cleanup_gh_broker() {
+    local rc=\$?
+    trap - EXIT
+    trap '' HUP INT TERM
+    if [ -n "\${GH_BROKER_PID:-}" ]; then
+        _agentrun_stop_process "\$GH_BROKER_PID" 'GitHub broker process' || true
+    fi
+    timeout --kill-after=2s 5s rm -rf "\$GH_BROKER_DIR" || true
+    exit "\$rc"
+}
+trap _cleanup_gh_broker EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+apptainer exec --containall --cleanenv --no-mount hostfs,bind-paths,cwd --pwd /tmp --bind /etc/resolv.conf:/etc/resolv.conf:ro --bind /etc/hosts:/etc/hosts:ro --env-file $(printf '%q' "$GH_ENV_FILE") --bind $(printf '%q' "$GH_BROKER_SRC"):$GH_BROKER_CONTAINER_DIR-src:ro --bind "\$GH_BROKER_DIR":$GH_BROKER_CONTAINER_DIR:rw $(printf '%q' "$image") python3 $GH_BROKER_CONTAINER_DIR-src/gh_broker.py $GH_BROKER_CONTAINER_DIR/gh.sock 2>>$(printf '%q' "$run_dir/live/gh_broker.log") &
 GH_BROKER_PID=\$!
-trap 'kill "\$GH_BROKER_PID" 2>/dev/null; rm -rf "\$GH_BROKER_DIR"' EXIT
 for _ in \$(seq 150); do
     [ -S "\$GH_BROKER_DIR/gh.sock" ] && break
     kill -0 "\$GH_BROKER_PID" 2>/dev/null || break
     sleep 0.2
 done
-[ -S "\$GH_BROKER_DIR/gh.sock" ] || printf 'warning: GitHub CLI broker did not start; see %s\\n' $(printf '%q' "$run_dir/live/gh_broker.log") >&2
+[ -S "\$GH_BROKER_DIR/gh.sock" ] || { printf 'GitHub CLI broker did not start; see %s\\n' $(printf '%q' "$run_dir/live/gh_broker.log") >&2; exit 1; }
 EOF
 }
 
@@ -616,12 +641,24 @@ apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-system.sif"
     [ "$gpus" -gt 0 ] && nv=" --nv"
-    local cmd
+    local cmd runtime_setup=""
     cmd="$(agent_command "$agent" "$mode" "$launch")"
     if [ -f "$run_dir/session.json" ] && [ -n "${RESUME_SOURCE:-}" ]; then
         cmd="$(session_tool command "$run_dir")" || return $?
     fi
-    cmd="AGENTRUN_AGENT_BIN=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$agent")) || exit \$?; export PATH=\"\$AGENTRUN_AGENT_BIN:\$PATH\"; hash -r; unset -f claude codex; ${cmd}"
+    if [ "$agent" = codex ]; then
+        # Codex deletes arg0 helpers while their lock file is open. On NFS this
+        # leaves .nfs* files and causes ENOTEMPTY. Only tmp lives in the private
+        # container /tmp; config, auth and persisted session mounts stay put.
+        # Prepare before install-agent's --version check, which also uses arg0.
+        runtime_setup='mkdir -p "$HOME/.codex" || exit $?; AGENTRUN_CODEX_TMP=$(mktemp -d /tmp/agentrun-codex.XXXXXX) || exit $?; trap '\''rm -rf -- "$AGENTRUN_CODEX_TMP"'\'' EXIT; ln -sfnT "$AGENTRUN_CODEX_TMP" "$HOME/.codex/tmp" || exit $?; '
+    fi
+    cmd="${runtime_setup}AGENTRUN_AGENT_BIN=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$agent")) || exit \$?; export PATH=\"\$AGENTRUN_AGENT_BIN:\$PATH\"; hash -r; unset -f claude codex; ${cmd}"
+    # Do not inherit implicit host mounts or inject GitHub broker credentials.
+    printf '%s\n' 'unset APPTAINER_BIND APPTAINER_BINDPATH APPTAINER_MOUNT SINGULARITY_BIND SINGULARITY_BINDPATH SINGULARITY_MOUNT'
+    printf '%s\n' 'unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN APPTAINERENV_GH_TOKEN APPTAINERENV_GITHUB_TOKEN APPTAINERENV_GH_ENTERPRISE_TOKEN APPTAINERENV_GITHUB_ENTERPRISE_TOKEN SINGULARITYENV_GH_TOKEN SINGULARITYENV_GITHUB_TOKEN SINGULARITYENV_GH_ENTERPRISE_TOKEN SINGULARITYENV_GITHUB_ENTERPRISE_TOKEN'
+    printf 'source %q\n' "$ROOT_DIR/runtime/agentrun/process-cleanup.sh"
+    printf 'printf "%%s\\n" "${SLURM_JOB_ID:-}" > %q\n' "$run_dir/live/slurm_job_id.txt"
     if gh_broker_enabled; then
         gh_broker_launch_lines "$run_dir" "$image"
     fi
@@ -630,13 +667,14 @@ apptainer_command() {
     printf 'export APPTAINERENV_SLURM_CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-}"\n'
     printf 'export APPTAINERENV_SLURM_MEM_PER_NODE="${SLURM_MEM_PER_NODE:-}"\n'
     printf 'export APPTAINERENV_SLURM_GPUS="${SLURM_GPUS:-}"\n'
-    printf 'apptainer exec%s --containall --cleanenv --pwd /workspace --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q' \
+    printf 'apptainer exec%s --containall --cleanenv --no-mount hostfs,bind-paths,cwd --pwd /workspace --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q' \
         "$nv" \
         "$run_dir/home" "/home/sandbox" \
         "$repo" "/workspace:rw" \
         "$run_dir" "/runs:rw" \
         "$run_dir/scratch" "/scratch:rw" \
         "$run_dir/cache" "/cache:rw"
+    printf ' --bind /etc/resolv.conf:/etc/resolv.conf:ro --bind /etc/hosts:/etc/hosts:ro'
     local spec
     while IFS= read -r spec; do
         printf ' --bind %q' "$spec"
@@ -704,7 +742,7 @@ allow_fuse: $(fuse_enabled && printf 'true' || printf 'false')
 secret_keys: $(secrets_enabled && secret_keys_csv "$SECRETS_FILE")
 gh_broker: $(gh_broker_enabled && printf 'true' || printf 'false')
 EOF
-    apptainer_command "$mode" "$agent" "$run_dir" "$gpus" "$repo" "$launch" > "$run_dir/apptainer_exec.sh"
+    apptainer_command "$mode" "$agent" "$run_dir" "$gpus" "$repo" "$launch" > "$run_dir/apptainer_exec.sh" || return $?
     sed -i '1i#!/usr/bin/env bash\nset -euo pipefail' "$run_dir/apptainer_exec.sh"
     cat > "$run_dir/submit.sbatch" <<EOF
 #!/usr/bin/env bash
@@ -715,6 +753,8 @@ EOF
 #SBATCH --time=$time_limit
 #SBATCH --mem=$mem
 #SBATCH --cpus-per-task=$cpus
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 EOF
     printf '#SBATCH --gres=gpu:%s\n' "$gpus" >> "$run_dir/submit.sbatch"
     slurm_log_directives "$run_dir" >> "$run_dir/submit.sbatch"
@@ -726,23 +766,37 @@ repo=$(printf '%q' "$repo")
 runs_dir=$(printf '%q' "$_runs_dir")
 run_base=$(printf '%q' "$_run_base")
 session_helper=$(printf '%q' "$ROOT_DIR/runtime/agentrun/sessions.py")
-session_started=0
+cleanup_done=0
 _cleanup_home() {
-    if [ "\$session_started" -eq 1 ]; then
-        python3 "\$session_helper" finalize "\$run_dir" || true
-    fi
-    rm -rf "\$run_dir/home"
+    local cleanup_rc=\$?
+    local final_rc=\${rc:-\$cleanup_rc}
+    [ "\$cleanup_done" -eq 0 ] || return 0
+    cleanup_done=1
+    trap '' HUP INT TERM
+    timeout --kill-after=2s 15s bash -c 'source "\$1"; _agentrun_cleanup_home "\$2"' bash $(printf '%q' "$ROOT_DIR/runtime/agentrun/process-cleanup.sh") "\$run_dir" 200>&- || \
+        printf '一時homeの削除を完了できませんでした: %s/home（exit=%s、詳細: live/home_cleanup.log）\n' "\$run_dir" "\$?" >&2
+    timeout --kill-after=2s 10s python3 "\$session_helper" finalize "\$run_dir" --exit-code "\$final_rc" 200>&- || \
+        printf 'セッションの終了記録を完了できませんでした。保存済みの会話はresume時に再検出します。\n' >&2
+    exec 200>&-
     date -Iseconds > "\$run_dir/live/session_finished.txt.tmp"
     mv "\$run_dir/live/session_finished.txt.tmp" "\$run_dir/live/session_finished.txt"
 }
 trap _cleanup_home EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 printf '%s\n' "\${SLURM_JOB_ID:-}" > "\$run_dir/live/slurm_job_id.txt"
-env | sort > "\$run_dir/artifacts/environment.txt"
+python3 -c 'import os; keys = ["SLURM_JOB_ID", "SLURM_JOB_PARTITION", "SLURM_CPUS_PER_TASK", "SLURM_MEM_PER_NODE", "SLURM_GPUS", "SLURMD_NODENAME", "SLURM_JOB_NAME", "SLURM_ARRAY_JOB_ID", "SLURM_ARRAY_TASK_ID", "PATH", "PWD", "HOME", "LANG", "LC_ALL", "HOSTNAME", "SHELL", "TMPDIR", "USER"]; print("\\n".join(key + "=" + repr(os.environ[key]) for key in sorted(keys) if key in os.environ))' > "\$run_dir/artifacts/environment.txt"
 apptainer --version > "\$run_dir/artifacts/container.txt" 2>/dev/null || true
 
+# Match interactive runs: refuse concurrent git operations in this repository.
+exec 200>"\$repo/.agentrun.lock"
+if ! flock -n 200; then
+    printf 'another agentrun is already active on this repo (%s).\n' "\$repo" >&2
+    exit 1
+fi
 set +e
-session_started=1
-bash "\$run_dir/apptainer_exec.sh" 2>>"\$run_dir/live/stderr.log"
+bash "\$run_dir/apptainer_exec.sh" 200>&- 2>>"\$run_dir/live/stderr.log"
 rc=\$?
 set -e
 printf '%s\n' "\$rc" > "\$run_dir/live/exit_code.txt"
@@ -1255,6 +1309,8 @@ command_validate() {
         runtime/agentrun/wizard-state.py \
         runtime/agentrun/path-input.py \
         runtime/agentrun/install-agent.sh \
+        runtime/agentrun/interactive-runner.py \
+        runtime/agentrun/process-cleanup.sh \
         runtime/agentrun/agentrun.bash
     do
         if [ -e "$ROOT_DIR/$path" ]; then
@@ -1628,14 +1684,14 @@ command_dry_run() {
             printf 'launch_method: sbatch\n'
             printf 'sbatch_args:'
             slurm_partition_args "$PARTITION"
-            printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
+            printf ' --nodes=1 --ntasks=1 --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
             printf ' --gres=gpu:%s' "$GPUS"
             printf '\n'
         else
             printf 'launch_method: srun --pty (interactive)\n'
             printf 'slurm_command: srun'
             srun_partition_args "$PARTITION"
-            printf ' --time=%s --mem=%s --cpus-per-task=%s --pty' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
+            printf ' --nodes=1 --ntasks=1 --time=%s --mem=%s --cpus-per-task=%s --pty' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
             printf ' --gres=gpu:%s' "$GPUS"
             printf '\n'
         fi
@@ -1643,7 +1699,7 @@ command_dry_run() {
         printf 'launch_method: sbatch\n'
         printf 'sbatch_args:'
         slurm_partition_args "$PARTITION"
-        printf ' --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
+        printf ' --nodes=1 --ntasks=1 --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
         printf ' --gres=gpu:%s' "$GPUS"
         printf '\n'
     fi
@@ -1654,6 +1710,7 @@ command_dry_run() {
     printf 'apptainer: '
     apptainer_command "$mode" "$AGENT" "$run_dir" "$GPUS" "$REPO" "$launch"
     printf '\nbind_mounts:\n'
+    printf '  /etc/resolv.conf:/etc/resolv.conf:ro\n  /etc/hosts:/etc/hosts:ro\n'
     printf '  %s/home:/home/sandbox\n' "$run_dir"
     printf '  %s:/workspace:rw\n' "$REPO"
     printf '  %s:/runs:rw\n' "$run_dir"
@@ -1700,18 +1757,20 @@ command_dry_run() {
 
 run_interactive_session() {
     local run_dir="$1" repo_abs="$2"; shift 2
-    local terminal_fd="" terminal_state="" srun_pid="" session_started=0 agent_started=0 rc=0
+    local history_rc=0
+    local terminal_fd="" terminal_state="" runner_pid="" session_started=0 agent_started=0 rc=0 cleanup_done=0
 
     _cleanup_interactive_session() {
-        # Neither a killed agent nor srun can be relied on to undo TUI modes.
-        # Write to the controlling terminal even when stdout is redirected.
+        [ "$cleanup_done" -eq 0 ] || return 0
+        cleanup_done=1
+        trap '' HUP INT TERM
         if [ "$session_started" -eq 1 ]; then
-            # Mouse/focus/paste reporting, application cursor keys and keypad.
-            printf '\033[?9l\033[?1000l\033[?1001l\033[?1002l\033[?1003l\033[?1004l\033[?1005l\033[?1006l\033[?1015l\033[?1016l\033[?2004l\033[?1l\033>' >&"$terminal_fd" || true
-            # Reset enhanced keyboards on both alternate and main screens:
-            # kitty keeps separate flag stacks for the two screens.
-            printf '\033[<u\033[=0u\033[>4;0m\033[?1049l\033[?1047l\033[?47l\033[<u\033[=0u\033[>4;0m\033[0m\033[?25h' >&"$terminal_fd" || true
-            stty "$terminal_state" <&"$terminal_fd" 2>/dev/null || true
+            # TTY自体が応答しない場合も、終了処理全体を止めない。
+            timeout --foreground --kill-after=1s 3s bash -c '
+                stty "$1" <&0 2>/dev/null || true
+                printf "\033[?9l\033[?1000l\033[?1001l\033[?1002l\033[?1003l\033[?1004l\033[?1005l\033[?1006l\033[?1015l\033[?1016l\033[?2004l\033[?1l\033>" >&0
+                printf "\033[<u\033[=0u\033[>4;0m\033[?1049l\033[?1047l\033[?47l\033[<u\033[=0u\033[>4;0m\033[0m\033[?25h" >&0
+            ' bash "$terminal_state" <&"$terminal_fd" 200>&- || true
             session_started=0
         fi
         if [ -n "$terminal_fd" ]; then
@@ -1719,20 +1778,40 @@ run_interactive_session() {
             terminal_fd=""
         fi
         if [ "$agent_started" -eq 1 ] && [ -f "$run_dir/session.json" ]; then
-            session_tool finalize "$run_dir" || true
-            history_tool export "$run_dir" >> "$run_dir/live/history_export.log" 2>&1 || \
-                printf 'warning: conversation export failed; native history is retained; see %s\n' "$run_dir/live/history_export.log" >&2
+            timeout --kill-after=2s 10s python3 "$ROOT_DIR/runtime/agentrun/sessions.py" finalize "$run_dir" --exit-code "$rc" 200>&- || \
+                printf 'セッションの終了記録を完了できませんでした。保存済みの会話はresume時に再検出します。\n' >&2
+            history_rc=0
+            timeout --kill-after=2s 120s python3 "$ROOT_DIR/runtime/agentrun/history.py" export "$run_dir" 200>&- >> "$run_dir/live/history_export.log" 2>&1 || history_rc=$?
+            if [ "$history_rc" -ne 0 ]; then
+                case "$history_rc" in
+                    124|137) timeout --kill-after=2s 5s python3 "$ROOT_DIR/runtime/agentrun/history.py" failure "$run_dir" "Conversation export timed out (exit=$history_rc); retry with agentrun history" 200>&- || true ;;
+                esac
+                printf 'warning: conversation export failed (exit=%s); native history is retained; see %s\n' "$history_rc" "$run_dir/live/history_export.log" >&2
+            fi
             agent_started=0
         fi
-        rm -rf "$run_dir/home"
+        # 会話の保存後に一時HOMEを削除する。子processにはロックFDを渡さない。
+        timeout --kill-after=2s 15s bash -c 'source "$1"; _agentrun_cleanup_home "$2"' bash "$ROOT_DIR/runtime/agentrun/process-cleanup.sh" "$run_dir" 200>&- || \
+            printf '一時homeの削除を完了できませんでした: %s/home（exit=%s、詳細: live/home_cleanup.log）\n' "$run_dir" "$?" >&2
+        exec 200>&-
     }
 
     _stop_interactive_session() {
-        local signal_status="$1"
+        local signal_status="$1" _stop_wait
+        rc="$signal_status"
         trap '' HUP INT TERM
-        if [ -n "$srun_pid" ]; then
-            kill -TERM "$srun_pid" 2>/dev/null || true
-            wait "$srun_pid" 2>/dev/null || true
+        if [ -n "$runner_pid" ]; then
+            kill -TERM "$runner_pid" 2>/dev/null || true
+            # 監視processへの停止要求も無期限には待たない。
+            for _stop_wait in {1..100}; do
+                kill -0 "$runner_pid" 2>/dev/null || break
+                sleep 0.1 200>&-
+            done
+            if kill -0 "$runner_pid" 2>/dev/null; then
+                kill -KILL "$runner_pid" 2>/dev/null || true
+            else
+                wait "$runner_pid" 2>/dev/null || true
+            fi
         fi
         exit "$signal_status"
     }
@@ -1743,6 +1822,7 @@ run_interactive_session() {
     trap '_stop_interactive_session 143' TERM
     if ! { exec {terminal_fd}<>/dev/tty; } 2>/dev/null; then
         printf 'interactive assist requires a controlling terminal; use --submit for batch runs\n' >&2
+        rc=1
         exit 1
     fi
     terminal_state="$(stty -g <&"$terminal_fd")"
@@ -1755,16 +1835,14 @@ run_interactive_session() {
         printf 'launching interactive session via srun %s\n' "$*"
         session_started=1
         agent_started=1
-        # An explicit stdin keeps the background child attached to the PTY.
-        # wait is interruptible, so host-side signals also run cleanup promptly.
-        srun "$@" bash "$run_dir/apptainer_exec.sh" <&0 &
-        srun_pid=$!
-        wait "$srun_pid" || rc=$?
-        srun_pid=""
+        # ロックを持つlauncher/監視processと、FDを継承しないsrunを分ける。
+        python3 "$ROOT_DIR/runtime/agentrun/interactive-runner.py" "$run_dir" srun "$@" bash "$run_dir/apptainer_exec.sh" <&0 &
+        runner_pid=$!
+        wait "$runner_pid" || rc=$?
+        runner_pid=""
     fi
     _cleanup_interactive_session
     trap - EXIT HUP INT TERM
-    exec 200>&-
     return "$rc"
 }
 
@@ -1780,20 +1858,19 @@ command_prepare() {
     else
         [ -n "$PROMPT" ] || { printf 'missing prompt\n' >&2; exit 2; }
     fi
-    local id run_dir
+    local run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
-    id="$(run_id "$mode" "$AGENT")"
-    run_dir="$PWD/.agent-runs/$id"
+    run_dir="$(allocate_run_dir "$mode" "$AGENT")" || return $?
     local launch="batch"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         launch="interactive"
     fi
-    write_plan "$mode" "$AGENT" "$REPO" "$GOAL" "$GPUS" "$TIME_LIMIT" "$PROMPT" "$run_dir" "$PARTITION" "$launch"
+    write_plan "$mode" "$AGENT" "$REPO" "$GOAL" "$GPUS" "$TIME_LIMIT" "$PROMPT" "$run_dir" "$PARTITION" "$launch" || return $?
     printf 'prepared run: %s\n' "$run_dir"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         local repo_abs
         repo_abs="$(cd "$REPO" && pwd)"
-        local srun_args=("--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty")
+        local srun_args=("--nodes=1" "--ntasks=1" "--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty")
         [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
         srun_args+=("--gres=gpu:$GPUS")
         run_interactive_session "$run_dir" "$repo_abs" "${srun_args[@]}"
@@ -1822,8 +1899,8 @@ command_smoke_test() {
         esac
     done
     local id run_dir
-    id="$(run_id smoke-test "$agent")"
-    run_dir="$PWD/.agent-runs/$id"
+    run_dir="$(allocate_run_dir smoke-test "$agent")" || return $?
+    id="$(basename "$run_dir")"
     make_layout "$run_dir"
     cat > "$run_dir/live/status.json" <<EOF
 {"status":"prepared","agent":"$agent","mode":"smoke-test","note":"submit.sbatch must run on a Slurm compute node to complete this smoke test"}
@@ -1840,32 +1917,39 @@ EOF
 #SBATCH --time=$time_limit
 #SBATCH --mem=$mem
 #SBATCH --cpus-per-task=1
-#SBATCH --output=$run_dir/live/slurm.out
-#SBATCH --error=$run_dir/live/slurm.err
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+EOF
+    slurm_log_directives "$run_dir" >> "$run_dir/submit.sbatch"
+    cat >> "$run_dir/submit.sbatch" <<EOF
 
 set -euo pipefail
-_cleanup_home() { rm -rf "$run_dir/home"; }
+run_dir=$(printf '%q' "$run_dir")
+_cleanup_home() {
+    timeout --kill-after=2s 15s bash -c 'source "\$1"; _agentrun_cleanup_home "\$2"' bash $(printf '%q' "$ROOT_DIR/runtime/agentrun/process-cleanup.sh") "\$run_dir" || \
+        printf '一時homeの削除を完了できませんでした: %s/home（exit=%s、詳細: live/home_cleanup.log）\n' "\$run_dir" "\$?" >&2
+}
 trap _cleanup_home EXIT
-printf '%s\n' "\${SLURM_JOB_ID:-}" > "$run_dir/live/slurm_job_id.txt"
-printf '{"status":"running","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/status.json"
-date -Iseconds > "$run_dir/live/heartbeat.txt"
-printf 'Smoke test running on node %s\n' "\${SLURMD_NODENAME:-unknown}" > "$run_dir/live/stdout.log"
-: > "$run_dir/live/stderr.log"
-printf '{"event":"smoke-test","agent":"%s","status":"running","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/command_log.jsonl"
-printf '{"event":"slurm-job","status":"running"}\n' > "$run_dir/live/events.jsonl"
-printf 'Smoke test completed on compute node.\n' > "$run_dir/live/current_task.md"
-: > "$run_dir/artifacts/git_diff.patch"
-printf '# Smoke Test Report\n\nPassed on Slurm job %s.\n' "\${SLURM_JOB_ID:-}" > "$run_dir/artifacts/report.md"
-printf 'verified capsule smoke test execution\n' > "$run_dir/artifacts/run_title.txt"
-printf '{"smoke_test":true,"status":"passed","agent":"%s","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/artifacts/metrics.json"
-printf '{"status":"success","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "$run_dir/live/status.json"
-printf '0\n' > "$run_dir/live/exit_code.txt"
+printf '%s\n' "\${SLURM_JOB_ID:-}" > "\$run_dir/live/slurm_job_id.txt"
+printf '{"status":"running","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "\$run_dir/live/status.json"
+date -Iseconds > "\$run_dir/live/heartbeat.txt"
+printf 'Smoke test running on node %s\n' "\${SLURMD_NODENAME:-unknown}" > "\$run_dir/live/stdout.log"
+: > "\$run_dir/live/stderr.log"
+printf '{"event":"smoke-test","agent":"%s","status":"running","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "\$run_dir/live/command_log.jsonl"
+printf '{"event":"slurm-job","status":"running"}\n' > "\$run_dir/live/events.jsonl"
+printf 'Smoke test completed on compute node.\n' > "\$run_dir/live/current_task.md"
+: > "\$run_dir/artifacts/git_diff.patch"
+printf '# Smoke Test Report\n\nPassed on Slurm job %s.\n' "\${SLURM_JOB_ID:-}" > "\$run_dir/artifacts/report.md"
+printf 'verified capsule smoke test execution\n' > "\$run_dir/artifacts/run_title.txt"
+printf '{"smoke_test":true,"status":"passed","agent":"%s","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "\$run_dir/artifacts/metrics.json"
+printf '{"status":"success","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "$agent" "\${SLURM_JOB_ID:-}" > "\$run_dir/live/status.json"
+printf '0\n' > "\$run_dir/live/exit_code.txt"
 EOF
     chmod +x "$run_dir/submit.sbatch"
     printf 'prepared smoke-test run: %s\n' "$run_dir"
     printf 'submit script: %s\n' "$run_dir/submit.sbatch"
     if [ "$submit" -eq 1 ]; then
-        sbatch "$run_dir/submit.sbatch"
+        sbatch --nodes=1 --ntasks=1 "$run_dir/submit.sbatch"
     fi
 }
 
@@ -1954,9 +2038,9 @@ command_resume() {
     # 過去のログを上書きせず、新しい Slurm job 用の run を作る。
     run_dir="$(mktemp -d "$(dirname "$source")/$(run_id "resume-$mode" "$AGENT")_XXXXXX")"
     local RESUME_SOURCE="$source"
-    write_plan "$mode" "$AGENT" "$REPO" "" 0 "$TIME_LIMIT" "" "$run_dir" "$PARTITION" interactive
+    write_plan "$mode" "$AGENT" "$REPO" "" 0 "$TIME_LIMIT" "" "$run_dir" "$PARTITION" interactive || return $?
     printf 'resume: %s → %s\n' "$(basename "$source")" "$(basename "$run_dir")"
-    local srun_args=("--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty" "--gres=gpu:0")
+    local srun_args=("--nodes=1" "--ntasks=1" "--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty" "--gres=gpu:0")
     [ -z "$PARTITION" ] || srun_args+=("--partition=$PARTITION")
     run_interactive_session "$run_dir" "$REPO" "${srun_args[@]}"
 }

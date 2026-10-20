@@ -329,6 +329,15 @@ class HistoryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "completion has not been established"):
                 collector.query_active("123")
 
+    def test_host_queue_filters_cannot_hide_an_active_batch_job(self):
+        active = subprocess.CompletedProcess([], 0, "123\n", "")
+        with patch.dict(os.environ, SQUEUE_PARTITION="unrelated", SQUEUE_STATES="pending"), \
+             patch.object(collector.subprocess, "run", return_value=active) as query:
+            self.assertTrue(collector.query_active("123"))
+        env = query.call_args.kwargs["env"]
+        self.assertFalse(any(key.startswith("SQUEUE_") for key in env))
+        self.assertEqual(env["LC_ALL"], "C")
+
     def test_manual_cli_export_records_failure_and_can_retry(self):
         self.codex()
         with self.path.open("a") as stream:
@@ -404,8 +413,9 @@ sys.exit(17)
 import os, subprocess, sys
 from pathlib import Path
 assert sys.argv[1] == '--parsable'
+assert '--nodes=1' in sys.argv and '--ntasks=1' in sys.argv
 with Path(os.environ['TEST_COMPUTE_LOG']).open('w') as log:
-    subprocess.run(['bash', sys.argv[2]], env=dict(os.environ, SLURM_JOB_ID='123', SLURMD_NODENAME='fake-compute'), stdout=log, stderr=log)
+    subprocess.run(['bash', sys.argv[-1]], env=dict(os.environ, SLURM_JOB_ID='123', SLURMD_NODENAME='fake-compute'), stdout=log, stderr=log)
 print('123')
 '''
         for name, text in (("apptainer", fake_apptainer), ("sbatch", fake_sbatch), ("squeue", "#!/bin/sh\nexit 0\n")):

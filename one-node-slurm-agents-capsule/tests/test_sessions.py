@@ -16,6 +16,7 @@ import tempfile
 import termios
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +70,54 @@ class SessionTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
+
+
+    def test_finalize_records_interactive_timeout_and_keeps_saved_session(self):
+        run, store = self.new_run()
+        (run / 'live').mkdir()
+        codex_history(store)
+        self.cli('finalize', run, '--exit-code', '124')
+        self.assertEqual((run / 'live/exit_code.txt').read_text(), '124\n')
+        self.assertEqual(json.loads((run / 'live/status.json').read_text())['status'], 'timeout')
+        self.assertEqual(sessions.manifest(run)['native_id'], ID)
+
+
+    def test_listing_resumed_runs_reads_shared_history_once(self):
+        run, store = self.new_run()
+        codex_history(store)
+        chain = [run]
+        for index in range(5):
+            resumed = self.parent / f'resumed-{index}'
+            resumed.mkdir()
+            sessions.init(resumed, 'codex', str(self.root), 'assist', chain[-1])
+            chain.append(resumed)
+        with mock.patch.object(sessions, 'history_candidates', wraps=sessions.history_candidates) as scan, \
+                mock.patch.object(sessions, 'messages', wraps=sessions.messages) as preview:
+            cache = {}
+            for path in chain:
+                self.assertIn('修正しました', sessions.describe(path, cache)[2])
+            self.assertEqual(scan.call_count, 1)
+            self.assertEqual(preview.call_count, 1)
+        codex_history(store, text='次の表示では更新済み')
+        self.assertIn('更新済み', sessions.describe(run, {})[2])
+
+
+    def test_finalize_does_not_read_message_previews_and_keeps_status_metadata(self):
+        run, store = self.new_run()
+        codex_history(store)
+        (run / 'live').mkdir()
+        (run / 'live/status.json').write_text('{"custom":"retained"}')
+        (run / 'live/slurm_job_id.txt').write_text('9001\n')
+        argv = ['sessions.py', 'finalize', str(run), '--exit-code', '0']
+        with mock.patch('sys.argv', argv), mock.patch.object(sessions, 'messages',
+                side_effect=AssertionError('finalize must not load message previews')):
+            sessions.main()
+        status = json.loads((run / 'live/status.json').read_text())
+        self.assertEqual(status['custom'], 'retained')
+        self.assertEqual(status['job_id'], '9001')
+        self.assertEqual(status['exit_code'], 0)
+        self.assertEqual(sessions.manifest(run)['native_id'], ID)
+
 
     def test_live_history_survives_without_exit_cleanup(self):
         run, store = self.new_run()
@@ -250,12 +299,23 @@ else:
                     "content":[{"type":"output_text", "text":"saved before kill"}]}}) + "\n")
     (run / "live/stdout.log").write_text("original logs")
     print("srun: TIME LIMIT", file=sys.stderr)
+    if os.environ['TEST_RESUME_STEP'] == 'initial_hung':
+        import signal
+        (run / 'live/slurm_job_id.txt').write_text('9001\n')
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        while True: signal.pause()
     sys.exit(1)
 '''
 
 
 class ResumeIntegrationTests(unittest.TestCase):
     def test_time_limit_then_resume_uses_saved_id_and_fresh_job(self):
+        self.time_limit_then_resume("initial")
+
+    def test_stuck_srun_after_timeout_still_allows_resume(self):
+        self.time_limit_then_resume("initial_hung")
+
+    def time_limit_then_resume(self, initial_step):
         with tempfile.TemporaryDirectory(prefix="resume repo with spaces ") as temp:
             root = Path(temp)
             bin_dir = root / "bin"
@@ -263,6 +323,9 @@ class ResumeIntegrationTests(unittest.TestCase):
             mock = bin_dir / "srun"
             mock.write_text(MOCK_SRUN)
             mock.chmod(0o755)
+            control = bin_dir / 'scontrol'
+            control.write_text('#!/bin/sh\nprintf "JobId=9001 JobState=TIMEOUT\\n"\n')
+            control.chmod(0o755)
             master, slave = pty.openpty()
             try:
                 def controlling_terminal():
@@ -289,8 +352,8 @@ class ResumeIntegrationTests(unittest.TestCase):
                     return proc.returncode, output.decode(errors="replace")
 
                 before = termios.tcgetattr(slave)
-                rc, output = execute(["assist", "--agent", "codex"], "initial")
-                self.assertEqual(rc, 1, output)
+                rc, output = execute(["assist", "--agent", "codex"], initial_step)
+                self.assertEqual(rc, 124 if initial_step == "initial_hung" else 1, output)
                 original = (root / ".agent-runs/latest").resolve()
                 self.assertFalse((original / "home").exists())
                 original_archive = Path(json.loads((original / "live/history_export.json").read_text())["markdown"])

@@ -223,21 +223,32 @@ def run_gh(argv: list[str], stdin: bytes, repo: str | None) -> tuple[bytes, byte
         if repo:
             env["GH_REPO"] = repo
         try:
-            proc = subprocess.run(
-                [GH_BIN, *argv], input=stdin, capture_output=True,
-                cwd=work, env=env, timeout=TIMEOUT_SECONDS,
-            )
+            with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+                proc = subprocess.run(
+                    ['timeout', '--kill-after=2s', str(TIMEOUT_SECONDS), GH_BIN, *argv],
+                    input=stdin, stdout=out, stderr=err,
+                    cwd=work, env=env, timeout=TIMEOUT_SECONDS + 5,
+                )
+                out.seek(0)
+                err.seek(0)
+                proc.stdout, proc.stderr = out.read(), err.read()
         except subprocess.TimeoutExpired:
             return b"", b"gh broker: command timed out\n", 124
         except FileNotFoundError:
             return b"", b"gh broker: gh is not installed in the image (rebuild base-system.sif)\n", 127
-        return proc.stdout, proc.stderr, proc.returncode
+        # GNU timeout can itself be killed by --kill-after. Python represents
+        # that as -SIGKILL; socket clients need the shell-compatible exit code.
+        code = 128 - proc.returncode if proc.returncode < 0 else proc.returncode
+        if code in (124, 137):
+            return proc.stdout, proc.stderr + b'gh broker: command timed out\n', code
+        return proc.stdout, proc.stderr, code
 
 
 class Handler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
-        raw = self.rfile.read(MAX_REQUEST_BYTES + 1)
+        self.connection.settimeout(10)
         try:
+            raw = self.rfile.read(MAX_REQUEST_BYTES + 1)
             if len(raw) > MAX_REQUEST_BYTES:
                 raise ValueError("request too large")
             request = json.loads(raw)
@@ -245,7 +256,7 @@ class Handler(socketserver.StreamRequestHandler):
             stdin = base64.b64decode(request.get("stdin") or "")
             repo = request.get("repo")
             repo = str(repo) if repo else None
-        except (ValueError, KeyError, TypeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             self.reply(b"", f"gh broker: bad request: {exc}\n".encode(), 2)
             return
 

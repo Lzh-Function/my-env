@@ -81,6 +81,21 @@ if [ "$4" = "${TEST_BUILD_FAIL:-}" ]; then exit 23; fi
         self.assertEqual(self.calls(), ["base-system.def"])
         self.assertEqual((self.root / "base-system.sif").read_text(), "new image")
 
+    def test_force_removes_obsolete_agent_image_after_success(self):
+        self.fresh_image()
+        self.seed("base-agent.sif", 500)
+        result = self.run_build("--run", "--force")
+        self.assertFalse((self.root / "base-agent.sif").exists())
+        self.assertEqual((self.root / "base-system.sif").read_text(), "new image")
+        self.assertIn("removed obsolete", result.stdout)
+
+    def test_force_removes_obsolete_symlink_without_deleting_target(self):
+        self.seed("old-image.sif", 500)
+        (self.root / "base-agent.sif").symlink_to("old-image.sif")
+        self.run_build("--run", "--force")
+        self.assertFalse((self.root / "base-agent.sif").is_symlink())
+        self.assertEqual((self.root / "old-image.sif").read_text(), "old image")
+
     def test_legacy_targets_build_single_image(self):
         for target in ("system", "all", "agent"):
             with self.subTest(target=target):
@@ -101,10 +116,12 @@ if [ "$4" = "${TEST_BUILD_FAIL:-}" ]; then exit 23; fi
 
     def test_force_still_requires_run(self):
         self.fresh_image()
+        self.seed("base-agent.sif", 500)
         result = self.run_build("--force")
         self.assertIn("dry-run", result.stdout)
         self.assertEqual(self.calls(), [])
         self.assertEqual((self.root / "base-system.sif").read_text(), "old image")
+        self.assertEqual((self.root / "base-agent.sif").read_text(), "old image")
 
     def test_unknown_argument_is_rejected(self):
         self.run_build("--run", "--froce", expected=2)
@@ -117,11 +134,13 @@ if [ "$4" = "${TEST_BUILD_FAIL:-}" ]; then exit 23; fi
 
     def test_failed_build_preserves_image_and_cleans_partial_image(self):
         self.fresh_image()
+        self.seed("base-agent.sif", 500)
         self.env["TEST_BUILD_FAIL"] = "base-system.def"
         self.run_build("--run", "--force", expected=23)
         self.assertEqual(self.calls(), ["base-system.def"])
         self.assertEqual((self.root / "base-system.sif").read_text(), "old image")
-        self.assertEqual(list(self.root.glob("*.sif")), [self.root / "base-system.sif"])
+        self.assertEqual((self.root / "base-agent.sif").read_text(), "old image")
+        self.assertEqual(sorted(self.root.glob("*.sif")), [self.root / "base-agent.sif", self.root / "base-system.sif"])
 
     def test_failed_first_build_leaves_no_image(self):
         self.env["TEST_BUILD_FAIL"] = "base-system.def"

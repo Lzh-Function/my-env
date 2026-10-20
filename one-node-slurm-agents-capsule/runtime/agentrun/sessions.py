@@ -134,9 +134,7 @@ def messages(path, cli):
     return result[-6:]
 
 
-def discover(run, data, latest=False):
-    store = state_dir(run, data)
-    agent = data["agent"]
+def history_candidates(store, agent):
     candidates = []
     if agent == "codex":
         paths = store.glob(".codex/*sessions/**/*.jsonl")
@@ -159,6 +157,18 @@ def discover(run, data, latest=False):
         if isinstance(ident, str) and NATIVE_ID.fullmatch(ident):
             candidates.append({"id": ident, "cli": cli, "path": path,
                                "mtime": path.stat().st_mtime})
+    return candidates
+
+
+def discover(run, data, latest=False, cache=None, preview=True):
+    store = state_dir(run, data)
+    key = (store, data['agent'])
+    if cache is None:
+        candidates = history_candidates(*key)
+    else:
+        if key not in cache:
+            cache[key] = history_candidates(*key)
+        candidates = cache[key]
     if latest and data.get("native_id"):
         candidates = [c for c in candidates if c["mtime"] >= data.get("created_at", 0)
                       or (c["id"] == data["native_id"] and c["cli"] == data["native_cli"])]
@@ -167,8 +177,16 @@ def discover(run, data, latest=False):
                       and c["cli"] == data["native_cli"]]
     if not candidates:
         return None
-    selected = max(candidates, key=lambda c: c["mtime"])
-    selected["messages"] = messages(selected["path"], selected["cli"])
+    selected = dict(max(candidates, key=lambda c: c["mtime"]))
+    selected["messages"] = []
+    if preview and selected['path']:
+        key = ('messages', selected['path'], selected['cli'])
+        if cache is not None and key in cache:
+            selected['messages'] = cache[key]
+        else:
+            selected['messages'] = messages(selected['path'], selected['cli'])
+            if cache is not None:
+                cache[key] = selected['messages']
     return selected
 
 
@@ -177,10 +195,10 @@ def safe_text(text):
     return "".join(c for c in text if c == "\n" or not unicodedata.category(c).startswith("C"))
 
 
-def describe(run):
+def describe(run, cache=None):
     try:
         data = manifest(run)
-        session = discover(run, data)
+        session = discover(run, data, cache=cache)
         reason = "再開可能" if session else "会話履歴なし"
         recent = session["messages"] if session else []
         snippet = (recent[-1]["role"] + ": " + recent[-1]["text"]) if recent else "末尾の発言なし"
@@ -234,6 +252,7 @@ def main():
     parser.add_argument("action", choices=("init", "mounts", "command", "finalize", "list", "pick", "choices", "resolve", "preview", "fields"))
     parser.add_argument("path", type=Path)
     parser.add_argument("args", nargs="*")
+    parser.add_argument("--exit-code", type=int)
     args = parser.parse_args()
     run = args.path.resolve()
     if args.action == "init":
@@ -247,7 +266,19 @@ def main():
         print(command(run))
     elif args.action == "finalize":
         data = manifest(run)
-        session = discover(run, data, latest=True)
+        if args.exit_code is not None:
+            code = args.exit_code
+            (run / 'live/exit_code.txt').write_text(f'{code}\n')
+            status = read_json(run / 'live/status.json')
+            if not isinstance(status, dict):
+                status = {}
+            status.update(status='success' if code == 0 else 'timeout' if code == 124 else 'failed',
+                          exit_code=code, agent=data['agent'], mode=data['mode'])
+            job = run / 'live/slurm_job_id.txt'
+            if job.is_file():
+                status['job_id'] = job.read_text().strip()
+            (run / 'live/status.json').write_text(json.dumps(status) + '\n')
+        session = discover(run, data, latest=True, preview=False)
         if session:
             data.update(native_id=session["id"], native_cli=session["cli"])
             save(run, data)
@@ -268,10 +299,12 @@ def main():
         for item in session["messages"] if session else []:
             print("\n[" + item["role"] + "]\n" + safe_text(item["text"]))
     elif args.action == "list":
+        cache = {}
         for path in runs(run):
-            print(describe(path)[2])
+            print(describe(path, cache)[2])
     elif args.action in ("pick", "choices"):
-        candidates = [(p, describe(p)) for p in runs(run)]
+        cache = {}
+        candidates = [(p, describe(p, cache)) for p in runs(run)]
         candidates = [(p, info) for p, info in candidates if info[1]]
         if not candidates:
             raise ValueError("再開可能な run がありません。導入後に開始した会話が対象です")

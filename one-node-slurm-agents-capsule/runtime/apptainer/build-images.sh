@@ -46,3 +46,7 @@ apptainer build --disable-cache "$tmp" base-system.def
 mv -f "$tmp" base-system.sif
 trap - EXIT
 printf 'built %s/base-system.sif\n' "$SCRIPT_DIR"
+if [ "$FORCE" -eq 1 ] && { [ -e base-agent.sif ] || [ -L base-agent.sif ]; }; then
+    rm -f -- base-agent.sif
+    printf 'removed obsolete %s/base-agent.sif\n' "$SCRIPT_DIR"
+fi

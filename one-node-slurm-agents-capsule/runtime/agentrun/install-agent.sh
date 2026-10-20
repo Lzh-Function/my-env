@@ -28,26 +28,40 @@ mkdir -p "$bin_dir"
 cd "$tool_home"
 printf 'Installing latest %s before startup...\n' "$agent" >&2
 printf '\n[%s] agent=%s release=latest\n' "$(date -Iseconds)" "$agent" >> "$log"
-curl --fail --silent --show-error --location --retry 2 --connect-timeout 20 --max-time 120 \
-    "$url" -o "$tool_root/install.sh" >> "$log" 2>&1
+if timeout --kill-after=5s 150 curl --fail --silent --show-error --location --retry 2 --connect-timeout 20 --max-time 120 \
+    --retry-max-time 120 "$url" -o "$tool_root/install.sh" >> "$log" 2>&1; then
+    :
+else
+    fetch_rc=$?
+    case "$fetch_rc" in
+        6) printf 'コンテナ内で配布先の名前解決に失敗しました。compute nodeとコンテナの/etc/resolv.conf・/etc/hostsを確認してください。\n' >&2 ;;
+        5) printf 'コンテナ内でプロキシの名前解決に失敗しました。プロキシ設定とcompute nodeのDNSを確認してください。\n' >&2 ;;
+    esac
+    exit "$fetch_rc"
+fi
 
 # HOME/XDG の変更は installer の子 process に限定する。
 installer_env=(HOME="$tool_home" XDG_CONFIG_HOME="$tool_home/.config"
     XDG_CACHE_HOME="$tool_home/.cache" XDG_DATA_HOME="$tool_home/.local/share")
 case "$agent" in
     claude)
-        timeout --foreground 600 env "${installer_env[@]}" bash "$tool_root/install.sh" latest \
+        timeout --kill-after=5s 600 env "${installer_env[@]}" bash "$tool_root/install.sh" latest \
             </dev/null >> "$log" 2>&1 ;;
     codex)
-        timeout --foreground 600 env "${installer_env[@]}" CODEX_HOME="$tool_home/.codex" \
+        # download を HOME 側 (/cache) に置く。
+        # 既定の mktemp 先 /tmp は --containall で 64MB の tmpfs になり、archive が入らない。
+        mkdir -p "$tool_home/.codex/tmp"
+        timeout --kill-after=5s 600 env "${installer_env[@]}" CODEX_HOME="$tool_home/.codex" \
+            TMPDIR="$tool_home/.codex/tmp" \
             CODEX_INSTALL_DIR="$bin_dir" CODEX_RELEASE=latest CODEX_NON_INTERACTIVE=1 \
             CODEX_INSTALL_DAEMON_ONLY=0 CODEX_INSTALL_DEFER_SELECTION=0 \
             sh "$tool_root/install.sh" </dev/null >> "$log" 2>&1 ;;
+
 esac
 
 # PATH 上の image 内旧版ではなく、今回インストールした実体を検証する。
 test -x "$bin_dir/$cli"
-version="$(timeout --foreground 30 "$bin_dir/$cli" --version </dev/null 2>> "$log")"
+version="$(timeout --kill-after=5s 30 "$bin_dir/$cli" --version </dev/null 2>> "$log")"
 test -n "$version"
 python3 - "$run_dir/artifacts/agent-cli.json" "$agent" "$cli" "$bin_dir/$cli" "$version" "$url" "$tool_root/install.sh" <<'PY'
 from datetime import datetime, timezone

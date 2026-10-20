@@ -102,6 +102,7 @@ def main() -> int:
     }
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(320)  # brokerのコマンド上限300秒＋応答の猶予
             sock.connect(SOCKET_PATH)
             sock.sendall(json.dumps(request).encode())
             sock.shutdown(socket.SHUT_WR)
