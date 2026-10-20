@@ -417,7 +417,8 @@ Mode: $mode
 Agent: $agent
 Workspace: /workspace
 Runs: /runs
-Scratch: /scratch
+Scratch: /scratch (per-run directory under /runs)
+Compute-node SSD: /node-scratch, only when AGENTRUN_NODE_SCRATCH=/node-scratch; files are node-local and are not archived automatically. Save final outputs under /runs.
 Resources: $resources
 Host repo: $repo
 
@@ -439,7 +440,8 @@ Mode: $mode
 Agent: $agent
 Workspace: /workspace
 Runs: /runs
-Scratch: /scratch
+Scratch: /scratch (per-run directory under /runs)
+Compute-node SSD: /node-scratch, only when AGENTRUN_NODE_SCRATCH=/node-scratch; files are node-local and are not archived automatically. Save final outputs under /runs.
 Resources: $resources
 
 User goal:
@@ -669,6 +671,11 @@ apptainer_command() {
     printf '%s\n' 'unset APPTAINER_BIND APPTAINER_BINDPATH APPTAINER_MOUNT SINGULARITY_BIND SINGULARITY_BINDPATH SINGULARITY_MOUNT'
     printf '%s\n' 'unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN APPTAINERENV_GH_TOKEN APPTAINERENV_GITHUB_TOKEN APPTAINERENV_GH_ENTERPRISE_TOKEN APPTAINERENV_GITHUB_ENTERPRISE_TOKEN SINGULARITYENV_GH_TOKEN SINGULARITYENV_GITHUB_TOKEN SINGULARITYENV_GH_ENTERPRISE_TOKEN SINGULARITYENV_GITHUB_ENTERPRISE_TOKEN'
     printf 'source %q\n' "$ROOT_DIR/runtime/agentrun/process-cleanup.sh"
+    # Freeze the submission user's identity, but check the path only on the node.
+    local submit_user
+    submit_user="$(id -un)" || return $?
+    printf 'source %q\n' "$ROOT_DIR/runtime/agentrun/node-scratch.sh"
+    printf '_agentrun_node_scratch_setup %q\n' "/scratch/$submit_user"
     printf 'printf "%%s\\n" "${SLURM_JOB_ID:-}" > %q\n' "$run_dir/live/slurm_job_id.txt"
     if gh_broker_enabled; then
         gh_broker_launch_lines "$run_dir" "$image"
@@ -686,6 +693,7 @@ apptainer_command() {
         "$run_dir" "/runs:rw" \
         "$run_dir/scratch" "/scratch:rw" \
         "$run_dir/cache" "/cache:rw"
+    printf ' "${AGENTRUN_NODE_SCRATCH_ARGS[@]}"'
     printf ' --bind /etc/resolv.conf:/etc/resolv.conf:ro --bind /etc/hosts:/etc/hosts:ro'
     local spec
     while IFS= read -r spec; do
@@ -1340,6 +1348,7 @@ command_validate() {
         runtime/agentrun/install-agent.sh \
         runtime/agentrun/interactive-runner.py \
         runtime/agentrun/process-cleanup.sh \
+        runtime/agentrun/node-scratch.sh \
         runtime/agentrun/agentrun.bash
     do
         if [ -e "$ROOT_DIR/$path" ]; then
@@ -1745,6 +1754,7 @@ command_dry_run() {
     printf '  %s:/runs:rw\n' "$run_dir"
     printf '  %s/scratch:/scratch:rw\n' "$run_dir"
     printf '  %s/cache:/cache:rw\n' "$run_dir"
+    printf '  /scratch/%s:/node-scratch:rw (if directory exists on compute node)\n' "$(id -un)"
     shared_config_bind_specs | sed 's/^/  /'
     printf '  %s:/opt/agentrun:ro\n' "$ROOT_DIR/runtime/agentrun"
     local session_mounts session_src session_dst

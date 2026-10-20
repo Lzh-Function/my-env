@@ -288,11 +288,18 @@ host: /path/to/my-project/.agent-runs/<run_id>    -> container: /runs:rw
 host: /path/to/my-project/.agent-runs/<run_id>/home    -> container: /home/sandbox
 host: /path/to/my-project/.agent-runs/<run_id>/scratch -> container: /scratch:rw
 host: /path/to/my-project/.agent-runs/<run_id>/cache   -> container: /cache:rw
+compute node: /scratch/<submission-user>          -> container: /node-scratch:rw（存在する場合のみ）
 host: <ai-agent-env repository>/common/hooks      -> container: /home/sandbox/ai-agent-config/common/hooks:ro
 host: <ai-agent-env repository>/common/skills     -> container: /home/sandbox/ai-agent-config/common/skills:ro
 ```
 
 `--repo` を指定した場合、`/workspace` に mount される対象だけが変わります。run directory は引き続き `agentrun` を実行した directory の `.agent-runs/<run_id>/` に作られます。
+
+計算ノードの SSD 領域は **`/node-scratch`** で利用します。投入元ホストで `id -un` から取得したユーザー名を固定し、`srun` / `sbatch` で計算ノードに入った後、`/scratch/<ユーザー名>` が directory として存在する場合だけ自動で読み書き可能に mount します。投入元ホストからこの path が見える必要はありません。通常起動・再開・バッチ起動に共通の動作です。
+
+mount されると container 内の `AGENTRUN_NODE_SCRATCH=/node-scratch` が設定されます。存在しない場合は空文字になり、SSD の mount を省略して通常どおり起動します。directory の自動作成や終了時の削除はしません。同じユーザーが同じノードで動かす run からは同じ内容が見えるため、必要に応じて作業ごとの subdirectory を作成してください。別ノードからは同じ内容が見えるとは限らず、投入元への自動コピーや履歴保存にも含まれないので、残す成果物は `/runs/artifacts` へコピーしてください。
+
+既存の `/scratch` は引き続き run directory 内の `scratch/` を指します。`/node-scratch` は別の mount であり、既存の一時ファイルや cache の配置は変わりません。この追加のための image 再ビルドは不要です。
 
 ```bash
 cd /path/to/run-ledger
@@ -347,6 +354,7 @@ uninstall の dry-run:
 /workspace                         作業 repository
 /runs                              run ledger
 /scratch                           run scratch
+/node-scratch                      計算ノードの SSD（存在する場合のみ）
 /cache                             run cache
 /home/sandbox/ai-agent-config/common/hooks    共有 hooks（read-only）
 /home/sandbox/ai-agent-config/common/skills   共有 skills（read-only）
@@ -862,6 +870,8 @@ reviews/final_recommendation.md   final recommendation
 `home/` は container の `/home/sandbox` です。auth file や writable config はここに一時配置されます。`submit.sbatch` には cleanup trap が入っており、job 終了時に `<run_dir>/home/` は削除されます。
 
 `scratch/` and `cache/` are separate directories for each run, mounted at `/scratch` and `/cache`. Their contents remain with that run directory until removed. They are not shared automatically with later runs, even on the same node.
+
+`/node-scratch` は計算ノードの `/scratch/<投入元ユーザー名>` を条件付きで mount する別の領域です。run directory の一部ではなく、履歴保存や終了時の一時 home 削除の対象にも含まれません。
 
 初期作成直後や prepare-only run では、空ファイル、`{}`、`initialized` だけのファイルが多く残ります。これは異常ではありません。`--submit` した job が進むにつれて `live/` と `artifacts/` が更新されます。
 

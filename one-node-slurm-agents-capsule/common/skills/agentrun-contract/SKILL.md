@@ -19,6 +19,7 @@ is 0.
 /workspace          the target repository (read/write)
 /runs               run ledger (read/write) — write all outputs here
 /scratch            per-run scratch space (read/write)
+/node-scratch       optional compute-node SSD space (read/write)
 /cache              per-run cache (read/write; not shared across runs)
 /home/sandbox/ai-agent-config/common/hooks    shared hooks (read-only)
 /home/sandbox/ai-agent-config/common/skills   shared skills (read-only)
@@ -30,6 +31,12 @@ The host mounts `.agent-runs/<run_id>/scratch` and
 `.agent-runs/<run_id>/cache` at `/scratch` and `/cache`. Their contents belong to
 that run and remain in its directory until removed; later runs get separate
 directories, even on the same node.
+
+If the compute node has `/scratch/<submission-user>`, it is mounted at
+`/node-scratch` and `AGENTRUN_NODE_SCRATCH` is set to `/node-scratch`; otherwise
+the variable is empty and this mount is omitted. This is separate from `/scratch`.
+SSD contents stay on that node, are shared by that user's runs on the same node,
+and are neither archived nor removed by agentrun. Keep final outputs under `/runs`.
 
 ## Files required by every run
 
