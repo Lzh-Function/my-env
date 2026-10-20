@@ -27,6 +27,8 @@ After a result, inspect its applicability and every finding. Fix valid problems 
 
 Actions are `fixed`, `disputed`, or `deferred`. Recheck captures current files and starts a fresh reviewer conversation with the previous findings, dialogue and your response. The runtime preserves finding IDs and requires a disposition for each prior finding. Your own `fixed` response does not resolve a finding.
 
+Recheck returns a new `review_id` and cursor in the same `review_thread_id`. Replace the current ID and cursor with those returned values before polling, replying, or reporting the next round. The previous ID continues to return the previous round's final result.
+
 The default budget is two review rounds (initial plus recheck), with at most three question/answer exchanges within each round. Stop after approval or budget exhaustion; report remaining disagreements, unavailable evidence or execution failures. Additional rounds require an explicit continuation request; do not create another review thread to bypass the budget.
 
 Report the reviewer provider, review ID, target ID, verdict, applicability, unresolved findings and limitations. A successful process is not approval; stale, incomplete or failed reviews cannot establish completion. Supplied test logs do not count as independently reproduced tests.

@@ -577,6 +577,17 @@ file_sets_key() {
     secret_keys "$file" | grep -qx "$key"
 }
 
+apptainer_env_file_arg() {
+    # --env-file is a CSV-parsed StringSlice flag. Shell quoting alone does not
+    # preserve a single filename containing commas or literal double quotes.
+    python3 - "$1" <<'PY'
+import csv
+import sys
+
+csv.writer(sys.stdout, quoting=csv.QUOTE_ALL, lineterminator="").writerow([sys.argv[1]])
+PY
+}
+
 # Printed into apptainer_exec.sh before the agent's apptainer exec. The socket
 # directory lives in the node's /tmp (not the run directory) and is removed on exit.
 gh_broker_launch_lines() {
@@ -597,7 +608,7 @@ trap _cleanup_gh_broker EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-apptainer exec --containall --cleanenv --no-mount hostfs,bind-paths,cwd --pwd /tmp --bind /etc/resolv.conf:/etc/resolv.conf:ro --bind /etc/hosts:/etc/hosts:ro --env-file $(printf '%q' "$GH_ENV_FILE") --bind $(printf '%q' "$GH_BROKER_SRC"):$GH_BROKER_CONTAINER_DIR-src:ro --bind "\$GH_BROKER_DIR":$GH_BROKER_CONTAINER_DIR:rw $(printf '%q' "$image") python3 $GH_BROKER_CONTAINER_DIR-src/gh_broker.py $GH_BROKER_CONTAINER_DIR/gh.sock 2>>$(printf '%q' "$run_dir/live/gh_broker.log") &
+apptainer exec --containall --cleanenv --no-mount hostfs,bind-paths,cwd --pwd /tmp --bind /etc/resolv.conf:/etc/resolv.conf:ro --bind /etc/hosts:/etc/hosts:ro --env-file $(printf '%q' "$(apptainer_env_file_arg "$GH_ENV_FILE")") --bind $(printf '%q' "$GH_BROKER_SRC"):$GH_BROKER_CONTAINER_DIR-src:ro --bind "\$GH_BROKER_DIR":$GH_BROKER_CONTAINER_DIR:rw $(printf '%q' "$image") python3 $GH_BROKER_CONTAINER_DIR-src/gh_broker.py $GH_BROKER_CONTAINER_DIR/gh.sock 2>>$(printf '%q' "$run_dir/live/gh_broker.log") &
 GH_BROKER_PID=\$!
 for _ in \$(seq 150); do
     [ -S "\$GH_BROKER_DIR/gh.sock" ] && break
@@ -700,7 +711,7 @@ apptainer_command() {
         printf ' --bind %q' "$spec"
     done < <(shared_config_bind_specs)
     if secrets_enabled; then
-        printf ' --env-file %q' "$SECRETS_FILE"
+        printf ' --env-file %q' "$(apptainer_env_file_arg "$SECRETS_FILE")"
     fi
     if gh_broker_enabled; then
         printf ' --bind "$GH_BROKER_DIR":%s:ro --bind %q:/usr/local/bin/gh:ro' \

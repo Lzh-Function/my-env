@@ -1,0 +1,14 @@
+.git
+**/.agent-runs
+**/__pycache__
+**/.venv
+**/*.sif
+tokens
+**/auth.json
+**/.credentials.json
+**/.claude.json
+**/.env
+**/.env.*
+secrets/*
+!secrets/.env.example
+!secrets/gh.env.example

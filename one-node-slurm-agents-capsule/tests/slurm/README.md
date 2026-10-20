@@ -1,5 +1,7 @@
 # Creator Slurm Tests
 
+Docker 上で Slurm と Apptainer を動かす検査は、[疑似クラスタの結合テスト](docker/README.md)を参照してください。本番の認証情報は不要です。
+
 These files are for cluster tests only. They intentionally use creator partitions, which must not be embedded in product runtime scripts.
 
 Run from a checkout or worktree under `/workspace/filesrv01`:

@@ -1,0 +1,56 @@
+name: Slurm capsule tests
+on:
+  push:
+    paths:
+      - 'one-node-slurm-agents-capsule/**'
+      - '.github/workflows/slurm-capsule-tests.yml'
+  pull_request:
+    paths:
+      - 'one-node-slurm-agents-capsule/**'
+      - '.github/workflows/slurm-capsule-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  slurm-docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: one-node-slurm-agents-capsule
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Only the disposable hosted VM is changed; run.sh never changes host sysctls.
+      - name: Allow nested Apptainer user namespaces
+        id: userns
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            echo "previous=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" >> "$GITHUB_OUTPUT"
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Real Slurm and Apptainer tests and Python regression tests
+        run: tests/slurm/docker/run.sh
+      - name: Capture runner diagnostics
+        if: failure()
+        run: |
+          mkdir -p .agent-runs/one-node-slurm-runner
+          {
+            uname -a
+            docker info --format '{{.KernelVersion}} cgroup={{.CgroupVersion}}'
+            sudo dmesg | tail -n 100
+          } > .agent-runs/one-node-slurm-runner/runner.log 2>&1
+      - name: Restore runner user namespace setting
+        if: always() && steps.userns.outputs.previous != ''
+        env:
+          PREVIOUS_USERNS: ${{ steps.userns.outputs.previous }}
+        run: sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$PREVIOUS_USERNS"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: slurm-capsule-test-logs
+          path: one-node-slurm-agents-capsule/.agent-runs/one-node-slurm-*
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

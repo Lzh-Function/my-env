@@ -1,0 +1,39 @@
+services:
+  controller:
+    image: one-node-capsule-slurm-test:${SLURM_TEST_IMAGE_TAG:-local}
+    build:
+      context: ../../..
+      dockerfile: tests/slurm/docker/Dockerfile
+      args:
+        SLURM_PACKAGE_VERSION: ${SLURM_PACKAGE_VERSION:-23.11.4-1.2ubuntu5}
+        APPTAINER_VERSION: ${APPTAINER_VERSION:-1.5.3}
+        APPTAINER_SHA256: ${APPTAINER_SHA256:-82b0bdddf459087d202383360b8318d526ad6826c748a2f669913cc6aef9ee40}
+    hostname: controller
+    command: [controller]
+    volumes:
+      - shared:/shared
+      - auth:/cluster-auth
+    healthcheck:
+      test: [CMD-SHELL, 'scontrol ping | grep -q "is UP"']
+      interval: 2s
+      timeout: 5s
+      retries: 60
+  compute:
+    image: one-node-capsule-slurm-test:${SLURM_TEST_IMAGE_TAG:-local}
+    hostname: compute
+    command: [compute]
+    privileged: true
+    cgroup: private
+    depends_on:
+      controller:
+        condition: service_healthy
+    volumes:
+      - shared:/shared
+      - auth:/cluster-auth:ro
+
+volumes:
+  shared:
+  auth:
+networks:
+  default:
+    internal: true
