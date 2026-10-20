@@ -1,74 +1,50 @@
-# Cross-agent review design
+# エージェント相互監査システムの設計
 
-Status: proposal, 2026-10-20. Scope: `my-env/one-node-slurm-agents-capsule`.
-This document proposes an implementation; it does not enable review or change
-runtime behavior.
+状態：設計案。作成日：2026-10-20。対象：`my-env/one-node-slurm-agents-capsule`。
+本書は実装方針を提案するものであり、この設計書の追加によって監査機能やruntimeの動作が有効になるわけではない。
 
-## Decision
+## 採用する方針
 
-Add one capsule command, `agent-review`, backed by a shared CLI adapter, and one
-shared `cross-review` skill. Route Claude Code work to Codex and Codex work to
-Claude Code. Use the existing CLI logins and the current Slurm allocation.
+共通のCLI実行処理を土台として、コンテナ内コマンド`agent-review`と、共通skill`cross-review`を一つずつ追加する。Claude Codeの作業はCodexに、Codexの作業はClaude Codeに監査させる。既存CLIのログイン情報と、現在のSlurm allocationを利用する。
 
-Start with synchronous inspection of code and research artifacts. The reviewer
-returns findings; the working agent decides how to address them. Running tests
-independently and requiring a successful audit at job completion are subsequent
-capabilities with explicit execution and acceptance contracts.
+初期版では、コードと研究成果物の静的な確認を同期実行する。監査agentは指摘を返し、作業agentが対応を判断する。テストの独立実行や、監査通過をjob完了の必須条件にする機能は、実行条件と合格条件を明示したうえで後段に追加する。
 
-## Current integration points
+## 現在の実装との接続点
 
-- `runtime/agentrun/agentrun` installs and stages credentials for the selected
-  agent only. It already mounts shared skills and prepares persistent sessions.
-- The `review` and `multi-review` profiles define outputs and prompt fields.
-  They do not dispatch other CLIs. Their `read_only_workspace` policy currently
-  does not change the launcher's read/write `/workspace` bind.
-- `install-agent.sh` writes one CLI metadata file per supplied run directory.
-  Calling it again with the parent run directory would overwrite worker metadata.
-- Shared hooks write `/runs/live` and `/runs/artifacts`. A reviewer must not load
-  the worker's ordinary hook configuration or inherit its output destinations.
-- `history_export.py` currently chooses its parser from the parent manifest's
-  agent and scans that agent's transcript directories. It needs explicit reviewer
-  transcript discovery to retain the other provider's conversations.
+- `runtime/agentrun/agentrun`は、選択されたagentのCLI導入と認証情報の準備だけを行う。共通skillsのmountと、会話を永続化するための準備は既にある。
+- `review`と`multi-review`のprofileは、出力ファイルとプロンプトに渡す情報を定義している。他のCLIを起動する処理はない。また、現在の`read_only_workspace`ポリシーは、ランチャーの`/workspace`への読み書き可能なbindを変更しない。
+- `install-agent.sh`は、渡されたrun directoryごとにCLIのメタデータを一つ書く。親runのdirectoryを渡して再実行すると、作業agentのメタデータを上書きしてしまう。
+- 共通hookは`/runs/live`と`/runs/artifacts`へ書き込む。監査agentには、作業agentの通常のhook設定や出力先を引き継がせない。
+- `history_export.py`は、現在は親のmanifestにあるagent名に応じてparserを選び、そのagentの履歴directoryを走査する。別providerの監査会話を残すには、監査agentの履歴を明示的に検出する処理が必要になる。
 
-Primary defaults, shared research skills, image contents, auth store locations,
-primary session paths, and the centralized `~/.agentrun/history/` archive remain.
+既定agent、共通の研究用skills、イメージの内容、認証ストアの場所、作業agentのセッション保存先、集約先`~/.agentrun/history/`は維持する。
 
-## Architecture
+## 全体構成
 
 ```mermaid
 flowchart LR
-    W[Working agent: Claude or Codex] --> S[Shared cross-review skill]
-    S --> R[agent-review coordinator]
-    R --> I[Capture input snapshot and manifest]
-    I --> A[CLI adapter: select the other provider]
-    A --> P[New reviewer conversation]
-    P --> V[Validate result and subject fingerprint]
-    V --> O[Findings JSON, report, logs]
+    W["作業agent：Claude Code／Codex"] --> S["共通のcross-review skill"]
+    S --> R["agent-reviewの実行管理"]
+    R --> I["入力snapshotとmanifestの作成"]
+    I --> A["CLI実行処理：相手providerを選択"]
+    A --> P["監査agentの新規会話"]
+    P --> V["結果と監査対象のハッシュを検証"]
+    V --> O["指摘JSON・レポート・ログ"]
     O --> W
-    O --> H[Existing host-side history archive]
+    O --> H["既存のホスト側履歴アーカイブ"]
 ```
 
-The coordinator is a local subprocess inside the current capsule. It does not
-invoke `agentrun`, request another repository lock, or submit another Slurm job.
-The parent already holds the repository lock. Initially allow one active review
-per run, use a bounded process group, and wait for the result before work resumes.
-Reviewer calls through the coordinator cannot request another review. Fresh
-conversations never use `--continue`, `--last`, or a worker session ID.
+実行管理処理は、現在のコンテナ内のローカル子processとして動かす。`agentrun`の再呼び出し、repository lockの再取得、新しいSlurm jobの投入は行わない。repository lockは親が既に保持している。初期版ではrunごとに同時実行する監査を一つに制限し、process groupに実行時間の上限を設け、監査結果を受け取ってから作業を再開する。
 
-The adapter owns CLI installation lookup, isolated role configuration, environment
-construction, process supervision, output decoding, and native conversation IDs.
-The coordinator owns scope capture, prompts, findings validation, stale detection,
-and review records. Deterministic mechanics belong in runtime code rather than
-being reconstructed by the skill.
+監査agentが実行管理処理を経由して、さらに監査を依頼することは禁止する。各監査は新規会話とし、`--continue`、`--last`、作業agentのセッションIDは使用しない。
 
-This is process and tool separation for a cooperating research workflow. It is
-not a claim that two processes running as the same user are mutually isolated
-from credentials or unable to alter each other's records. A separate OS/container
-boundary is a later option if that guarantee becomes a requirement.
+CLI実行処理は、導入済みCLIの取得、役割ごとの設定分離、環境変数の構築、process監視、出力の解釈、CLI固有の会話IDの取得を担当する。実行管理処理は、対象範囲の取得、プロンプトの構築、指摘の検証、結果の失効判定、監査記録を担当する。確定的に実行すべき処理はruntimeのコードに実装し、skillを読むagentが毎回組み立て直す方式にはしない。
 
-## Proposed interface
+この分離は、協調して動く研究用agentのprocessとtoolを分けるためのものである。同じユーザーとして動く二つのprocessについて、互いの認証情報へのアクセスや記録の変更を完全に防ぐものではない。その保証が必要になった場合は、OSまたはコンテナの境界による分離を追加する。
 
-Illustrative commands, not commands installed by this proposal:
+## 提案するインターフェース
+
+以下は利用イメージであり、本設計書によって導入済みになるコマンドではない。
 
 ```bash
 agent-review run --kind research --brief /runs/artifacts/review-brief.md \
@@ -81,290 +57,161 @@ agent-review run --kind code --brief /runs/artifacts/review-brief.md \
 agent-review status <review-id>
 ```
 
-The runtime records `primary_agent` and selects its peer automatically. The
-reviewer model and effort are configurable per provider; record the actual model
-when reported, and mark unavailable metadata as unknown rather than inferring it.
-Do not silently substitute the worker when the peer is unavailable.
+runtimeが`primary_agent`を記録し、相手agentを自動選択する。監査に使うmodelと推論の強度はproviderごとに設定可能とする。実際に使ったmodelがCLIから取得できる場合は記録し、取得できないメタデータは推測せず不明として扱う。相手agentが使えない場合に、作業agent自身へ黙って切り替えることはしない。
 
-The brief specifies the objective, intended claims, acceptance criteria, relevant
-data and methods, requested audit scope, and known limitations. It may reference
-provided papers and logs. The worker's own explanation is labeled as a claim;
-it is not treated as evidence that the work is correct.
+監査依頼書には、目的、検証したい主張、合格条件、関係するデータと手法、依頼する監査範囲、既知の制約を記載する。提供された論文やログも参照できる。作業agent自身の説明は「主張」として渡し、作業の正しさを裏づける証拠としては扱わない。
 
-A successful command returns the review ID, execution state, verdict, applicability
-state, findings path, and report path. Review completion does not automatically
-mean approval, nor does a nonzero child exit mean scientific rejection.
+コマンドが正常に完了した場合は、監査ID、実行状態、判定、結果を適用できるかどうかの状態、指摘ファイルの場所、レポートの場所を返す。監査処理の完了と承認は区別する。子processが非ゼロで終了したことも、研究内容に問題があるという判定とは区別する。
 
-## Preparing both CLIs and authentication
+## 両CLIと認証の準備
 
-1. At launch, identify the worker and its peer. Stage available credentials for
-   both using the existing host-side auth store/import logic. Keep a readiness
-   record without credential values. Missing peer authentication does not prevent
-   ordinary work; requesting review returns a clear unavailable-auth failure.
-2. Keep worker installation behavior. Install the peer lazily on the first review,
-   once per run, and reuse that resolved binary for subsequent rounds. Give its
-   installer a separate run-like directory and cache namespace so it cannot
-   overwrite the worker's `agent-cli.json` or install log.
-3. Give the reviewer a separate role HOME under the existing temporary run HOME,
-   for example `/home/sandbox/.reviewer/<peer>/`. Keep that HOME for the run so
-   refreshed peer credentials remain usable across rounds. Each round still
-   starts a fresh conversation. Isolate Codex state/SQLite and Claude configuration
-   from the worker. All credential copies remain under HOME cleanup.
-4. Prepare persistent reviewer transcript mounts before container launch, even
-   though its CLI is installed lazily. For example, use a `reviewers/` subtree of
-   the existing session store, with review-to-native-session ID mappings. Keep
-   scratch output separate for each review.
-5. Construct the child environment deliberately. Remove parent session and
-   delegation identifiers, load the role's configuration, and preserve only the
-   infrastructure/auth/network settings needed by that provider. Verify both
-   launch directions in the capsule, including nesting-related environment flags.
+1. 起動時に作業agentと監査を担当する相手agentを決める。既存のホスト側認証ストア・import処理を利用して、利用可能な両方の認証情報を準備する。認証情報の値を含まない準備状態の記録を残す。相手側の認証がない場合も通常の作業は開始できるが、監査を依頼した際には認証不足による失敗を明示する。
+2. 作業agentのCLI導入方式は維持する。相手CLIは最初の監査時にrunあたり一度だけ導入し、その後の監査でも同じ実体を再利用する。installerには専用のrun相当directoryとcache領域を渡し、作業agentの`agent-cli.json`や導入ログを上書きさせない。
+3. 監査agentには、既存の一時run HOME配下に専用HOMEを用意する。例は`/home/sandbox/.reviewer/<peer>/`である。このHOMEはrun中維持し、更新された相手側認証情報を次の監査でも利用できるようにする。各監査の会話は毎回新しく開始する。Codexの状態・SQLiteとClaudeの設定は作業agentから分離する。認証情報のコピーはすべて既存のHOME削除処理の対象にする。
+4. CLIを遅延導入する場合も、監査履歴を永続化するmountはコンテナ起動前に準備する。例えば既存セッションストアの`reviewers/`配下を使い、監査IDとCLI固有のセッションIDの対応を記録する。scratchへの出力は監査ごとに分ける。
+5. 子processの環境変数は明示的に構築する。親のセッション識別子や委譲に関する識別子を除き、役割専用の設定を読み込み、そのproviderに必要な基盤・認証・ネットワーク設定だけを引き継ぐ。CLIの入れ子起動に関係する環境変数も含め、両方向の起動をコンテナ内で検証する。
 
-Use OAuth/subscription login when already configured; API credentials remain an
-optional existing authentication mechanism. In particular, do not choose Claude
-bare mode for speed: the current CLI's bare mode does not use subscription OAuth.
-See [Claude programmatic execution](https://code.claude.com/docs/en/headless).
+既にOAuth・サブスクリプションでログインしている場合は、その認証を利用する。API認証も、従来の選択可能な認証方式として残す。Claudeのbare modeは、現在のCLIではサブスクリプションのOAuthを使わないため、起動高速化を目的として採用しない。[Claudeのプログラム実行に関する公式資料](https://code.claude.com/docs/en/headless)を参照する。
 
-The wrapper, not the model, handles authentication files. Credentials never enter
-review prompts, snapshots, ordinary result records, or exported conversations.
+認証ファイルはwrapperが取り扱い、modelには読み書きさせない。認証情報を監査プロンプト、snapshot、通常の結果記録、書き出す会話履歴に含めない。
 
-## Reviewer execution and permissions
+## 監査agentの実行方式と権限
 
-| Provider | Invocation and result handling | Initial review capabilities |
+| Provider | 起動と結果の取得 | 初期版の監査権限 |
 | --- | --- | --- |
-| Codex | Headless `codex exec`, structured final response, JSON event log, new native thread | Read-only sandbox, review-specific configuration, snapshot access; no sandbox bypass fallback |
-| Claude Code | Headless print mode, JSON Schema output, fresh native session, structured result envelope | Restricted execution with explicitly selected read/search tools, dedicated settings and no inherited MCP servers |
+| Codex | 非対話の`codex exec`、構造化した最終回答、JSONイベントログ、新規のCLI固有thread | 読み取り専用sandbox、監査専用設定、snapshotの参照。sandboxを迂回する設定へ自動で切り替えない |
+| Claude Code | 非対話のprint実行、JSON Schemaに沿った出力、新規のCLI固有session、最終結果を格納する応答JSON | 読み取り・検索toolを明示した制限付き実行、専用設定、既存MCP serverを引き継がない構成 |
 
-The CLI families support schema-constrained output, but their result envelopes
-are different. Normalize them in the adapter before coordinator validation.
-See [OpenAI non-interactive execution](https://learn.chatgpt.com/docs/non-interactive-mode)
-and [Claude programmatic execution](https://code.claude.com/docs/en/headless).
+両CLIともschemaで制約した出力に対応するが、最終結果を包む応答の形式は異なる。CLI実行処理で共通形式へ変換してから、実行管理処理で検証する。[OpenAIの非対話実行](https://learn.chatgpt.com/docs/non-interactive-mode)と[Claudeのプログラム実行](https://code.claude.com/docs/en/headless)を参照する。
 
-For Claude, tool availability must be restricted with `--tools`; an allowed-tools
-list alone is not an exclusive tool list. Combine a read/search tool set with
-restricted operation and an explicit empty MCP configuration. Consult the
-[Claude CLI reference](https://code.claude.com/docs/en/cli-reference).
+Claudeの利用可能toolは`--tools`で制限する。許可toolの指定だけでは、指定外toolを利用不可にはできない。読み取り・検索用tool、制限付き実行、明示的に空にしたMCP設定を組み合わせる。詳細は[ClaudeのCLIリファレンス](https://code.claude.com/docs/en/cli-reference)を参照する。
 
-Do not inherit worker permission-bypass flags, auto-formatting hooks, branch or
-worktree creation hooks, Stop notifications, shared status writers, auto-memory,
-or automatic review delegation. Preserve relevant project/domain conventions as
-review context rather than executing project customization. Store captured agent
-configurations and instruction files as inert review material when they themselves
-are in scope, outside automatic settings/hooks/skills discovery paths.
+作業agentの権限確認を迂回するflag、自動整形hook、branch・worktree作成hook、Stop通知、共通状態ファイルへの書き込み、自動memory、監査の自動委譲は引き継がない。必要なproject・研究分野の規約は監査用の文脈として渡し、project独自の処理を実行させない。agentの設定や指示ファイル自体が監査対象の場合は、それらを自動設定・hook・skillの探索対象にならない場所へ、確認用の資料として保存する。
 
-The reviewer normally reads the snapshot and emits its result to stdout. The
-coordinator writes reports and state files; the reviewer does not update the
-parent output contract. Codex's file outputs, if used, are written only through
-its adapter to review-owned destinations. If sandbox/restricted execution cannot
-start, report failure instead of silently enabling unrestricted execution.
+監査agentは基本的にsnapshotを読み、結果を標準出力へ返す。レポートと状態ファイルは実行管理処理が書き、監査agentには親の出力契約に属するファイルを更新させない。Codexのファイル出力を使う場合は、CLI実行処理を通じて監査専用の出力先だけに書く。sandboxや制限付き実行が起動できない場合は、無制限の実行へ切り替えず失敗を返す。
 
-Initial audit does not run training, arbitrary shell commands, tests, GitHub
-writes, or fixes. Codex may use sandboxed inspection commands; Claude can inspect
-prepared diffs and source with file tools. If a necessary inspection is unavailable,
-the result must disclose the coverage limit. Tool controls and input fingerprints
-complement one another; snapshot copies alone do not enforce read-only access to
-the original workspace.
+初期版の監査では、学習、任意のshell command、テスト、GitHubへの書き込み、修正を実行しない。Codexはsandbox内で確認用commandを使い、Claudeは用意された差分とsourceをファイルtoolで確認する。必要な確認ができない場合は、確認範囲の制約を結果に明記する。toolの制御と入力ハッシュの検証を併用する。snapshotをコピーするだけでは、元のworkspaceへの書き込みを防げない。
 
-## Binding review to the actual work
+## 監査対象を実際の作業内容に結びつける
 
-A report must identify exactly what was examined, including changes committed
-by the worker during the session.
+レポートには、何を確認したのかを正確に記録する。作業agentがセッション中にコミットした変更も対象に含める。
 
-- Record the worker-start Git HEAD and initial dirty-state metadata at actual
-  execution start. Do not assume the final `HEAD` is the task's starting commit.
-- Resolve the requested base to an immutable commit before capture. Capture the
-  current tracked working files and a freshly generated binary-capable diff
-  against that commit, plus explicitly selected untracked code/artifacts.
-  Include staged and unstaged state metadata. Label pre-existing user changes
-  rather than claiming the worker authored them.
-- Freeze the selected material in a per-review input directory. Record the base,
-  observed HEAD, file paths and hashes, missing/deleted files, size limits,
-  exclusions, artifact hashes, and dependency/data provenance in `manifest.json`.
-- Include lockfiles, configurations, and selected evidence needed to interpret
-  the change. Large datasets are referenced by identifiers/digests unless small
-  excerpts are explicitly selected. Do not recursively copy run caches, entire
-  history stores, secret files, external symlink targets, or arbitrary data trees.
-- Detect changes during capture and fail or retry within a bounded capture policy.
-  Do not knowingly present a mixed snapshot as a stable input. Declare omissions
-  and unsupported binary/visual evidence; do not silently truncate to a passing
-  review.
-- Compute a subject fingerprint over the normalized manifest and captured
-  content. On return, compare the current selected material with the captured
-  fingerprint. Changed input makes the review stale. Perform the same check
-  whenever applying a result as a completion condition; a historical approval
-  does not approve later edits.
+- 作業agentが実際に実行を開始した時点のGit HEADと、未コミット変更の状態を記録する。終了時の`HEAD`を作業開始時のコミットとみなさない。
+- 指定された比較元を、取得前に固定のコミットへ解決する。現在の追跡対象ファイル、比較元との差分を新たに生成したバイナリ対応patch、明示的に選ばれた未追跡コード・成果物を取得する。stage済み・未stageの状態も記録する。ユーザーが元から持っていた変更はそのように示し、作業agentが作成したものと断定しない。
+- 選択した資料を監査ごとの入力directoryへ固定する。`manifest.json`には、比較元、確認時のHEAD、ファイルのパスとハッシュ、不足・削除されたファイル、容量制限、除外対象、成果物のハッシュ、依存関係・データの由来を記録する。
+- 変更の理解に必要なlockfile、設定、選択した証拠を含める。大きなデータセットは、小さな抜粋を明示的に選んだ場合を除き、識別子とハッシュで参照する。run cache、履歴ストア全体、秘密情報ファイル、外部を指すsymlinkの参照先、任意のデータdirectory全体を再帰的にコピーしない。
+- 取得中の変更を検出し、失敗させるか、回数・時間を制限した取得方針の範囲で再試行する。複数時点の内容が混在すると分かっているsnapshotを、固定済みの入力として扱わない。省略や未対応のバイナリ・視覚資料を明示し、黙って切り詰めて監査を通過させない。
+- 正規化したmanifestと取得した内容から、監査対象を識別するハッシュを計算する。監査終了時に、現在の対象資料を取得時のハッシュと比較する。入力が変わっていれば、その結果は失効扱いにする。監査結果を完了条件として使うたびにも同じ確認を行い、過去の承認を後の編集へ流用しない。
 
-The worker pauses while the initial synchronous review runs. This reduces drift,
-but cooperating-agent behavior is not a substitute for fingerprint validation.
-Any later round gets a new ID, snapshot, and result; earlier findings remain.
+初期版の同期監査中は、作業agentを待機させる。これで変更の混入は減るが、agentが協調して動くことをハッシュ検証の代わりにはしない。再監査には新しいID、snapshot、結果を用意し、以前の指摘も残す。
 
-## Result and state contracts
+## 結果と状態の契約
 
-Use `/runs/reviews/<review-id>/` for local operational records:
+監査の実行記録は`/runs/reviews/<review-id>/`へ保存する。
 
 ```text
-request.json            scope, primary/peer IDs, limits, parent linkage
-input/manifest.json     source identities and hashes
-input/source/           selected source snapshot
-input/artifacts/        selected evidence snapshot
-input/diff.patch        generated change set
-runtime/                peer install/version and role diagnostics
-live/status.json        execution state, exit code, timings and error
-stdout.jsonl            provider events, where available
-stderr.log              CLI/runtime diagnostics
-review_findings.json    validated findings only
-report.md               deterministic human-readable rendering
-response.json           worker responses and links to subsequent review rounds
+request.json            対象範囲、作業・監査agentのID、制限、親との対応
+input/manifest.json     sourceの識別情報とハッシュ
+input/source/           選択したsourceのsnapshot
+input/artifacts/        選択した証拠のsnapshot
+input/diff.patch        生成した変更差分
+runtime/                相手CLIの導入・version情報と役割専用の診断記録
+live/status.json        実行状態、終了コード、時刻・所要時間、エラー
+stdout.jsonl            providerが出力するイベントログ（取得可能な場合）
+stderr.log              CLI・runtimeの診断ログ
+review_findings.json    検証に通った指摘だけを格納するJSON
+report.md               指摘JSONから確定的に生成する可読レポート
+response.json           作業agentの回答と、後続の再監査への対応
 ```
 
-Auth and credential-bearing HOME files are outside this record tree.
+認証情報、および認証情報を含むHOME内のファイルは、この記録領域の外へ置く。
 
-Keep three independent concepts:
+以下の三つを独立して扱う。
 
-| Concept | Values or interpretation |
+| 概念 | 値・意味 |
 | --- | --- |
-| Execution | prepared, running, success, failed, cancelled, timeout |
-| Judgment | existing `approve`, `request_changes`, `comment`; absent when execution failed |
-| Applicability | current, stale, incomplete scope |
+| 実行状態 | prepared、running、success、failed、cancelled、timeout |
+| 監査判定 | 既存の`approve`、`request_changes`、`comment`。実行失敗時は判定を持たせない |
+| 結果の適用可否 | 現在の対象に有効、対象が変わったため失効、依頼範囲の確認が不十分 |
 
-The existing `reviews/review_findings.json` shape remains the compatibility base:
-`summary`, `verdict`, and `findings` with severity, path/line, message and suggested
-fix. Add a schema version, review/subject IDs, actual reviewer provenance, covered
-scope, limitations, and evidence references. Each finding distinguishes observed
-facts from hypotheses and records confidence and whether evidence was independently
-executed or merely read from supplied logs. References must resolve inside the
-manifest; the coordinator validates their paths and bounds, not just JSON syntax.
+既存の`reviews/review_findings.json`の形式を互換性の基準とする。基本項目は`summary`、`verdict`、`findings`であり、指摘には重要度、パス・行番号、説明、修正案を含める。これにschemaのversion、監査ID・対象ID、実際の監査agentの情報、確認済み範囲、制約、証拠への参照を追加する。
 
-A valid JSON response with exit code zero is necessary but insufficient. Require
-the expected subject ID, a terminal successful provider response, valid schema,
-valid evidence references, and a disclosed scope. Refusal, auth/rate-limit failure,
-missing terminal result, timeout, and invalid output are distinct failures.
-Never manufacture an empty finding list or approval when parsing fails.
+各指摘では、観測した事実と仮説を区別する。確信度を記録し、証拠を独立実行で確認したのか、提供されたログを読んだだけなのかを明示する。参照先はmanifest内で解決できるものに限定する。実行管理処理はJSONの構文だけでなく、参照パスとその範囲も検証する。
 
-Incomplete inspection cannot produce a completion approval. An `approve` result
-requires sufficient coverage of the requested scope, not a claim to certify every
-possible aspect of the research. Errors and stale results remain visible, and
-retrying creates another record.
+正常なJSONが返り、終了コードが0であることだけでは合格としない。想定した対象ID、providerからの正常な最終応答、schemaへの適合、有効な証拠参照、確認範囲の開示を必要条件とする。応答拒否、認証・rate limitの失敗、最終応答の欠落、タイムアウト、不正な出力は区別して記録する。解析に失敗した際に、空の指摘一覧や承認を生成してはならない。
 
-For explicit `review` mode, publish a final compatibility result at the existing
-`/runs/reviews/review_findings.json`. The canonical immutable attempt record stays
-in its review-ID directory. An ongoing worker's own `report.md`, `run_title.txt`,
-status and install metadata are not replaced by reviewer outputs.
+必要な確認が不十分な場合、完了を承認する結果は出せない。`approve`には依頼された範囲を十分に確認したことを要求するが、研究のあらゆる側面を保証する意味にはしない。エラーと失効した結果も確認できるように残し、再試行では別の記録を作る。
 
-## Research-specific audit and the shared skill
+明示的な`review` modeでは、既存の`/runs/reviews/review_findings.json`へ互換形式の最終結果を出力する。各試行の正式な記録は、監査IDごとのdirectoryに変更せず残す。進行中の作業agent自身の`report.md`、`run_title.txt`、状態ファイル、CLI導入メタデータを監査出力で置き換えない。
 
-The `cross-review` skill explains when and how to use this infrastructure:
+## 研究向けの監査観点と共通skill
 
-- Trigger when cross-agent review is requested, and at meaningful checkpoints
-  before presenting scientific/code changes as completed under the review workflow.
-  Do not spend a new review call for every trivial edit.
-- Assemble a brief with scope, hypothesis, intended behavior/claims, validation
-  already performed, evidence locations, and uncertainties. Invoke the same
-  `agent-review` command from either worker; do not hand-roll provider commands.
-- Ask for findings supported by source, method, log, table, figure, or provided
-  paper evidence. Avoid accepting the worker's own explanation as verification.
-- Review the findings critically. Fix accepted issues, and explain contested
-  findings with evidence. Never auto-apply the reviewer's suggested patch.
-- Re-review material fixes against a new snapshot, referencing earlier findings.
-  Default to at most two review calls for one checkpoint before surfacing unresolved
-  disagreements or insufficient evidence to the user. Additional rounds require
-  an explicit continuation request.
-- Report the reviewer, reviewed subject ID, remaining findings, limitations and
-  applicability to the user. Do not describe supplied test logs as independently
-  reproduced tests.
+`cross-review` skillには、この実行基盤をいつ、どのように使うかを記載する。
 
-Put research-specific detail in a linked reference:
+- 相互監査を依頼されたとき、および監査を使う作業手順の中で研究・コードの変更を完了として提示する前の重要な節目に起動する。小さな編集のたびに新しい監査を実行しない。
+- 対象範囲、仮説、想定する挙動・主張、既に行った検証、証拠の場所、不確実な点を依頼書にまとめる。どちらの作業agentからも同じ`agent-review`を呼び、providerごとのコマンドをその場で組み立てない。
+- source、手法、ログ、表、図、提供された論文に裏づけられた指摘を求める。作業agent自身の説明を検証の代わりとして受け入れない。
+- 指摘を吟味し、妥当と判断したものを修正する。異論がある場合は証拠とともに説明する。監査agentが提案したpatchを自動適用しない。
+- 重要な修正後は、新しいsnapshotを作り、以前の指摘を参照して再監査する。既定では一つの節目につき監査呼び出しを最大2回とし、それでも残る不一致や証拠不足をユーザーへ報告する。さらに続ける場合は、明示的な継続依頼を受ける。
+- 監査agent、監査対象ID、残る指摘、制約、結果の適用可否をユーザーへ報告する。提供されたテストログを、独立に再現したテストとして説明しない。
 
-1. Objective, implementation, and stated conclusions agree.
-2. Train/validation/test separation respects subjects, groups, time, preprocessing,
-   feature selection, and model-selection procedures.
-3. Baselines, hyperparameter search and evaluation conditions are comparable.
-4. Statistical units, replicate counts, seeds, uncertainty intervals and multiple
-   comparisons support the reported claim; avoid pseudoreplication.
-5. Dataset versions, code/input hashes, configuration, environment, and artifact
-   provenance are sufficient to reproduce the reported procedure.
-6. Tables/figures/metrics match the supplied results; unsupported causal or
-   generalization claims and missing negative results are identified.
-7. Citations support the claims when their source material is available. Otherwise
-   record that verification is incomplete.
+研究固有の詳細な観点は、skillから参照する資料にまとめる。
 
-## Recording conversations and lifecycle
+1. 目的、実装、述べている結論が一致しているか。
+2. 学習・検証・テストの分離が、被験者、group、時間、前処理、特徴選択、model選択の手順を踏まえて保たれているか。
+3. 比較手法、ハイパーパラメータ探索、評価条件が公平か。
+4. 統計上の単位、反復数、seed、不確実性の区間、多重比較の扱いが主張を支えているか。擬似反復を避けているか。
+5. データセットのversion、コード・入力のハッシュ、設定、環境、成果物の由来が、報告した手順の再現に十分か。
+6. 表・図・指標が提供された結果と一致するか。裏づけのない因果・一般化の主張や、欠落した否定的結果がないか。
+7. 出典資料を参照できる場合、引用は主張を裏づけているか。参照できない場合は、その検証が不完全であると記録する。
 
-Persist reviewer native transcripts separately from the worker, with review ID,
-parent run/session key, provider, role, and native thread/session IDs. The current
-exporter must enumerate those records and select a parser for each provider.
-Append labeled reviewer sections and review summaries to the parent conversation
-archive, including partial failed attempts. Store review linkage in its metadata;
-no separate database service is needed.
+## 会話履歴の保存と終了処理
 
-Continue exporting on the launcher/submission host to the existing centralized
-Markdown/SQLite store. Reviewer logs that only live in its temporary HOME must be
-persisted before that HOME is removed. Keep worker resume selection focused on
-worker threads so a newer review cannot become the resumed working conversation.
+監査agentのCLI固有の会話履歴を、作業agentと分けて永続化する。監査ID、親run・session key、provider、役割、CLI固有のthread・session IDを対応づける。既存のexporterを拡張し、これらの記録を列挙してproviderごとにparserを選ぶ。
 
-Use a configurable wall-clock timeout (initial suggestion: 10 minutes), terminate
-then forcibly stop the child's process group with a bounded grace period, and
-preserve partial diagnostics. Stop children before parent finalization/export.
-A review consumes the current job's CPU/memory/time allocation and receives no
-new allocation or independent GPU claim. Native token/cost metadata are recorded
-when available; a portable monetary limit is not assumed across subscriptions.
+親の会話アーカイブには、監査会話と監査結果の要約を、役割が分かる節として追加する。失敗した試行の途中までの記録も含める。監査との対応情報はメタデータに保存し、別のデータベースサービスは導入しない。
 
-## Delivery phases
+既存の集約Markdown・SQLiteへの書き出しは、引き続き起動・job投入側ホストで行う。監査agentの一時HOMEにしかないログは、HOME削除前に永続化する。作業の再開対象は作業agentの会話に限定し、時刻が新しい監査会話を誤って作業再開の対象にしない。
 
-1. **Runtime foundation and both directions.** Peer readiness/auth staging,
-   isolated role homes and transcript persistence, lazy installation, constrained
-   headless adapters, bounded processes, and separate worker/reviewer outputs.
-2. **Usable audit workflow.** Snapshot/provenance, result validation, research
-   reference, shared skill, stale detection, response tracking, and centralized
-   history integration. These two phases are the initial useful release.
-3. **Independent validation and completion gates.** Controller-run tests in a
-   disposable validation workspace, explicit compute limits, and optional
-   `--require-review` enforcement in runtime/verification. A hard requirement
-   cannot be enforced solely by a skill or inferred from process exit code zero.
+監査の実時間には設定可能な上限を設ける。初期案は10分とする。終了要求後、制限した猶予時間を過ぎたら子process groupを強制停止し、途中までの診断記録を残す。親のセッション確定・履歴書き出しの前に、監査の子processを停止する。
 
-Reuse existing review output contracts; do not introduce an API SDK, MCP server,
-new Slurm broker, or second image to obtain the initial release.
+監査は現在のjobに割り当てられたCPU・メモリ・実行時間を使い、新しいallocationや独立したGPU割り当てを取得しない。CLIから取得できるtoken・費用の情報は記録するが、サブスクリプションをまたいで共通に使える金額上限があるとは仮定しない。
 
-## Expected files to change when implementation is authorized
+## 実装の段階
 
-- Add `runtime/agentrun/agent_cli.py`, `review.py`, and a findings schema, plus
-  explicit reviewer configuration templates where needed.
-- Add `common/skills/cross-review/SKILL.md` and a research-audit reference.
-- Extend `agentrun`, `sessions.py`, and the installer integration for peer
-  readiness, startup provenance, role directories and isolated install records.
-- Extend history discovery/export for reviewer transcripts and summary linkage.
-- Update output-contract guidance only for the new review records and optional
-  enforcement; preserve the current primary-agent run contract.
+1. **実行基盤と両方向の起動。** 相手側の準備状態・認証情報の準備、役割専用HOMEと会話の永続化、CLIの遅延導入、権限制限付きの非対話実行処理、実行時間を制限したprocess管理、作業agentと監査agentの出力分離を実装する。
+2. **利用可能な監査手順。** snapshotと由来の記録、結果の検証、研究用の参照資料、共通skill、結果の失効判定、指摘への回答記録、既存の集約履歴との連携を実装する。この段階までを初期版とする。
+3. **独立した検証と完了時の必須判定。** 使い捨ての検証workspaceで実行管理処理がテストを動かし、計算量の上限を明示する。任意の`--require-review`により、runtime・検証処理で監査を必須化する。必須条件はskillだけでは強制できず、processの終了コードが0であることだけからも判定できない。
 
-## Acceptance checks
+既存のreview出力契約を再利用する。初期版のためにAPI SDK、MCP server、新しいSlurm broker、二つ目のイメージは導入しない。
 
-Use fake CLIs first; no model calls are needed to validate orchestration.
+## 実装時に変更するファイルの見込み
 
-- Claude worker invokes Codex exactly once; Codex worker invokes Claude exactly
-  once; no same-provider fallback or delegated review loop.
-- Missing credentials, installation failure, unsupported flags, rate limiting,
-  refusals, invalid JSON, and timeout never become an approval.
-- Static reviewer tools cannot modify worker files through the supported tool
-  configuration; sandbox startup failure never enables unrestricted execution.
-- Parent outputs, hooks, CLI version record, session choice, and locks are not
-  modified by reviewer startup or completion.
-- Include committed changes, staged/unstaged changes, explicitly selected
-  untracked artifacts, initial dirty state, paths with spaces, and excluded inputs.
-- Snapshot drift, stale approval, invalid evidence paths, and missing coverage are
-  detected and reported.
-- Stop/kill both processes and their descendants within the configured deadline;
-  preserve partial review records without preventing existing HOME cleanup.
-- Archive both providers' conversations centrally, including failed attempts,
-  without exporting credentials; preserve normal worker resume behavior.
-- A subsequent opt-in live smoke test verifies real OAuth logins, native CLI
-  envelopes and sandbox behavior inside the actual Apptainer capsule.
+- `runtime/agentrun/agent_cli.py`、`review.py`、指摘のschemaを追加する。必要に応じて監査agent専用の設定templateも用意する。
+- `common/skills/cross-review/SKILL.md`と、研究監査の参照資料を追加する。
+- `agentrun`、`sessions.py`、installerとの接続処理を拡張する。相手の準備状態、起動時点の情報、役割別directory、導入記録の分離を扱う。
+- 履歴の検出・書き出しを拡張し、監査会話と監査要約の対応を扱う。
+- 新しい監査記録と任意の必須判定に必要な範囲だけ、出力契約の説明を更新する。既存の作業agentのrun契約は維持する。
 
-## Sources and compatibility notes
+## 受け入れ確認
 
-Checked local CLI help without starting model calls: Codex 0.162.1 and Claude Code
-2.1.302. Per-run installation selects current releases, so capability checks must
-inspect the installed version and required flags rather than assuming this pair.
+まずは偽CLIを使う。起動・実行管理の検証にmodel呼び出しは必要ない。
 
-- [OpenAI: non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
-- [OpenAI: developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
-- [Claude Code: programmatic execution](https://code.claude.com/docs/en/headless)
-- [Claude Code: CLI reference](https://code.claude.com/docs/en/cli-reference)
+- Claude Codeの作業agentはCodexを一度呼び、Codexの作業agentはClaude Codeを一度呼ぶ。同じproviderへの代替実行や、監査委譲のループが発生しない。
+- 認証情報の不足、導入失敗、未対応flag、rate limit、応答拒否、不正なJSON、タイムアウトを承認として扱わない。
+- 対応するtool設定の範囲で、静的監査のtoolから作業agentのファイルを変更できない。sandboxの起動失敗時に無制限実行を有効にしない。
+- 監査の開始・終了で、親の成果物、hook、CLIのversion記録、再開する会話の選択、lockが変更されない。
+- コミット済み変更、stage済み・未stageの変更、明示的に選んだ未追跡の成果物、作業開始前からの変更、空白を含むパス、除外した入力を扱える。
+- snapshot取得中の変更、失効した承認、不正な証拠参照、確認範囲の不足を検出して報告する。
+- 関係するprocessとその子孫を設定した時間内に停止し、途中までの監査記録を残しつつ、既存のHOME削除を妨げない。
+- 認証情報を含めず、失敗した試行も含めて両providerの会話を集約保存できる。通常の作業再開が維持される。
+- その後、明示的に実行する実環境のsmoke testで、実際のApptainerコンテナ内のOAuthログイン、CLI固有の応答形式、sandboxの動作を確認する。
+
+## 参照資料と互換性
+
+modelを呼び出さず、ローカルのCLI helpでCodex 0.162.1とClaude Code 2.1.302を確認した。runごとの導入ではその時点の公開版を取得するため、このversionの組み合わせを前提にせず、導入されたversionと必要flagを確認する。
+
+- [OpenAI：非対話実行](https://learn.chatgpt.com/docs/non-interactive-mode)
+- [OpenAI：開発者向けコマンド](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+- [Claude Code：プログラムからの実行](https://code.claude.com/docs/en/headless)
+- [Claude Code：CLIリファレンス](https://code.claude.com/docs/en/cli-reference)
