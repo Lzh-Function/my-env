@@ -306,18 +306,13 @@ stage_auth_file() {
 }
 
 copy_auth_credentials() {
-    local run_dir="$1" agent="$2"
+    local run_dir="$1"
     local store_root
     store_root="$(auth_store_root)"
-    case "$agent" in
-        claude)
-            stage_auth_file "$store_root" "claude" ".claude/.credentials.json" "$run_dir"
-            stage_auth_file "$store_root" "claude" ".claude.json" "$run_dir"
-            ;;
-        codex)
-            stage_auth_file "$store_root" "codex" ".codex/auth.json" "$run_dir"
-            ;;
-    esac
+    # Both providers may be used, but missing peer auth must not prevent work.
+    stage_auth_file "$store_root" "claude" ".claude/.credentials.json" "$run_dir"
+    stage_auth_file "$store_root" "claude" ".claude.json" "$run_dir"
+    stage_auth_file "$store_root" "codex" ".codex/auth.json" "$run_dir"
 }
 
 generate_container_config() {
@@ -350,6 +345,17 @@ generate_container_config() {
     elif [ "$agent" = "codex" ]; then
         cp "$(codex_config_source "$mode")" "$config_dir/config.toml"
     fi
+    python3 - "$config_dir" "$agent" <<'PY'
+import json
+from pathlib import Path
+import sys
+directory, agent = Path(sys.argv[1]), sys.argv[2]
+server = {"command": "/opt/agentrun/agent-review", "args": ["mcp"]}
+(directory / "review-mcp.json").write_text(json.dumps({"mcpServers": {"cross-review": server}}) + "\n")
+if agent == "codex":
+    with (directory / "config.toml").open("a") as stream:
+        stream.write('\n[mcp_servers.cross-review]\ncommand = "/opt/agentrun/agent-review"\nargs = ["mcp"]\nstartup_timeout_sec = 120\ntool_timeout_sec = 30\n')
+PY
 }
 
 codex_config_source() {
@@ -653,7 +659,12 @@ apptainer_command() {
         # Prepare before install-agent's --version check, which also uses arg0.
         runtime_setup='mkdir -p "$HOME/.codex" || exit $?; AGENTRUN_CODEX_TMP=$(mktemp -d /tmp/agentrun-codex.XXXXXX) || exit $?; trap '\''rm -rf -- "$AGENTRUN_CODEX_TMP"'\'' EXIT; ln -sfnT "$AGENTRUN_CODEX_TMP" "$HOME/.codex/tmp" || exit $?; '
     fi
-    cmd="${runtime_setup}AGENTRUN_AGENT_BIN=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$agent")) || exit \$?; export PATH=\"\$AGENTRUN_AGENT_BIN:\$PATH\"; hash -r; unset -f claude codex; ${cmd}"
+    if [ "$agent" = claude ]; then
+        cmd="${cmd/claude /claude --mcp-config /runs/container_config/review-mcp.json }"
+    fi
+    local worker_command
+    worker_command="$(python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$cmd")"
+    cmd="${runtime_setup}AGENTRUN_AGENT_BIN=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$agent")) || exit \$?; export PATH=\"\$AGENTRUN_AGENT_BIN:\$PATH\"; hash -r; unset -f claude codex; python3 /opt/agentrun/review_launch.py --agent $(printf '%q' "$agent") -- bash -c ${worker_command}"
     # Do not inherit implicit host mounts or inject GitHub broker credentials.
     printf '%s\n' 'unset APPTAINER_BIND APPTAINER_BINDPATH APPTAINER_MOUNT SINGULARITY_BIND SINGULARITY_BINDPATH SINGULARITY_MOUNT'
     printf '%s\n' 'unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN APPTAINERENV_GH_TOKEN APPTAINERENV_GITHUB_TOKEN APPTAINERENV_GH_ENTERPRISE_TOKEN APPTAINERENV_GITHUB_ENTERPRISE_TOKEN SINGULARITYENV_GH_TOKEN SINGULARITYENV_GITHUB_TOKEN SINGULARITYENV_GH_ENTERPRISE_TOKEN SINGULARITYENV_GITHUB_ENTERPRISE_TOKEN'
@@ -667,6 +678,7 @@ apptainer_command() {
     printf 'export APPTAINERENV_SLURM_CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-}"\n'
     printf 'export APPTAINERENV_SLURM_MEM_PER_NODE="${SLURM_MEM_PER_NODE:-}"\n'
     printf 'export APPTAINERENV_SLURM_GPUS="${SLURM_GPUS:-}"\n'
+    printf 'export APPTAINERENV_SLURM_JOB_END_TIME="${SLURM_JOB_END_TIME:-}"\n'
     printf 'apptainer exec%s --containall --cleanenv --no-mount hostfs,bind-paths,cwd --pwd /workspace --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q' \
         "$nv" \
         "$run_dir/home" "/home/sandbox" \
@@ -686,7 +698,15 @@ apptainer_command() {
         printf ' --bind "$GH_BROKER_DIR":%s:ro --bind %q:/usr/local/bin/gh:ro' \
             "$GH_BROKER_CONTAINER_DIR" "$GH_BROKER_SRC/gh-client"
     fi
-    printf ' --bind %q:/opt/agentrun/install-agent.sh:ro' "$ROOT_DIR/runtime/agentrun/install-agent.sh"
+    printf ' --bind %q:/opt/agentrun:ro' "$ROOT_DIR/runtime/agentrun"
+    local review_key
+    for review_key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT \
+        AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_MAX_EXCHANGES \
+        AGENT_REVIEW_ACTIVE_TIMEOUT AGENT_REVIEW_REPLY_TIMEOUT AGENT_REVIEW_THREAD_TIMEOUT; do
+        if [ -n "${!review_key:-}" ]; then
+            printf ' --env %q' "$review_key=${!review_key}"
+        fi
+    done
     if [ "$agent" = "claude" ]; then
         printf ' --env CLAUDE_CODE_TMPDIR=/scratch/claude'
     fi
@@ -895,7 +915,9 @@ render_codex_requirements_toml() {
                 "\n",
                 (
                     $g.entries[] |
-                    "[[hooks." + $e + ".hooks]]\ntype = \"command\"\ncommand = \"" + $prefix + .script + "\"\ntimeout = 30\n\n"
+                    "[[hooks." + $e + ".hooks]]\ntype = \"command\"\ncommand = " +
+                    (($prefix + "worker_hook.py " + $prefix + .script) | @json) +
+                    "\ntimeout = 30\n\n"
                 )
             )
         ' "$manifest"
@@ -1305,6 +1327,13 @@ command_validate() {
         runtime/agentrun/sessions.py \
         runtime/agentrun/history.py \
         runtime/agentrun/history_export.py \
+        runtime/agentrun/agent-review \
+        runtime/agentrun/agent_cli.py \
+        runtime/agentrun/review.py \
+        runtime/agentrun/review_launch.py \
+        runtime/agentrun/review_mcp.py \
+        runtime/agentrun/review_snapshot.py \
+        common/skills/cross-review/SKILL.md \
         runtime/agentrun/wizard.sh \
         runtime/agentrun/wizard-state.py \
         runtime/agentrun/path-input.py \
@@ -1717,7 +1746,7 @@ command_dry_run() {
     printf '  %s/scratch:/scratch:rw\n' "$run_dir"
     printf '  %s/cache:/cache:rw\n' "$run_dir"
     shared_config_bind_specs | sed 's/^/  /'
-    printf '  %s:/opt/agentrun/install-agent.sh:ro\n' "$ROOT_DIR/runtime/agentrun/install-agent.sh"
+    printf '  %s:/opt/agentrun:ro\n' "$ROOT_DIR/runtime/agentrun"
     local session_mounts session_src session_dst
     session_mounts="$(session_tool mounts "$run_dir" "$AGENT")" || return $?
     while IFS=$'\t' read -r session_src session_dst; do

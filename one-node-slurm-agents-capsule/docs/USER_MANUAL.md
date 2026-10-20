@@ -1082,8 +1082,9 @@ URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれ
 | `pytest` | `uv run pytest` を使ったテスト実行パターンと、テスト結果を `/runs/live/stdout.log` および `artifacts/metrics.json` に記録する方法を説明します。Project tests run through uv; system Python is reserved for capsule infrastructure. |
 | `research-latex` | Creates Japanese and English research PDFs with academic, technical, and monograph templates, LuaLaTeX, Biber, structural validation, and page rendering for visual inspection. Bundled examples contain synthetic data. |
 | `yomiyasu` | Refines Japanese prose while preserving meaning, with local lint and before/after review tools. Numeric values and research claims require separate verification. |
+| `cross-review` | Requests an opposite-provider audit, answers reviewer questions, and records fixes or rebuttals for recheck. |
 
-The default skill set contains seven skills: `uv`, `agentrun-contract`, `ruff`, `experiment-report`, `pytest`, `research-latex`, and `yomiyasu`.
+The default skill set contains eight skills: `uv`, `agentrun-contract`, `ruff`, `experiment-report`, `pytest`, `research-latex`, `yomiyasu`, and `cross-review`.
 
 `research-latex` is shared by Claude Code and Codex through the existing read-only skill mounts. Skill files become available in newly started runs without rebuilding the image. Its `siunitx` dependency requires an image built with `texlive-science`; rebuild older images before using the templates.
 
@@ -1201,6 +1202,75 @@ agent セッションが終了するときに発火します。
 | ---- | ---- |
 | `stop_notify.py` | Slack Incoming Webhook で完了通知を送ります。スクリプト内の `SLACK_WEBHOOK_URL` に実際の URL を設定してください。未設定のままでも hook は失敗せず、通知をスキップします。agent 種別（Claude / Codex）を payload から自動検出します。 |
 | `summarize_session.py` | `artifacts/report.md` が存在しない場合にプレースホルダを作成します。agent が report を出力しなかったときに `verify-run` を通過させるための最低限の保護です。 |
+
+## 対話による相互監査
+
+Claude Codeの作業をCodexに、Codexの作業をClaude Codeに監査させられます。共通の`cross-review` skillが、監査依頼、質問への回答、修正・反論後の再監査を案内します。同じallocation内で実行し、追加のSlurm jobは投入しません。
+
+両方の認証をホストで準備してください。既にログイン済みなら`agentrun auth import --all`で登録できます。作業agentには`cross-review` MCP serverを自動登録します。監査用CLIは最初の依頼時に導入し、そのrunで再利用します。相手側の認証がなくても通常の作業は開始できますが、監査は認証不足として失敗します。
+
+capsuleで作業agentに「cross-reviewを使って、この変更と研究上の主張を監査して」と依頼します。監査agentが質問すると、作業agentが理由と証拠を回答し、同じ監査会話を継続します。対話中は対象ファイルを変更せず、判定が返ってから修正・反論を行います。既定は初回と再監査の最大2ラウンド、各ラウンド最大3往復です。最初の監査で承認されれば終了できます。
+
+CLIも同じ状態を扱います。以下はcapsule内の例です。
+
+```bash
+agent-review run --request-id initial-review --kind research \
+  --brief /runs/artifacts/review-brief.md --include /runs/artifacts/metrics.json
+agent-review events REVIEW_ID --after 0 --wait-seconds 20
+agent-review reply REVIEW_ID --request-id answer-1 --reply-to MESSAGE_ID \
+  --message-file /runs/artifacts/review-answer.json
+agent-review recheck REVIEW_ID --request-id recheck-1 \
+  --response /runs/artifacts/review-response.json
+agent-review status REVIEW_ID
+```
+
+返された`cursor`を次のイベント取得の`--after`に使います。新しい操作には新しい`request_id`を使い、同じ操作の再送だけで同じIDを使います。MCPで開始した監査にCLIで回答することもできます。接続が切断しても会話と予算は保持します。
+
+回答ファイルの例です。`evidence`には`/runs/reviews/REVIEW_ID/input/manifest.json`内のsnapshot相対パスを使います。追加の証拠は`include`に元のファイルを明示し、取得後のパス・ハッシュを追加manifestへ記録します。
+
+```json
+{"answers":[{"question_id":"q1","answer":"回答と根拠","evidence":["source/evaluation.py"]}],"questions":[],"include":[]}
+```
+
+再監査の返答は、以前のすべての`finding_id`に対して、修正した`fixed`、反論する`disputed`、保留する`deferred`のいずれかと理由・証拠を記録します。
+
+```json
+{"responses":[{"finding_id":"f1","action":"disputed","reason":"反論と根拠","evidence":["source/evaluation.py"]}]}
+```
+
+監査agentは各指摘を`resolved`、`withdrawn`、`unresolved`、`insufficient_evidence`で再判定します。作業agentの対応済み宣言だけでは指摘を解消しません。
+
+追跡対象のsourceと作業開始時のcommitからの差分を取得します。未追跡ファイルや成果物は`--include`で明示してください。`--base COMMIT`で比較元を、`--exclude 'path/pattern/*'`で対象外を指定できます。除外と確認不能なbinary・視覚資料はmanifestへ記録します。秘密情報・cache・symlink経由の入力を拒否し、初期上限は1ファイル4MiB・入力全体32MiB・1万ファイルです。
+
+`agent-review run --one-shot --wait ...`は質疑応答なしの一括実行です。対話が使えない際に自動で切り替えることはありません。中止は`agent-review cancel REVIEW_ID --request-id cancel-1`です。追加ラウンドはユーザーの明示的な継続依頼後だけ、`agent-review extend REVIEW_ID --request-id extend-1 --user-requested --max-rounds 3 --reason '継続依頼の理由'`で許可します。期限は延長せず、依頼と変更を記録します。
+
+起動側で次の環境変数を設定するとcapsuleへ引き継ぎます。
+
+| 変数 | 意味・既定値 |
+| --- | --- |
+| `AGENT_REVIEW_CODEX_MODEL` / `AGENT_REVIEW_CLAUDE_MODEL` | 監査providerのmodel。未指定ならCLIの既定値 |
+| `AGENT_REVIEW_CODEX_EFFORT` / `AGENT_REVIEW_CLAUDE_EFFORT` | 監査providerの推論強度。導入されたCLIが対応する値を指定 |
+| `AGENT_REVIEW_MAX_EXCHANGES` | ラウンド内の質疑応答上限。3 |
+| `AGENT_REVIEW_ACTIVE_TIMEOUT` | ラウンド内の監査実行時間の合計上限。600秒 |
+| `AGENT_REVIEW_REPLY_TIMEOUT` | 1回の回答待ち上限。600秒 |
+| `AGENT_REVIEW_THREAD_TIMEOUT` | 修正・回答待ちを含む監査全体の上限。3600秒 |
+
+`success`は判定の受領を意味し、承認を意味しません。`approve`でも適用可否が`stale`や`incomplete`なら完了の根拠にできません。`waiting_reply`は回答待ちです。初期版は静的確認であり、学習・テストを独立実行した保証は含みません。
+
+各ラウンドは`/runs/reviews/REVIEW_ID/`に`conversation.md`、`events.jsonl`、`review_findings.json`、`report.md`、`response.json`と発言ごとのログを保存します。native履歴は既存セッションストアの`reviewers/PROVIDER/`に分け、作業のresumeに混ぜません。既存のホスト側exportで、両providerの会話と監査対話を`~/.agentrun/history/`のMarkdown・SQLiteへ集約します。
+
+MCP用依存は`mcp==1.26.0`を指定したuv環境で取得し、`/cache/uv`を使います。初回は配布先への接続も必要です。imageの再ビルドは不要です。詳細は[設計書](CROSS_AGENT_REVIEW_DESIGN.md)を参照してください。
+
+### 相互監査の検証
+
+外部modelを呼ばないローカルテストは、capsuleリポジトリのrootから実行します。MCPのstdio通信も実際に検証します。
+
+```bash
+uv run --no-project --with mcp==1.26.0 python -m unittest discover -s tests -p 'test_cross_review*.py' -v
+uv run --no-project python -m unittest discover -s tests -p test_review_launch.py -v
+```
+
+実環境での確認は、両方の認証を準備したうえで`agentrun assist --agent claude`と`agentrun assist --agent codex`をそれぞれ起動し、小さなGit repositoryの変更に`cross-review`を依頼します。両方向で質問への回答と修正・反論後の再監査まで進め、会話ID、権限制限、親の成果物、終了後の集約履歴を確認してください。実際のmodel利用枠を消費する試験です。
 
 ## Smoke Tests
 

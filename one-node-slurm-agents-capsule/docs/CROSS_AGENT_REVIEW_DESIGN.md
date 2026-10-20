@@ -1,7 +1,7 @@
 # エージェント相互監査システムの設計
 
-状態：設計案。作成・更新日：2026-10-20。対象：`my-env/one-node-slurm-agents-capsule`。
-本書は実装方針を提案するものであり、この設計書の追加によって監査機能やruntimeの動作が有効になるわけではない。
+状態：初期版を実装。ローカル検証を実施し、実コンテナ・実モデルの試験は未実施。作成・更新日：2026-10-20。対象：`my-env/one-node-slurm-agents-capsule`。
+本書は初期版の実装契約を記載する。利用方法と検証手順は[USER_MANUAL](USER_MANUAL.md#対話による相互監査)を参照する。独立したテスト実行と監査の必須化は後段の機能である。
 
 ## 採用する方針
 
@@ -53,7 +53,7 @@ provider別の実行処理は、導入済みCLIの取得、役割ごとの設定
 
 ## 提案するインターフェース
 
-以下は利用イメージであり、本設計書によって導入済みになるコマンドではない。
+以下はコンテナ内の利用例である。
 
 ```bash
 # 対話あり。起動要求の受理後は、状態と発言を取得して進める。
@@ -82,6 +82,7 @@ agent-review cancel <review-id> --request-id <request-id>
 | 状態確認 | `status` | `review_status` | 実行状態、判定、適用可否、残り予算を読む |
 | 発言・進捗の取得 | `events` | `review_events` | sequenceを指定して追加分を取得する |
 | 中止 | `cancel` | `review_cancel` | 待機を含めて対象の監査を終了する |
+| 継続依頼後の上限更新 | `extend` | `review_extend` | ユーザーの明示的な継続依頼と理由を記録してラウンド数上限を増やす |
 
 MCP toolの起動・回答・再監査は要求の受理を返し、実際のmodel応答は共通runtimeで進める。イベント取得の待機は1回最大20秒とし、更新がなくても現在の状態とcursorを返す。通知の受信を必須にせず、作業agentは結果を取得して、質問に答えるか、次の更新を待つ。CLIの`--wait`も同じイベント取得を内部で行い、`waiting_reply`になったら質問を返す。回答が必要なままtool呼び出しを占有して、作業agentの発言を妨げない。
 
@@ -184,6 +185,7 @@ Claudeの利用可能toolは`--tools`で制限する。許可toolの指定だけ
 
 ```text
 request.json            対象範囲、役割、review_thread_id、ラウンド番号、前回との対応
+state.json              永続化したラウンド状態、会話ID、予算、確定した入力と結果
 input/manifest.json     sourceの識別情報とハッシュ
 input/source/           選択したsourceのsnapshot
 input/artifacts/        選択した証拠のsnapshot
@@ -226,6 +228,8 @@ MCP serverは同じイベントを返すための入口であり、会話の正�
 
 明示的な`review` modeでは、既存の`/runs/reviews/review_findings.json`へ互換形式の最終結果を出力する。確認中や失敗した再監査に、前ラウンドの承認を最新の承認として残さない。各ラウンドで確定した入力・発言・指摘は書き換えず残す。判定後の`response.json`は受理時に一度確定し、その後の補足は新しい記録として追加する。進行中の作業agent自身の`report.md`、`run_title.txt`、状態ファイル、CLI導入メタデータを監査出力で置き換えない。
 
+既存skillに合わせ、指摘のfield名は`severity`、`file`、`line`、`message`、`suggestion`とし、重要度は`critical`、`major`、`minor`、`nit`を使う。`praise`も維持する。ラウンドごとの`file`はsnapshot相対パスとし、既存の集約ファイルへ出力するときは元のrepository相対パスへ変換し、元のsnapshotパスを`snapshot_file`として残す。
+
 ## 研究向けの監査観点と共通skill
 
 `cross-review` skillには、この実行基盤をいつ、どのように使うかを記載する。
@@ -264,16 +268,16 @@ MCP serverは同じイベントを返すための入口であり、会話の正�
 
 ## 実装の段階
 
-1. **実行基盤と両方向の会話継続。** 相手側の準備状態・認証情報の準備、役割専用HOMEと会話の永続化、CLIの遅延導入、権限制限付きの会話開始・継続・停止、run単位の実行管理、作業agentと監査agentの出力分離を実装する。
-2. **CLI・MCPから使える対話監査。** 共通の操作・イベント・状態機械、CLI、stdioのMCP server、質問の中継、追加証拠の取得、返答と指摘の再判定、2ラウンドの上限、期限・重複送信対策を実装する。snapshotと由来の記録、結果の検証、研究用の参照資料、共通skill、失効判定、既存の集約履歴との連携を含める。この段階までを初期版とし、対話機能と両方の入口を受け入れ条件にする。
-3. **実行方式の拡充と独立した検証。** 必要に応じて常駐するprovider実行処理を追加する。使い捨ての検証workspaceで実行管理処理がテストを動かし、計算量の上限を明示する。任意の`--require-review`により、runtime・検証処理で監査を必須化する。必須条件はskillだけでは強制できず、processの終了コードが0であることだけからも判定できない。
+1. **実行基盤と両方向の会話継続（初期版で実装）。** 相手側の準備状態・認証情報の準備、役割専用HOMEと会話の永続化、CLIの遅延導入、権限制限付きの会話開始・継続・停止、run単位の実行管理、作業agentと監査agentの出力分離を実装する。
+2. **CLI・MCPから使える対話監査（初期版で実装）。** 共通の操作・イベント・状態機械、CLI、stdioのMCP server、質問の中継、追加証拠の取得、返答と指摘の再判定、2ラウンドの上限、期限・重複送信対策を実装する。snapshotと由来の記録、結果の検証、研究用の参照資料、共通skill、失効判定、既存の集約履歴との連携を含める。この段階までを初期版とし、対話機能と両方の入口を受け入れ条件にする。
+3. **実行方式の拡充と独立した検証（後段・未実装）。** 必要に応じて常駐するprovider実行処理を追加する。使い捨ての検証workspaceで実行管理処理がテストを動かし、計算量の上限を明示する。任意の`--require-review`により、runtime・検証処理で監査を必須化する。必須条件はskillだけでは強制できず、processの終了コードが0であることだけからも判定できない。
 
 既存のreview出力契約を再利用する。初期版にローカルMCP serverは含めるが、model APIを直接呼ぶSDK、新しいSlurm broker、二つ目のイメージは導入しない。MCP用依存は専用のuv環境にversionを固定して導入し、既存のcache・導入記録の方針に合わせる。modelとの通信と認証は既存のCLIを使う。
 
-## 実装時に変更するファイルの見込み
+## 実装とファイルの対応
 
-- `runtime/agentrun/agent_cli.py`、`review.py`、CLIの入口、MCP server、発言・返答・指摘のschemaを追加する。必要に応じて監査agent専用の設定templateと、MCP用依存の定義も用意する。
-- `common/skills/cross-review/SKILL.md`と、研究監査の参照資料を追加する。
+- `runtime/agentrun/agent_cli.py`がproviderごとの実行とprocess回収を担当し、`review.py`が状態・予算・結果を管理する。`review_snapshot.py`が入力取得と再監査差分、`agent-review`と`review_mcp.py`が両方の入口、`review_launch.py`が作業agentとサービスの監督を担当する。schemaは`review.py`に定義し、実際に使ったものを発言ごとに保存する。
+- `common/skills/cross-review/SKILL.md`と`references/research.md`を共通skillとして搭載する。
 - `agentrun`、`sessions.py`、installerとの接続処理を拡張する。相手の準備状態、起動時点の情報、役割別directory、導入記録の分離、作業agentへのMCP登録、実行管理processの起動・終了を扱う。
 - 履歴の検出・書き出しを拡張し、監査会話と監査要約の対応を扱う。
 - 新しい監査記録と任意の必須判定に必要な範囲だけ、出力契約の説明を更新する。既存の作業agentのrun契約は維持する。
@@ -297,6 +301,13 @@ MCP serverは同じイベントを返すための入口であり、会話の正�
 - 質問待ち・model実行中の両方で中止できる。実行管理process、MCP server、監査agentとその子孫を設定した時間内に停止し、途中までの監査記録を残しつつ、既存のHOME削除を妨げない。
 - 認証情報を含めず、失敗・回答待ちで終了した試行も含めて両providerの会話と共通の対話記録を集約保存できる。同じ会話が発言ごとに重複登録されず、通常の作業再開が維持される。
 - その後、明示的に実行する実環境のsmoke testで、実際のApptainerコンテナ内のOAuthログイン、CLI固有の応答形式と会話継続、sandbox、MCP登録、両方向の質疑応答・再監査を確認する。
+
+## 検証の対応
+
+- `tests/test_cross_review.py`：両方向の会話継続、返答と再監査、snapshot、入力制限、既存出力契約、失敗時の扱い、予算、履歴exportとresumeの分離を検証する。
+- `tests/test_cross_review_mcp.py`：実際のMCP SDKでstdio接続し、MCPで開始した監査へCLIで回答する流れを、偽providerで検証する。
+- `tests/test_review_launch.py`：実際の監督processと偽installer・providerを使い、終了コード、回答待ちの保存、サービスをSIGKILLした場合の監査process回収を検証する。
+- 既存のランチャー・履歴・wizard等のテストと`agentrun validate`も実行する。実コンテナ・実モデルのsmoke testは、この作業環境にSlurm・Apptainer・SIFがないため未実施である。手順は[USER_MANUAL](USER_MANUAL.md#相互監査の検証)に記載する。
 
 ## 参照資料と互換性
 

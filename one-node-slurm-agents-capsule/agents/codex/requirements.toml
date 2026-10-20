@@ -9,27 +9,27 @@ matcher = "Bash"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py"
 timeout = 30
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/check_login_node.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/check_login_node.py"
 timeout = 30
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/check_pip_forbidden.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/check_pip_forbidden.py"
 timeout = 30
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/check_sbatch_forbidden.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/check_sbatch_forbidden.py"
 timeout = 30
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/git_branch_guard.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/git_branch_guard.py"
 timeout = 30
 
 [[hooks.PreToolUse]]
@@ -37,7 +37,7 @@ matcher = "apply_patch"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py"
 timeout = 30
 
 [[hooks.PostToolUse]]
@@ -45,12 +45,12 @@ matcher = "Bash"
 
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/git_worktree_auto_create.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/git_worktree_auto_create.py"
 timeout = 30
 
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/update_run_status.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/update_run_status.py"
 timeout = 30
 
 [[hooks.PostToolUse]]
@@ -58,18 +58,18 @@ matcher = "apply_patch"
 
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/post_edit_format.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/post_edit_format.py"
 timeout = 30
 
 [[hooks.Stop]]
 
 [[hooks.Stop.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/stop_notify.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/stop_notify.py"
 timeout = 30
 
 [[hooks.Stop.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/summarize_session.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/summarize_session.py"
 timeout = 30
 

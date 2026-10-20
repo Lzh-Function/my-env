@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""CLI and socket client for the capsule cross-review runtime."""
+
+import argparse
+import json
+import os
+import socket
+import sys
+from pathlib import Path
+
+
+def call(action, params):
+    endpoint = os.environ.get("AGENT_REVIEW_SOCKET")
+    if not endpoint:
+        raise ValueError("agent-review is available inside an agentrun capsule")
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(30)
+        client.connect(endpoint)
+        client.sendall(
+            (json.dumps({"action": action, "params": params}) + "\n").encode()
+        )
+        with client.makefile("rb") as stream:
+            response = stream.readline(40 * 1024 * 1024 + 1)
+        if len(response) > 40 * 1024 * 1024:
+            raise ValueError("Review response exceeds size limit")
+        result = json.loads(response)
+        if "error" in result:
+            raise ValueError(result["error"])
+        return result["result"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("mcp", help="Expose the same review operations over stdio MCP")
+    for action in ("run", "reply", "recheck", "status", "events", "cancel", "extend"):
+        p = sub.add_parser(action)
+        if action != "run":
+            p.add_argument("review_id")
+        if action in ("run", "reply", "recheck", "cancel", "extend"):
+            p.add_argument("--request-id", required=True)
+        if action in ("run", "recheck"):
+            p.add_argument("--brief")
+            p.add_argument("--base")
+            p.add_argument("--include", action="append")
+            p.add_argument("--exclude", action="append")
+            p.add_argument("--wait", action="store_true")
+        if action == "run":
+            p.add_argument("--kind", choices=("code", "research"), default="research")
+            p.add_argument("--one-shot", action="store_true")
+        elif action == "reply":
+            p.add_argument("--reply-to", required=True)
+            p.add_argument("--message-file", type=Path, required=True)
+        elif action == "recheck":
+            p.add_argument("--response", type=Path, required=True)
+        elif action == "events":
+            p.add_argument("--after", type=int, default=0)
+            p.add_argument("--wait-seconds", type=float, default=0)
+        elif action == "extend":
+            p.add_argument("--max-rounds", required=True, type=int)
+            p.add_argument("--reason", required=True)
+            p.add_argument("--user-requested", action="store_true", required=True)
+    params = vars(parser.parse_args())
+    action = params.pop("action")
+    if action == "mcp":
+        os.execvp(
+            "uv",
+            [
+                "uv",
+                "run",
+                "--no-project",
+                "--python",
+                "/usr/bin/python3",
+                "--with",
+                "mcp==1.26.0",
+                "python",
+                str(Path(__file__).with_name("review_mcp.py")),
+            ],
+        )
+    wait = params.pop("wait", False)
+    for flag, key in (("message_file", "message"), ("response", "response")):
+        if flag in params:
+            path = params.pop(flag)
+            params[key] = json.loads(path.read_text())
+    result = call(action, {k: v for k, v in params.items() if v is not None})
+    while wait and result["status"] in ("prepared", "running"):
+        result = call(
+            "events",
+            {
+                "review_id": result["review_id"],
+                "after": result["cursor"],
+                "wait_seconds": 20,
+            },
+        )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError) as error:
+        print("agent-review: " + str(error), file=sys.stderr)
+        sys.exit(2)

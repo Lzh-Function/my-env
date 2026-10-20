@@ -17,6 +17,8 @@ tests/fixtures/           smoke-test goal ファイルおよびダミー reposit
 
 対応する agent は `codex` と `claude` です。省略時は `claude`（Claude Code）を使います。
 
+共通skill `cross-review`により、Claude Codeの作業をCodexに、その逆も同じallocation内で監査させられます。監査途中の質問・回答、指摘への返答、既定2ラウンドの再監査をCLIとMCPの両方から扱います。両方の認証を準備してください。[利用手順](docs/USER_MANUAL.md#対話による相互監査)と[設計書](docs/CROSS_AGENT_REVIEW_DESIGN.md)を参照してください。
+
 ## Quick Start
 
 ### インストール

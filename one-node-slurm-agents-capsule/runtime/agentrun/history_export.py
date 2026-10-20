@@ -102,14 +102,17 @@ def within(path, root):
 def companion_output(value, run, store, warnings):
     """Resolve only persisted run files, never arbitrary paths from a transcript."""
     name = str(value).strip()
-    mappings = (("/home/sandbox/.claude/projects/", store / ".claude/projects"),
+    mappings = (("/home/sandbox/.reviewer/claude/.claude/projects/", store / ".claude/projects"),
+                ("/reviewer-sessions/claude/.claude/projects/", store / ".claude/projects"),
+                ("/home/sandbox/.claude/projects/", store / ".claude/projects"),
                 ("/scratch/", run / "scratch"), ("/runs/", run))
     path = Path(name)
     for prefix, root in mappings:
         if name.startswith(prefix):
             path = root / name[len(prefix):]
             break
-    if not path.is_absolute() or not any(within(path, root) for root in (store, run / "scratch")):
+    if not path.is_absolute() or not any(within(path, root) for root in (
+            store, run / "scratch", run / "reviews/runtime/claude/scratch")):
         warnings.add("An external tool output is outside persisted session/scratch storage")
         return "[External output was not archived: outside persisted storage.]"
     if not path.is_file():
@@ -269,27 +272,49 @@ def export_run(run, data, store):
     target = root / "runs" / archive_id
     with archive_lock(target):
         warnings = set(); transcript_metadata = []; parts = []
-        if data["agent"] == "codex":
-            paths = sorted({*store.glob(".codex/sessions/**/*.jsonl"), *store.glob(".codex/archived_sessions/**/*.jsonl")})
-        elif data["agent"] == "claude":
-            paths = sorted(store.glob(".claude/projects/**/*.jsonl"))
-        else:
+        if data["agent"] not in ("codex", "claude"):
             raise ValueError("Unsupported agent for history export")
-        for path in paths:
+        def native_paths(directory, provider):
+            if provider == "codex":
+                return sorted({*directory.glob(".codex/sessions/**/*.jsonl"),
+                               *directory.glob(".codex/archived_sessions/**/*.jsonl")})
+            return sorted(directory.glob(".claude/projects/**/*.jsonl"))
+        paths = [(p, data["agent"], "worker", store) for p in native_paths(store, data["agent"])]
+        for provider in ("codex", "claude"):
+            reviewer_store = store / "reviewers" / provider
+            paths.extend((p, provider, "reviewer", reviewer_store) for p in native_paths(reviewer_store, provider))
+        for path, provider, role, native_store in paths:
             if not within(path, store):
                 raise ValueError("Transcript points outside its session store")
-            if data["agent"] == "codex":
+            if provider == "codex":
                 metadata, body = codex_transcript(path, warnings)
             else:
-                metadata, body = claude_transcript(path, run, store, warnings)
+                metadata, body = claude_transcript(path, run, native_store, warnings)
             metadata["file"] = str(path.relative_to(store))
+            metadata.update(provider=provider, role=role)
             transcript_metadata.append(metadata)
-            parts.append(f"\n## Session: {path.stem}\n\n{fence(json_text(metadata), 'json')}{body}")
+            parts.append(f"\n## Session: {path.stem} ({role}, {provider})\n\n{fence(json_text(metadata), 'json')}{body}")
+        reviews = []
+        for directory in sorted((run / "reviews").glob("review-*")):
+            if not directory.is_dir() or not within(directory, run / "reviews"):
+                continue
+            state_path = directory / "state.json"
+            if not state_path.is_file():
+                continue
+            state = json.loads(state_path.read_text())
+            review = {k: state.get(k) for k in ("review_id", "review_thread_id", "round", "provider",
+                      "session_id", "status", "target_id", "verdict", "error")}
+            reviews.append(review)
+            parts.append(f"\n## Review: {directory.name}\n\n{fence(json_text(review), 'json')}")
+            for name in ("conversation.md", "review_findings.json", "response.json"):
+                path = directory / name
+                if path.is_file() and within(path, directory):
+                    parts.append(f"\n### {name}\n\n" + fence(path.read_text(), "json" if name.endswith(".json") else "markdown"))
         info = {k: data[k] for k in ("run_id", "agent", "repo", "mode", "session_key", "parent_run_id") if k in data}
         info.update(archive_id=archive_id, run_parent=str(run.parent.resolve()),
                     launcher_cwd=data.get("launcher_cwd"),
                     archived_at=datetime.now(timezone.utc).isoformat(), archive_host=socket.gethostname(),
-                    transcripts=transcript_metadata, warnings=sorted(warnings))
+                    transcripts=transcript_metadata, reviews=reviews, warnings=sorted(warnings))
         markdown = "# Conversation archive\n\n" + fence(json_text({k: v for k, v in info.items() if k != "transcripts"}), "json")
         markdown += "".join(parts) if parts else "\nNo persisted conversation records were found.\n"
         if warnings:

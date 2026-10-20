@@ -48,5 +48,6 @@
         {"script": "summarize_session.py"}
       ]
     }
-  ]
+  ],
+  "ignored": ["worker_hook.py"]
 }

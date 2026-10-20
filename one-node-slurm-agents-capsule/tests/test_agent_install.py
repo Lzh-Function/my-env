@@ -186,8 +186,11 @@ write_plan experiment codex "$PWD" '' 0 00:10:00 task "$TEST_RUN_DIR" agent batc
         self.assertEqual(result.returncode, 0, result.stderr)
         launch = (self.run / "apptainer_exec.sh").read_text().splitlines()[-1]
         args = shlex.split(launch)
-        self.assertIn(f"{INSTALLER}:/opt/agentrun/install-agent.sh:ro", args)
+        self.assertIn(f"{INSTALLER.parent}:/opt/agentrun:ro", args)
         cmd = args[-1].replace("/workspace", '"$TEST_WORKSPACE"').replace("/runs/prompt.txt", '"$TEST_RUN_DIR/prompt.txt"')
+        # This fixture tests CLI installation; the review supervisor has its own
+        # lifecycle tests and is mounted only inside the actual capsule.
+        cmd = cmd.replace('python3 /opt/agentrun/review_launch.py --agent codex -- ', '')
         return cmd.replace("bash /opt/agentrun/install-agent.sh codex",
                            f'bash {shlex.quote(str(INSTALLER))} codex "$TEST_RUN_DIR" "$TEST_CACHE_DIR"')
 

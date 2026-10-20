@@ -72,6 +72,8 @@ def init(run, agent, repo, mode, source=None):
         (store / rel).mkdir(parents=True, exist_ok=True, mode=0o700)
         # Apptainer の bind 先をあらかじめ作っておく。
         (run / "home" / rel).mkdir(parents=True, exist_ok=True)
+    # Reviewer transcripts are disjoint from worker discovery/resume paths.
+    (store / "reviewers").mkdir(parents=True, exist_ok=True, mode=0o700)
     save(run, data)
 
 
@@ -262,6 +264,7 @@ def main():
             "agent": args.args[0], "session_key": run.name}
         for rel in MOUNTS[data["agent"]]:
             print(str(state_dir(run, data) / rel) + "\t/home/sandbox/" + rel)
+        print(str(state_dir(run, data) / "reviewers") + "\t/reviewer-sessions")
     elif args.action == "command":
         print(command(run))
     elif args.action == "finalize":
