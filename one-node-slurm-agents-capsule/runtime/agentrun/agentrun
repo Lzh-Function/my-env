@@ -19,7 +19,7 @@ Usage:
   agentrun assist [options] [PROMPT]        # interactive PTY session via srun --pty; PROMPT ignored if given
   agentrun assist --submit [options] PROMPT # batch via sbatch (non-interactive)
   agentrun experiment|campaign|review|multi-review [options] PROMPT  # prepare, or batch with --submit
-  agentrun resume [RUN_ID|RUN_DIR] [--time HH:MM:SS] [--mem SIZE] [--cpus N] [--bind SRC:DST[:OPTIONS]]
+  agentrun resume [RUN_ID|RUN_DIR] [run options] [--no-binds] [--fresh-config]
   agentrun resume --list
   agentrun resume RUN_ID --preview
   agentrun history [RUN_ID|RUN_DIR] [--watch]  # export now, or recover a host-side batch collector
@@ -48,6 +48,8 @@ Options:
   --time HH:MM:SS     walltime, default comes from the selected profile
   --partition NAME    Slurm partition, default: AGENTRUN_SLURM_PARTITION or cluster default
   --bind SRC:DST[:OPTIONS]  extra bind mount (repeatable); OPTIONS: ro|rw
+  --no-binds          clear inherited extra bind mounts
+  --fresh-config      resume using repository CLI settings instead of saved preferences
   --allow-fuse        bind /dev/fuse into the capsule so nested apptainer/FUSE
                       mounts work (default off; AGENTRUN_ALLOW_FUSE=1 to opt in globally)
   --no-allow-fuse     force /dev/fuse off even if AGENTRUN_ALLOW_FUSE=1
@@ -55,6 +57,7 @@ Options:
                       variables (default: secrets/.env if present; AGENTRUN_SECRETS_FILE)
   --no-secrets        do not pass any secrets file
   --no-gh-broker      do not start the GitHub CLI broker even if secrets/gh.env sets GH_TOKEN
+  --gh-broker         enable the GitHub CLI broker when credentials are configured
   --reviewers LIST    reviewer agents
   --target-diff PATH  review target diff
   --target-report PATH review target report
@@ -213,13 +216,13 @@ profile_required_outputs() {
 }
 
 slurm_partition_args() {
-    local partition="${1:-${AGENTRUN_SLURM_PARTITION:-}}"
+    local partition="${1-${AGENTRUN_SLURM_PARTITION:-}}"
     [ -n "$partition" ] || return 0
     printf '#SBATCH --partition=%s\n' "$partition"
 }
 
 srun_partition_args() {
-    local partition="${1:-${AGENTRUN_SLURM_PARTITION:-}}"
+    local partition="${1-${AGENTRUN_SLURM_PARTITION:-}}"
     [ -n "$partition" ] || return 0
     printf ' --partition=%s' "$partition"
 }
@@ -386,12 +389,7 @@ home_config_mounts() {
     local agent="$1" run_dir="${2:-}" mode="${3:-}"
     case "$agent" in
         claude)
-            local settings="$ROOT_DIR/agents/claude/settings.json"
-            if [ -n "$run_dir" ] && [ -f "$run_dir/container_config/settings.json" ]; then
-                settings="$run_dir/container_config/settings.json"
-            fi
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/CLAUDE.md" "/home/sandbox/.claude/CLAUDE.md"
-            printf ' --bind %q:%q:ro' "$settings" "/home/sandbox/.claude/settings.json"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/common/hooks" "/home/sandbox/.claude/hooks"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/skills" "/home/sandbox/.claude/skills"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/claude/statusline.sh" "/home/sandbox/.claude/statusline.sh"
@@ -759,10 +757,16 @@ write_plan() {
     session_tool "${session_args[@]}" || return $?
     generate_container_config "$run_dir" "$agent" "$mode"
     if [ "$agent" = "claude" ]; then
+        # Claude atomically replaces settings.json for /effort and other settings.
+        # A file bind mount cannot be renamed over, even if mounted read-write.
+        cp "$run_dir/container_config/settings.json" "$run_dir/home/.claude/settings.json"
         mkdir -p "$run_dir/scratch/claude"
     fi
     if [ "$agent" = "codex" ]; then
         link_codex_shared_assets "$run_dir"
+    fi
+    if [ -n "${RESUME_SOURCE:-}" ] && [ "${RESUME_FRESH_CONFIG:-0}" -ne 1 ]; then
+        settings_tool restore "$RESUME_SOURCE" "$run_dir" || return $?
     fi
     write_prompt "$run_dir/prompt.txt" "$mode" "$agent" "$repo" "$prompt" "$launch" \
         "$mem" "$cpus" "$gpus" "$time_limit" "$partition"
@@ -856,6 +860,19 @@ fi
 exit "\$rc"
 EOF
     chmod +x "$run_dir/apptainer_exec.sh" "$run_dir/submit.sbatch"
+    local -a saved_options=(save "$run_dir" "--repo=$repo" "--mem=$mem" "--cpus=$cpus"
+        "--time=$time_limit" "--partition=$partition" "--gpus=$gpus" "--goal=$goal"
+        "--reviewers=${REVIEWERS:-}" "--target-diff=${TARGET_DIFF:-}"
+        "--target-report=${TARGET_REPORT:-}" "--agents=${REQUESTED_AGENTS:-}"
+        "--secrets-file=${SECRETS_FILE:-}" "--gh-env-file=${GH_ENV_FILE:-}")
+    local saved_bind
+    for saved_bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do saved_options+=("--bind=$saved_bind"); done
+    if fuse_enabled; then saved_options+=(--allow-fuse); fi
+    settings_tool "${saved_options[@]}" || return $?
+}
+
+settings_tool() {
+    python3 "$ROOT_DIR/runtime/agentrun/run_settings.py" "$@"
 }
 
 command_agents() {
@@ -1344,6 +1361,7 @@ command_validate() {
         agents/codex/requirements.toml \
         runtime/apptainer/base-system.def \
         runtime/agentrun/sessions.py \
+        runtime/agentrun/run_settings.py \
         runtime/agentrun/history.py \
         runtime/agentrun/history_export.py \
         runtime/agentrun/agent-review \
@@ -1617,11 +1635,13 @@ parse_run_args() {
             --time) TIME_LIMIT="$2"; shift 2 ;;
             --partition) PARTITION="$2"; shift 2 ;;
             --bind) EXTRA_BINDS+=("$2"); shift 2 ;;
+            --no-binds) EXTRA_BINDS=(); shift ;;
             --allow-fuse) ALLOW_FUSE=1; shift ;;
             --no-allow-fuse) ALLOW_FUSE=0; shift ;;
             --secrets-file) SECRETS_FILE="$2"; secrets_explicit=1; no_secrets=0; shift 2 ;;
             --no-secrets) no_secrets=1; shift ;;
             --no-gh-broker) no_gh_broker=1; shift ;;
+            --gh-broker) no_gh_broker=0; shift ;;
             --show-mounts) SHOW_MOUNTS=1; shift ;;
             --reviewers) validate_agent_list "$2" || return $?; REVIEWERS="$2"; shift 2 ;;
             --target-diff) TARGET_DIFF="$2"; shift 2 ;;
@@ -1644,7 +1664,17 @@ parse_run_args() {
             continue
         fi
         [ -e "$src" ] || { printf 'bind source does not exist: %s\n' "$src" >&2; exit 2; }
-        kept_binds+=("$bind")
+        # An explicit mount for an inherited destination replaces that mount.
+        local destination="${bind#*:}" i replaced=0 previous
+        if [ "$destination" = "$bind" ]; then destination="$(readlink -f "$src")"
+        else destination="${destination%%:*}"; fi
+        for i in "${!kept_binds[@]}"; do
+            previous="${kept_binds[i]#*:}"
+            if [ "$previous" = "${kept_binds[i]}" ]; then previous="$(readlink -f "$previous")"
+            else previous="${previous%%:*}"; fi
+            if [ "$destination" = "$previous" ]; then kept_binds[i]="$bind"; replaced=1; break; fi
+        done
+        [ "$replaced" -eq 1 ] || kept_binds+=("$bind")
     done
     EXTRA_BINDS=("${kept_binds[@]+"${kept_binds[@]}"}")
     resolve_secrets_file "$secrets_explicit" "$no_secrets"
@@ -2030,67 +2060,120 @@ command_list_runs() {
     find "$PWD/.agent-runs" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' | sort
 }
 
+remember_review_environment() {
+    local key
+    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
+        AGENT_REVIEW_MAX_EXCHANGES AGENT_REVIEW_ACTIVE_TIMEOUT AGENT_REVIEW_REPLY_TIMEOUT AGENT_REVIEW_THREAD_TIMEOUT; do
+        [ -z "${!key+x}" ] || RESUME_ENV_INPUT["$key"]="${!key}"
+    done
+}
+
+load_resume_settings() {
+    local source="$1"; shift
+    local temporary status=0
+    temporary="$(mktemp)" || return $?
+    local -a saved_args=()
+    if settings_tool args "$source" > "$temporary"; then
+        mapfile -d '' -t saved_args < "$temporary"
+    else status=$?; fi
+    rm -f "$temporary"
+    [ "$status" -eq 0 ] || return "$status"
+    local broker_path
+    broker_path="$(settings_tool broker "$source")" || return $?
+    # The caller keeps this local so it remains available when generating the plan.
+    DEFAULT_GH_ENV_FILE="${broker_path:-$_RESUME_DEFAULT_GH_ENV_FILE}"
+    parse_run_args "${saved_args[@]}" "$@"
+    if [ -n "$broker_path" ] && [ "$GH_BROKER_DISABLED" -eq 0 ] && [ -z "$GH_ENV_FILE" ]; then
+        printf '保存された GitHub 仲介サービスの認証設定が使えません: %s（--no-gh-broker で無効化できます）\n' "$broker_path" >&2
+        return 2
+    fi
+    local key value
+    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
+        AGENT_REVIEW_MAX_EXCHANGES AGENT_REVIEW_ACTIVE_TIMEOUT AGENT_REVIEW_REPLY_TIMEOUT AGENT_REVIEW_THREAD_TIMEOUT; do
+        if [ -n "${RESUME_ENV_INPUT[$key]+x}" ]; then export "$key=${RESUME_ENV_INPUT[$key]}"
+        else unset "$key"; fi
+    done
+    while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+        # Explicit environment overrides take precedence over saved reviewer settings.
+        if [ -z "${RESUME_ENV_INPUT[$key]+x}" ]; then export "$key=$value"; fi
+    done < <(settings_tool env "$source")
+}
+
+resume_summary() {
+    local source="$1" bind key
+    printf '\n再開する設定\n  元の実行: %q\n  agent / mode: %s / %s\n  repo: %q\n' "$source" "$AGENT" "$mode" "$REPO" >&2
+    printf '  mem / cpus / time: %q / %q / %q\n  partition: %q / GPU: %q\n' \
+        "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}" "$TIME_LIMIT" "${PARTITION:-<cluster default>}" "$GPUS" >&2
+    printf '  FUSE: %s\n  secrets file: %q\n  GitHub broker: %q\n' "$ALLOW_FUSE" "${SECRETS_FILE:-<none>}" "${GH_ENV_FILE:-<disabled>}" >&2
+    printf '  extra bind mounts:\n' >&2
+    for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do printf '    %q\n' "$bind" >&2; done
+    [ "${#EXTRA_BINDS[@]}" -ne 0 ] || printf '    <none>\n' >&2
+    printf '  goal: %q\n  reviewers: %q / agents: %q\n  target diff/report: %q / %q\n' "$GOAL" "$REVIEWERS" "$REQUESTED_AGENTS" "$TARGET_DIFF" "$TARGET_REPORT" >&2
+    if [ "${RESUME_FRESH_CONFIG:-0}" -eq 1 ]; then printf '  エージェント設定: 現在のリポジトリから生成\n' >&2
+    else settings_tool describe "$source" >&2 || return $?; fi
+    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
+        AGENT_REVIEW_MAX_EXCHANGES AGENT_REVIEW_ACTIVE_TIMEOUT AGENT_REVIEW_REPLY_TIMEOUT AGENT_REVIEW_THREAD_TIMEOUT; do
+        [ -z "${!key:-}" ] || printf '  %s=%q\n' "$key" "${!key}" >&2
+    done
+    printf '  新しい Slurm ジョブで対話再開します。/node-scratch は割当先ノードで再確認します。\n' >&2
+}
+
 command_resume() {
-    local target="" list=0 preview=0 source fields run_dir mode
-    AGENT="" REPO="" MEM="" CPUS="" TIME_LIMIT="" GPUS=0 PARTITION="agent" EXTRA_BINDS=()
-    GH_BROKER_DISABLED=0
+    local target="" list=0 preview=0 source fields run_dir mode status=0
+    local RESUME_FRESH_CONFIG=0 DEFAULT_GH_ENV_FILE="$DEFAULT_GH_ENV_FILE"
+    local _RESUME_DEFAULT_GH_ENV_FILE="$DEFAULT_GH_ENV_FILE"
+    local -A RESUME_ENV_INPUT=()
+    remember_review_environment
+    local -a overrides=()
     while [ "$#" -gt 0 ]; do
         case "$1" in
             -h|--help) usage; return 0 ;;
             --list) list=1; shift ;;
             --preview) preview=1; shift ;;
-            --no-gh-broker) GH_BROKER_DISABLED=1; shift ;;
-            --time|--mem|--cpus|--bind)
+            --fresh-config) RESUME_FRESH_CONFIG=1; shift ;;
+            --time|--mem|--cpus|--bind|--partition|--gpus|--repo|--goal|--secrets-file|--reviewers|--agents|--target-diff|--target-report)
                 [ "$#" -ge 2 ] || { printf '%s requires a value\n' "$1" >&2; return 2; }
-                case "$1" in
-                    --time) TIME_LIMIT="$2" ;;
-                    --mem) MEM="$2" ;;
-                    --cpus) CPUS="$2" ;;
-                    --bind) EXTRA_BINDS+=("$2") ;;
-                esac
-                shift 2 ;;
+                overrides+=("$1" "$2"); shift 2 ;;
+            --no-binds|--allow-fuse|--no-allow-fuse|--no-secrets|--no-gh-broker|--gh-broker)
+                overrides+=("$1"); shift ;;
             --*) printf 'unknown resume option: %s\n' "$1" >&2; return 2 ;;
             *) [ -z "$target" ] || { printf '指定できる run は1件です\n' >&2; return 2; }
                 target="$1"; shift ;;
         esac
     done
-    local resume_time="$TIME_LIMIT" resume_mem="$MEM" resume_cpus="$CPUS" resume_disabled="$GH_BROKER_DISABLED"
-    local -a resume_binds=("${EXTRA_BINDS[@]}")
-    parse_run_args --no-secrets
-    TIME_LIMIT="$resume_time" MEM="$resume_mem" CPUS="$resume_cpus" EXTRA_BINDS=("${resume_binds[@]}") GH_BROKER_DISABLED="$resume_disabled"
-    resolve_gh_broker || return $?
     if [ "$list" -eq 1 ]; then
         [ -z "$target" ] && [ "$preview" -eq 0 ] || { printf '--list は単独で指定してください\n' >&2; return 2; }
         session_tool list "$PWD/.agent-runs"
         return $?
     fi
-    if [ -n "$target" ]; then
-        source="$(session_tool resolve "$PWD/.agent-runs" "$target")" || return $?
-    else
-        source="$(session_tool pick "$PWD/.agent-runs")" || return $?
-    fi
-    if [ "$preview" -eq 1 ]; then
-        session_tool preview "$source"
-        return $?
-    fi
+    if [ -n "$target" ]; then source="$(session_tool resolve "$PWD/.agent-runs" "$target")" || return $?
+    else source="$(session_tool pick "$PWD/.agent-runs")" || return $?; fi
+    if [ "$preview" -eq 1 ]; then session_tool preview "$source"; return $?; fi
     fields="$(session_tool fields "$source")" || return $?
     local -a values
     mapfile -t values <<< "$fields"
-    AGENT="${values[0]}" REPO="${values[1]}" mode="${values[2]}"
+    mode="${values[2]}"
     is_profile "$mode" || { printf '保存された profile が不正です\n' >&2; return 2; }
-    [ -d "$REPO" ] || { printf '再開先の repo がありません: %s\n' "$REPO" >&2; return 2; }
     [ -t 0 ] || { printf 'resume には端末が必要です。会話の確認は --preview を使ってください\n' >&2; return 2; }
-    local bind
-    for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
-        [ -e "${bind%%:*}" ] || { printf 'bind source does not exist: %s\n' "${bind%%:*}" >&2; return 2; }
-    done
+    load_resume_settings "$source" "${overrides[@]}" || return $?
+    AGENT="${values[0]}"
+    [ -d "$REPO" ] || { printf '再開先の repo がありません: %s\n' "$REPO" >&2; return 2; }
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
-    # 過去のログを上書きせず、新しい Slurm job 用の run を作る。
-    run_dir="$(mktemp -d "$(dirname "$source")/$(run_id "resume-$mode" "$AGENT")_XXXXXX")"
+    resume_summary "$source" || return $?
+    if [ "${_AGENTRUN_RESUME_CONFIRMED:-0}" -ne 1 ]; then
+        # Confirmation precedes run allocation, auth staging, and all scheduler calls.
+        WIZARD_UI=plain wizard_confirm 'この設定を引き継いで再開しますか？' 0 || status=$?
+        case "$status" in
+            0) ;;
+            1) printf '再開を中止しました。新しい実行は作成していません。\n'; return 0 ;;
+            *) return "$status" ;;
+        esac
+    fi
+    run_dir="$(mktemp -d "$(dirname "$source")/$(run_id "resume-$mode" "$AGENT")_XXXXXX")" || return $?
     local RESUME_SOURCE="$source"
-    write_plan "$mode" "$AGENT" "$REPO" "" 0 "$TIME_LIMIT" "" "$run_dir" "$PARTITION" interactive || return $?
+    write_plan "$mode" "$AGENT" "$REPO" "$GOAL" "$GPUS" "$TIME_LIMIT" "" "$run_dir" "$PARTITION" interactive || return $?
     printf 'resume: %s → %s\n' "$(basename "$source")" "$(basename "$run_dir")"
-    local srun_args=("--nodes=1" "--ntasks=1" "--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty" "--gres=gpu:0")
+    local srun_args=("--nodes=1" "--ntasks=1" "--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty" "--gres=gpu:$GPUS")
     [ -z "$PARTITION" ] || srun_args+=("--partition=$PARTITION")
     run_interactive_session "$run_dir" "$REPO" "${srun_args[@]}"
 }

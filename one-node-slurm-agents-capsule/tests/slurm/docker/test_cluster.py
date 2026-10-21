@@ -35,6 +35,8 @@ class Session:
         self.before = termios.tcgetattr(self.slave)
         self.output = bytearray()
         self.run = None
+        self.confirm_resume = bool(args and args[0] == "resume")
+        self.resume_confirmed = False
 
         def terminal():
             os.setsid()
@@ -57,6 +59,13 @@ class Session:
             except OSError as exc:
                 if exc.errno != errno.EIO:
                     raise
+        if (
+            self.confirm_resume
+            and not self.resume_confirmed
+            and "この設定を引き継いで再開しますか？".encode() in self.output
+        ):
+            os.write(self.master, b"y\n")
+            self.resume_confirmed = True
 
     def until(self, marker, seconds=60):
         deadline = time.monotonic() + seconds
@@ -382,6 +391,11 @@ class ClusterTests(unittest.TestCase):
                         "success",
                     )
                     self.assertTrue((repo / "workspace-write.txt").is_file())
+                    if agent == "claude":
+                        self.assertIn(
+                            "CLAUDE_SETTINGS_ATOMIC_SAVE_OK",
+                            (run / "live/slurm.out").read_text(),
+                        )
                     metadata = json.loads(
                         (run / "artifacts/agent-cli.json").read_text()
                     )
@@ -411,8 +425,22 @@ class ClusterTests(unittest.TestCase):
                 first = self.assist(repo, agent)
                 original = first.until(("AGENT_READY:" + agent + ":").encode())
                 self.assertEqual(first.finish(), 0, first.output)
+                if agent == "claude":
+                    self.assertIn(b"CLAUDE_SETTINGS_ATOMIC_SAVE_OK", first.output)
                 self.ended(first)
                 self.archived(original)
+                if agent == "claude":
+                    self.assertEqual(
+                        json.loads(
+                            (original / "saved_settings/settings.json").read_text()
+                        )["effortLevel"],
+                        "medium",
+                    )
+                else:
+                    self.assertIn(
+                        'model_reasoning_effort = "low"',
+                        (original / "saved_settings/config.toml").read_text(),
+                    )
                 manifest = json.loads((original / "session.json").read_text())
                 preview = self.cli(repo, "resume", original, "--preview")
                 self.assertIn("capsule persisted conversation", preview.stdout)
@@ -433,10 +461,80 @@ class ClusterTests(unittest.TestCase):
                     ("RESUME_OK:" + agent + ":" + manifest["native_id"]).encode()
                 )
                 self.assertEqual(resumed.finish(), 0, resumed.output)
+                if agent == "claude":
+                    self.assertIn(b"CLAUDE_SETTINGS_ATOMIC_SAVE_OK", resumed.output)
                 self.ended(resumed)
                 current = json.loads((resumed.run / "session.json").read_text())
                 self.assertEqual(current["session_key"], manifest["session_key"])
                 self.assertNotEqual(resumed.run, original)
+                self.archived(resumed.run)
+                initial = (
+                    resumed.run
+                    / "container_config"
+                    / ("settings.json" if agent == "claude" else "config.toml")
+                )
+                if agent == "claude":
+                    self.assertEqual(
+                        json.loads(initial.read_text())["effortLevel"], "medium"
+                    )
+                else:
+                    self.assertIn('model_reasoning_effort = "low"', initial.read_text())
+
+    def test_resume_inherits_settings_and_decline_never_submits_a_job(self):
+        for agent in ("codex", "claude"):
+            with self.subTest(agent=agent):
+                repo = self.repo("inherit-" + agent)
+                data = repo / "data with spaces"
+                data.mkdir()
+                (data / "source.txt").write_text("host data")
+                secret = repo / 'HF "quoted",.env'
+                secret.write_text("HF_TOKEN=CAPSULE_SYNTHETIC_HF_TOKEN\n")
+                secret.chmod(0o600)
+                self.options(
+                    repo, mounts=[{"path": "/data", "writable": False}], secrets=True
+                )
+                first = self.assist(
+                    repo,
+                    agent,
+                    extra=(
+                        "--bind",
+                        f"{data}:/data:ro",
+                        "--partition",
+                        "agent",
+                        "--mem",
+                        "768M",
+                        "--secrets-file",
+                        str(secret),
+                    ),
+                )
+                original = first.until(("AGENT_READY:" + agent + ":").encode())
+                self.assertEqual(first.finish(), 0, first.output)
+                self.ended(first)
+                self.archived(original)
+                before = {p.name for p in original.parent.iterdir()}
+                declined = self.session(repo, ["resume", str(original)])
+                declined.confirm_resume = False
+                declined.until("この設定を引き継いで再開しますか？".encode())
+                self.assertIn(b"768M", declined.output)
+                self.assertIn(b"/data:ro", declined.output)
+                os.write(declined.master, b"n\n")
+                self.assertEqual(declined.finish(), 0, declined.output)
+                self.assertEqual({p.name for p in original.parent.iterdir()}, before)
+                self.assertNotIn(b"launching interactive session", declined.output)
+                resumed = self.session(repo, ["resume", str(original)])
+                resumed.until(("RESUME_OK:" + agent + ":").encode())
+                self.assertTrue(resumed.resume_confirmed)
+                self.assertEqual(resumed.finish(), 0, resumed.output)
+                self.ended(resumed)
+                saved = json.loads((resumed.run / "launch.json").read_text())
+                self.assertEqual(saved["options"]["mem"], "768M")
+                self.assertEqual(saved["options"]["partition"], "agent")
+                self.assertEqual(saved["binds"], [f"{data}:/data:ro"])
+                self.assertEqual(saved["secrets_file"], str(secret))
+                self.assertNotIn(
+                    "CAPSULE_SYNTHETIC_HF_TOKEN",
+                    (resumed.run / "launch.json").read_text(),
+                )
                 self.archived(resumed.run)
 
     def test_scheduler_timeout_restores_terminal_and_allows_resume_for_both_agents(

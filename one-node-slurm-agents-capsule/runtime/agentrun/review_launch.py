@@ -4,16 +4,98 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 from review import Reviews
 from review_snapshot import atomic_json, git
+
+
+def update_codex_mcp_environment(path, environment):
+    """Replace per-allocation connection settings without duplicating TOML tables."""
+    text = path.read_text()
+    document = tomllib.loads(text)
+    current = document.get("mcp_servers", {}).get("cross-review", {}).get("env", {})
+    values = {**current, **environment}
+    if any(not isinstance(value, str) for value in values.values()):
+        raise ValueError("Cross-review MCP environment values must be strings")
+
+    def complete_prefix(offset):
+        try:
+            tomllib.loads(text[:offset])
+            return True
+        except tomllib.TOMLDecodeError:
+            return False
+
+    # A line resembling a header may be inside a multiline string or array.
+    # Let the TOML parser distinguish it, and retain array tables as boundaries.
+    headers = [
+        header
+        for header in re.finditer(
+            r"(?m)^[ \t]*\[[^\n]+\][ \t]*(?:#[^\n]*)?(?:\n|$)", text
+        )
+        if complete_prefix(header.start())
+    ]
+    env_span = parent_span = None
+    for index, header in enumerate(headers):
+        if header.group().lstrip().startswith("[["):
+            continue
+        parsed = tomllib.loads(header.group())
+        server = parsed.get("mcp_servers", {}).get("cross-review", {})
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+        if server == {"env": {}}:
+            env_span = (header.start(), end)
+            break
+        if server == {} and "cross-review" in parsed.get("mcp_servers", {}):
+            parent_span = (header.end(), end)
+    if env_span:
+        text = text[: env_span[0]] + text[env_span[1] :]
+    elif parent_span:
+        # TOML permits an inline env table or dotted env keys in the parent.
+        start, end = parent_span
+        body = text[start:end]
+        assignments = list(
+            re.finditer(
+                r"(?m)^[ \t]*(?:env|\"env\"|'env')(?:\.[^=\n]+)?[ \t]*=[^\n]*(?:\n|$)",
+                body,
+            )
+        )
+        for assignment in reversed(assignments):
+            if not complete_prefix(start + assignment.start()):
+                continue
+            stop = assignment.end()
+            while stop < len(body) and not complete_prefix(start + stop):
+                newline = body.find("\n", stop)
+                stop = newline + 1 if newline >= 0 else len(body)
+            body = body[: assignment.start()] + body[stop:]
+        text = text[:start] + body + text[end:]
+    text = text.rstrip() + "\n\n[mcp_servers.cross-review.env]\n"
+    text += "".join(
+        json.dumps(key, ensure_ascii=False)
+        + " = "
+        + json.dumps(value, ensure_ascii=False)
+        + "\n"
+        for key, value in values.items()
+    )
+    tomllib.loads(text)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+        temporary.replace(path)
+    finally:
+        if temporary:
+            temporary.unlink(missing_ok=True)
 
 
 def main():
@@ -107,10 +189,9 @@ def main():
     }
     atomic_json(run / "container_config/review-mcp.json", mcp_config)
     if args.agent == "codex":
-        with (Path.home() / ".codex/config.toml").open("a") as stream:
-            stream.write("\n[mcp_servers.cross-review.env]\n")
-            for key, value in mcp_environment.items():
-                stream.write(key + " = " + json.dumps(value) + "\n")
+        update_codex_mcp_environment(
+            Path.home() / ".codex/config.toml", mcp_environment
+        )
     atomic_json(runtime / "config.json", config)
     service = subprocess.Popen(
         [

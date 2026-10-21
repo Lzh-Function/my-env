@@ -93,7 +93,6 @@ apptainer exec \
     --bind "$ENV_ROOT/common/hooks:/home/sandbox/ai-agent-config/common/hooks:ro" \
     --bind "$ENV_ROOT/common/skills:/home/sandbox/ai-agent-config/common/skills:ro" \
     --bind "$ENV_ROOT/agents/claude/CLAUDE.md:/home/sandbox/.claude/CLAUDE.md:ro" \
-    --bind "$ENV_ROOT/agents/claude/settings.json:/home/sandbox/.claude/settings.json:ro" \
     --bind "$ENV_ROOT/common/hooks:/home/sandbox/.claude/hooks:ro" \
     --bind "$ENV_ROOT/agents/claude/skills:/home/sandbox/.claude/skills:ro" \
     "$IMAGE" \

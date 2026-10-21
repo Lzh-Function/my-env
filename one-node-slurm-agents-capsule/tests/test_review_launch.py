@@ -5,13 +5,60 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
 import test_cross_review as fixtures
+from review_launch import update_codex_mcp_environment
 
 
 class ReviewLaunchTests(unittest.TestCase):
+    def test_codex_mcp_environment_is_replaced_without_losing_preferences(self):
+        for original in (
+            '[mcp_servers.cross-review.env]\nAGENT_REVIEW_SOCKET = "old"\nEXTRA = "keep"\n',
+            '[mcp_servers."cross-review".env]\nAGENT_REVIEW_SOCKET = "old"\nEXTRA = "keep"\n',
+            'env = { AGENT_REVIEW_SOCKET = "old", EXTRA = "keep" }\n',
+            'env.AGENT_REVIEW_SOCKET = "old"\nenv.EXTRA = "keep"\n',
+        ):
+            with (
+                self.subTest(original=original),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "config.toml"
+                path.write_text(
+                    'model = "saved-model"\nmodel_reasoning_effort = "low"\n'
+                    'developer_instructions = """\n[mcp_servers.cross-review.env]\nkeep this instruction\n"""\n'
+                    '[mcp_servers.cross-review]\ncommand = "agent-review"\n'
+                    + original
+                    + '\n[[entries]]\nname = "keep-array-item"\n[mcp_servers.other]\ncommand = "keep-other"\n'
+                )
+                for socket in ("/tmp/first/review.sock", "/tmp/second/review.sock"):
+                    update_codex_mcp_environment(
+                        path,
+                        {"AGENT_REVIEW_SOCKET": socket, "UV_CACHE_DIR": "/cache/uv"},
+                    )
+                    config = tomllib.loads(path.read_text())
+                    self.assertEqual(config["model"], "saved-model")
+                    self.assertEqual(config["model_reasoning_effort"], "low")
+                    self.assertEqual(
+                        config["developer_instructions"],
+                        "[mcp_servers.cross-review.env]\nkeep this instruction\n",
+                    )
+                    self.assertEqual(config["entries"], [{"name": "keep-array-item"}])
+                    self.assertEqual(
+                        config["mcp_servers"]["other"]["command"], "keep-other"
+                    )
+                    self.assertEqual(
+                        config["mcp_servers"]["cross-review"]["env"],
+                        {
+                            "AGENT_REVIEW_SOCKET": socket,
+                            "UV_CACHE_DIR": "/cache/uv",
+                            "EXTRA": "keep",
+                        },
+                    )
+
     def scenario(self, crash=False):
         fixture = fixtures.CrossReviewTests(
             "test_idempotency_and_stale_question_rejection"

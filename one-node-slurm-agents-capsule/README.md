@@ -136,7 +136,7 @@ image には rustup のビルド時点の stable Rust（`rustc` / `cargo`）と�
 
 ### Wizard の戻る・パス補完・再開
 
-wizard の各ステップで「← 戻る」または `:back` を使うと前の入力へ戻れます。`:cancel`、Esc、Ctrl+C はキャンセルです。bind のホスト側パスは Tab で補完できます。
+wizard の各ステップで「← 戻る」または `:back` を使うと前の入力へ戻れます。`:cancel`、Esc、Ctrl+C はキャンセルです。パス入力中は `Alt+←` で戻る、`Ctrl+G` でキャンセルの操作もでき、パス補完と操作案内を併せて表示します。
 CLI の Bash 補完は `install.sh --apply` で登録されます。現在のシェルでは `source runtime/agentrun/agentrun.bash` で有効にできます（`--bind` の source、`--repo`、`--goal`）。
 
 ```bash
@@ -147,4 +147,5 @@ agentrun resume  # 対話的に選択
 ```
 
 wizard の mode でも `resume` を選べます。会話データは `.agent-runs/.sessions` に保存し、元のログを残して新しい run で再開します。保存前の旧 run は再開対象になりません。
+`resume` は追加bind、資源・GPU・partition、FUSE、秘密情報ファイルの参照先、エージェント設定（実行中に変更した effort など）を引き継ぎ、起動前に確認します。元がバッチでも対話で再開します。引数による上書き、`--no-binds` による追加マウントの解除、`--fresh-config` によるエージェント設定の初期化も可能です。
 起動時の installer ログは `live/agent_install.log`、インストールした CLI の情報は `artifacts/agent-cli.json` に保存します。compute node から公式 installer に接続できる必要があります。

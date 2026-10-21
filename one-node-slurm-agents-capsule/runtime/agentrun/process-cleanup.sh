@@ -1,6 +1,10 @@
 # host/compute nodeの補助processを、終了codeを保って有限時間で停止する。
 _agentrun_cleanup_home() {
     local run_dir="$1" attempt
+    # Keep mutable CLI preferences before removing the credential-bearing HOME.
+    python3 "$(dirname "${BASH_SOURCE[0]}")/run_settings.py" capture "$run_dir" \
+        2>>"$run_dir/live/home_cleanup.log" || \
+        printf 'warning: could not save CLI settings; see live/home_cleanup.log\n' >&2
     # NFS silly-renamed files can remain briefly after the job exits. Preserve
     # rm diagnostics and retry, inside the caller's existing 15-second timeout.
     for attempt in {1..5}; do

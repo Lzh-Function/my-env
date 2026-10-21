@@ -69,7 +69,7 @@ class WizardTests(unittest.TestCase):
         self.args = ["wizard", "--agent", "claude", "--time", "02:00:00",
                      "--mem", "12000M", "--cpus", "2"]
 
-    def execute(self, args, answers="", env=None, command=None, columns=80):
+    def execute(self, args, answers="", env=None, command=None, columns=80, clear_default=True):
         master, slave = pty.openpty()
         proc = None
         try:
@@ -104,7 +104,7 @@ class WizardTests(unittest.TestCase):
                     if termios.tcgetattr(slave)[3] & termios.ICANON:
                         continue
                     reply = replies[sent].encode()
-                    if reply:
+                    if reply and clear_default:
                         reply = b'\x15' + reply
                     os.write(master, reply + b'\n')
                     sent += 1
@@ -159,6 +159,8 @@ class WizardTests(unittest.TestCase):
                                           command=["bash", "-c", script, "bash", str(LAUNCHER)])
                 self.assertEqual(rc, 0, output)
                 self.assertIn(f"PATH_VALUE=<{extra.name}/>", output)
+                self.assertIn(":back=戻る", output)
+                self.assertIn(":cancel=キャンセル", output)
         self.assertFalse((self.root / "injected").exists())
 
     def test_path_input_back_cancel_and_tilde(self):
@@ -188,6 +190,16 @@ class WizardTests(unittest.TestCase):
                         self.assertEqual(rc, 0, output)
                         self.assertIn(f"PATH_VALUE=<{path}>", output)
         self.assertFalse((self.root / "injected").exists())
+
+    def test_path_navigation_shortcuts_work_with_prefilled_value(self):
+        script = 'source "$1"; value="$(wizard_path_input "Host path" "$2")"; printf "%s\\n" "$value"'
+        command = ["bash", "-c", script, "bash", str(LAUNCHER), str(self.root)]
+        for ui in ("plain", "gum", "whiptail", "dialog"):
+            for key, expected in (("\x1b[1;3D\n", 10), ("\x07\n", 130), ("\x1b\n", 130)):
+                with self.subTest(ui=ui, key=repr(key)):
+                    rc, output = self.execute([], key, command=command,
+                                              env=dict(self.env, WIZARD_UI=ui), clear_default=False)
+                    self.assertEqual(rc, expected, output)
 
     def test_declining_resume_creates_nothing(self):
         before = (self.original / "session.json").read_text()

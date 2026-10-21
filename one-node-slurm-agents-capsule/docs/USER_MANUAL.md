@@ -531,23 +531,46 @@ agentrun wizard
 
 #### 表示される CLI コマンド
 
-"Same run without the wizard:" の後に表示するコマンドは、コピーして同じ条件で実行できます。既定値と同じメモリ・CPU 数・制限時間、GPU 数 0、現在のディレクトリを使う `--repo` など、省略しても条件が変わらない引数は表示しません。
+"Same run without the wizard:" の後に表示するコマンドは、コピーして同じ条件で実行できます。資源、パーティション、GPU、追加マウント、FUSE、秘密情報の参照先などを明示します。再開の場合は `--no-binds` の後に選択した追加マウントを列挙し、元の実行にあるマウントを解除した場合も再現できるようにします。
 
 <a id="wizard-の戻るパス補完再開"></a>
 
 ### セッションの再開と入力補完
 
-ウィザードの各ステップで「← 戻る」または `:back` を使うと前の入力へ戻れます。`:cancel`、Esc、Ctrl+C はキャンセルです。バインドのホスト側パスは Tab で補完できます。
+ウィザードの各ステップで「← 戻る」または `:back` を使うと前の入力へ戻れます。`:cancel`、Esc、Ctrl+C はキャンセルです。パス入力には案内を別行で表示し、`Alt+←` で前へ戻る、`Ctrl+G` でキャンセルの操作もできます。これらのキーは入力済みの既定値を消さずに使えます。リポジトリ、目標ファイル、追加マウントのホスト側パス、レビュー対象のパスは Tab で補完できます。
 CLI の Bash 補完は `install.sh --apply` で登録されます。現在のシェルでは `source runtime/agentrun/agentrun.bash` で有効にできます（`--bind` のマウント元、`--repo`、`--goal`）。
 
 ```bash
 agentrun resume --list
 agentrun resume RUN_ID --preview
 agentrun resume RUN_ID --time 02:00:00 --mem 16000M --cpus 4
+agentrun resume RUN_ID --bind /new/data:/data:ro  # 同じマウント先の指定を置き換える
+agentrun resume RUN_ID --no-binds              # 追加マウントをすべて解除する
+agentrun resume RUN_ID --fresh-config          # エージェント設定をリポジトリから作り直す
 agentrun resume  # 対話的に選択
 ```
 
 ウィザードのモードでも `resume` を選べます。会話データは `.agent-runs/.sessions` に保存し、元のログを残して新しい実行で再開します。保存前の旧実行は再開対象になりません。
+
+`resume` は、次の設定を元の実行から引き継ぎ、内容を表示してから起動の確認を求めます。確認を断った場合は、新しい実行ディレクトリ、認証情報の配置、Slurm ジョブを作成しません。元がバッチ実行の場合も、再開は対話形式です。
+
+| 対象 | 引き継ぐ内容 |
+| --- | --- |
+| 作業対象 | エージェント種別、モード、リポジトリ、目標ファイル、レビュー対象・担当エージェント |
+| 計算資源 | メモリ、CPU、制限時間、GPU 数、パーティション |
+| マウント | 追加 `--bind` のマウント元・マウント先・読み書き権限、FUSE の有無 |
+| 外部サービス | 秘密情報ファイルの参照先、GitHub 仲介サービスの有無と設定ファイルの参照先 |
+| エージェント設定 | Claude の `settings.json`、Codex の `config.toml`。`/effort` などによる実行中の変更も、ホーム削除前に保存 |
+| 相互監査 | モデル・effort・時間制限などの `AGENT_REVIEW_*` 設定。再開時に明示した環境変数を優先 |
+
+起動設定は `launch.json`、変更済みのエージェント設定は `saved_settings/` に保存します。認証ファイルは設定の保存対象に含めず、再開時に現在の認証ストアから配置します。秘密情報ファイルの本文も複製せず、同じファイルを参照し直します。`launch.json` と退避した設定ファイルは権限 600、`saved_settings/` は 700 で作成します。
+
+`--mem`、`--cpus`、`--time`、`--partition`、`--gpus`、`--repo`、`--goal`、`--bind`、`--secrets-file` などを再開時に指定すると、その項目を上書きできます。新しいマウント先の `--bind` は追加し、既存のマウント先への指定は置き換えます。`--no-binds`、`--no-secrets`、`--no-allow-fuse`、`--no-gh-broker` でそれぞれ解除できます。マウント元や秘密情報ファイルがなくなった場合は、明示的に変更・解除してください。
+
+この保存機能の導入前の実行は、残っている `submit.sbatch` と `apptainer_exec.sh` を実行せずに読み取り、復元できる設定を引き継ぎます。未記録の項目には既定値を使い、その旨を確認画面に表示します。削除済みの旧ホームにしか残っていなかった設定変更は復元できません。ノード固有の `/node-scratch` は再開先の計算ノードで確認するため、前回と同じ内容になるとは限りません。
+
+再開は新しい実行ディレクトリを作るため、標準の `/runs`・`/scratch`・`/cache` は新しい実行の領域を使います。追加bindの参照先は引き継ぎます。コンテナイメージ、CLIの導入、共通フック・スキルには、再開時点の環境を使います。
+
 起動時のインストーラログは `live/agent_install.log`、インストールした CLI の情報は `artifacts/agent-cli.json` に保存します。計算ノードから公式インストーラに接続できる必要があります。
 
 ## 作業領域と出力
@@ -641,6 +664,7 @@ agentrun assist --agent codex --partition <partition> --repo /path/to/my-project
 | --- | --- |
 | `.agent-runs/<run_id>/home/` | 認証情報と設定を一時配置するホーム |
 | `.agent-runs/<run_id>/container_config/` | 実行専用の設定コピー |
+| `.agent-runs/<run_id>/saved_settings/` | ホーム削除前に退避したエージェント設定 |
 | `.agent-runs/<run_id>/prompt.txt` | エージェントに渡す初期プロンプト |
 | `.agent-runs/<run_id>/goal.yaml` | 目標の定義 |
 | `.agent-runs/<run_id>/apptainer_exec.sh` | コンテナの起動コマンド |
@@ -654,6 +678,7 @@ agentrun assist --agent codex --partition <partition> --repo /path/to/my-project
 | パス | 内容 |
 | --- | --- |
 | `capsule.yaml` | 実行 ID、モード、エージェント、リポジトリ、目標などの実行情報 |
+| `launch.json` | 再開に使う起動オプション、追加マウント、外部設定ファイルの参照先 |
 | `prompt.txt` | 初期プロンプト。対話式の assist では最小限の環境説明のみ |
 | `goal.yaml` | `--goal` で指定した目標ファイルのコピー。未指定ならモードとエージェントだけを記録 |
 | `apptainer_exec.sh` | コンテナを起動するコマンド |
@@ -1201,9 +1226,11 @@ $HOME/.agentrun/auth/claude/.claude.json
 | パス | 内容 |
 | --- | --- |
 | `agents/claude/CLAUDE.md` | → `/home/sandbox/.claude/CLAUDE.md:ro` |
-| `container_config/settings.json` | → `/home/sandbox/.claude/settings.json:ro` |
+| `container_config/settings.json` | → `<run_dir>/home/.claude/settings.json` へコピー（書き込み可能） |
 | `common/hooks` | → `/home/sandbox/.claude/hooks:ro` |
 | `agents/claude/skills` | → `/home/sandbox/.claude/skills:ro` |
+
+Claude Code の設定は実行専用ホーム内の通常ファイルなので、`/effort` などによる設定の保存が可能です。終了時に `saved_settings/settings.json` へ退避し、`resume` で引き継ぎます。`--fresh-config` を指定した再開では、リポジトリの設定から作り直します。
 
 #### Codex
 
@@ -1253,7 +1280,7 @@ $HOME/.agentrun/auth/codex/.codex/auth.json
 | `container_config/config.toml` | → `<run_dir>/home/.codex/config.toml` |
 | `common/skills/*` | → `<run_dir>/home/.codex/skills/*`（シンボリックリンク） |
 
-Codex の設定は、実行ごとのホームディレクトリへコピーするため書き込み可能です。信頼設定の保存エラーが出る場合は `/home/sandbox/.codex/config.toml` が読み取り専用バインドマウントになっていないか確認してください。
+Codex の設定は、実行ごとのホームディレクトリへコピーするため書き込み可能です。終了時に `saved_settings/config.toml` へ退避し、`resume` で引き継ぎます。信頼設定の保存エラーが出る場合は `/home/sandbox/.codex/config.toml` がファイル単位のバインドマウントになっていないか確認してください。
 
 <a id="common-instructions"></a>
 
@@ -1707,7 +1734,7 @@ agentrun assist [options] [PROMPT]
 agentrun assist --submit [options] PROMPT
 agentrun experiment|campaign|review|multi-review [options] PROMPT
 agentrun wizard [options] [PROMPT]
-agentrun resume [RUN_ID|RUN_DIR] [--time HH:MM:SS] [--mem SIZE] [--cpus N] [--bind SRC:DST[:OPTIONS]]
+agentrun resume [RUN_ID|RUN_DIR] [起動オプション] [--no-binds] [--fresh-config]
 agentrun resume --list
 agentrun resume RUN_ID --preview
 agentrun smoke-test [--agent NAME] [--submit]
@@ -1737,11 +1764,14 @@ agentrun history [RUN_ID|RUN_DIR] [--watch]
 | `--time HH:MM:SS` | 実行時間の上限。省略時は実行プロファイルの既定値 |
 | `--partition NAME` | Slurm のパーティション。省略時は `AGENTRUN_SLURM_PARTITION`、未設定ならクラスタの既定値 |
 | `--bind SRC:DST[:OPTIONS]` | 追加マウント。複数回指定可能。権限は `ro` または `rw` |
+| `--no-binds` | 保存済みの指定を含む追加マウントをすべて解除 |
+| `--fresh-config` | `resume` 時、保存したエージェント設定を使わずリポジトリから生成 |
 | `--allow-fuse` | `/dev/fuse` を公開し、コンテナ内での追加の FUSE マウントを許可。既定は無効。`AGENTRUN_ALLOW_FUSE=1` でも有効化可能 |
 | `--no-allow-fuse` | 環境変数で有効にしていても、その実行では FUSE を無効化 |
 | `--secrets-file PATH` | `KEY=VALUE` 形式のファイルから環境変数を渡す。既定は `secrets/.env` があれば使用。`AGENTRUN_SECRETS_FILE` でも指定可能 |
 | `--no-secrets` | 秘密情報の環境変数を渡さない |
 | `--no-gh-broker` | `secrets/gh.env` に `GH_TOKEN` があっても GitHub 操作の仲介サービスを起動しない |
+| `--gh-broker` | 保存済みの無効設定を上書きし、認証設定がある場合に仲介サービスを有効化 |
 | `--reviewers LIST` | プロンプトに追記するレビュー担当の一覧 |
 | `--target-diff PATH` | プロンプトに追記するレビュー対象の差分ファイル |
 | `--target-report PATH` | プロンプトに追記するレビュー対象の報告書 |

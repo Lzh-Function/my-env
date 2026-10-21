@@ -339,6 +339,7 @@ class ResumeIntegrationTests(unittest.TestCase):
                                             stdin=slave, stdout=slave, stderr=slave,
                                             preexec_fn=controlling_terminal)
                     output = bytearray()
+                    confirmed = False
                     deadline = time.monotonic() + 10
                     while proc.poll() is None:
                         if time.monotonic() > deadline:
@@ -347,6 +348,9 @@ class ResumeIntegrationTests(unittest.TestCase):
                             self.fail(repr(output))
                         if select.select([master], [], [], 0.05)[0]:
                             output.extend(os.read(master, 65536))
+                        if not confirmed and "この設定を引き継いで再開しますか？".encode() in output:
+                            os.write(master, b"y\n")
+                            confirmed = True
                     while select.select([master], [], [], 0)[0]:
                         output.extend(os.read(master, 65536))
                     return proc.returncode, output.decode(errors="replace")

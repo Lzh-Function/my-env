@@ -22,6 +22,8 @@ wizard_navigation() {
 wizard_readline_keys() {
     # read -e は各 UI の子 shell で使うため、親端末の設定には残らない。
     bind '"\e": "\C-u:cancel\C-m"' 2>/dev/null || true
+    bind '"\C-g": "\C-u:cancel\C-m"' 2>/dev/null || true
+    bind '"\e[1;3D": "\C-u:back\C-m"' 2>/dev/null || true
 }
 
 wizard_banner() {
@@ -84,7 +86,8 @@ wizard_input() {
 wizard_path_input() {
     local value default="${2:-}"
     [ -z "$default" ] || default="$(wizard_shell_quote "$default")"
-    printf '\033[1;36m%s (Tab=パス補完, :back=戻る, :cancel=キャンセル)\033[0m\n' "$1" >&2
+    printf '\033[1;36m%s\033[0m\n' "$1" >&2
+    printf '\033[1;36mTab=パス補完 / :back=戻る (Alt+←) / :cancel=キャンセル (Ctrl+G・Esc)\033[0m\n' >&2
     wizard_readline_keys
     IFS= read -e -r -i "$default" -p '> ' value || return 130
     wizard_navigation "$value" || return $?
@@ -112,7 +115,7 @@ wizard_ask() {
     local var="$1" prompt="$2" value="$3" validator="${4:-}" out rc
     while :; do
         case "$validator" in
-            wizard_valid_repo|wizard_valid_goal) value="$(wizard_path_input "$prompt" "$value")" || return $? ;;
+            wizard_valid_repo|wizard_valid_goal|wizard_valid_path) value="$(wizard_path_input "$prompt" "$value")" || return $? ;;
             *) value="$(wizard_input "$prompt" "$value")" || return $? ;;
         esac
         if [ -z "$validator" ]; then printf -v "$var" '%s' "$value"; return; fi
@@ -158,6 +161,10 @@ wizard_valid_goal() {
     path="$(wizard_expand_tilde "$1")"
     [ -f "$path" ] || { printf 'goal file does not exist: %s\n' "$1"; return 1; }
     readlink -f "$path"
+}
+
+wizard_valid_path() {
+    wizard_expand_tilde "$1"
 }
 
 wizard_valid_prompt() {
@@ -234,7 +241,7 @@ wizard_step() {
             if is_profile "$default" || [ "$default" = resume ]; then modes+=("$default"); fi
             for choice in assist experiment campaign review multi-review resume; do [ "$choice" = "$default" ] || modes+=("$choice"); done
             choice="$(wizard_select 'Select run mode' "${modes[@]}")" || return $?
-            if [ "$mode" != "$choice" ]; then MEM="$cli_mem"; CPUS="$cli_cpus"; TIME_LIMIT="$cli_time"; fi
+            if [ "$mode" != "$choice" ]; then MEM="$cli_mem"; CPUS="$cli_cpus"; TIME_LIMIT="$cli_time"; loaded_source=''; fi
             mode="$choice"
             ;;
         agent)
@@ -258,7 +265,21 @@ wizard_step() {
             source="$(session_tool resolve "$PWD/.agent-runs" "${choice%% *}")" || return $?
             fields="$(session_tool fields "$source")" || return $?
             mapfile -t values <<< "$fields"
-            if [ "$profile" != "${values[2]}" ]; then MEM="$cli_mem"; CPUS="$cli_cpus"; TIME_LIMIT="$cli_time"; fi
+            if [ "$source" != "$loaded_source" ]; then
+                local fallback_mem="$MEM" fallback_cpus="$CPUS" fallback_time="$TIME_LIMIT"
+                local -a fallback_binds=("${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}")
+                load_resume_settings "$source" "${wizard_resume_overrides[@]}" || return $?
+                # Pre-feature synthetic/old sessions may have no launch script at all.
+                if [ ! -f "$source/launch.json" ] && [ ! -f "$source/submit.sbatch" ]; then
+                    [ -n "$MEM" ] || MEM="$fallback_mem"
+                    [ -n "$CPUS" ] || CPUS="$fallback_cpus"
+                    [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$fallback_time"
+                    if [ "${#EXTRA_BINDS[@]}" -eq 0 ] && [ -z "${WIZARD_EXPLICIT[no-binds]:-}" ]; then
+                        EXTRA_BINDS=("${fallback_binds[@]+"${fallback_binds[@]}"}")
+                    fi
+                fi
+                loaded_source="$source"
+            fi
             AGENT="${values[0]}" REPO="${values[1]}" profile="${values[2]}" selected="$choice"
             is_profile "$profile" || return 2 ;;
         preview)
@@ -299,61 +320,56 @@ wizard_step() {
             if [ "$mode" = assist ] && [ "$SUBMIT" -eq 0 ]; then PROMPT=''
             else wizard_ask PROMPT 'Task prompt' "$PROMPT" wizard_valid_prompt; fi ;;
         reviewers) wizard_ask REVIEWERS 'Reviewers (codex,claude; comma-separated)' "$REVIEWERS" validate_agent_list ;;
-        target_diff) wizard_ask TARGET_DIFF 'Target diff path' "$TARGET_DIFF" ;;
-        target_report) wizard_ask TARGET_REPORT 'Target report path' "$TARGET_REPORT" ;;
+        target_diff) wizard_ask TARGET_DIFF 'Target diff path' "$TARGET_DIFF" wizard_valid_path ;;
+        target_report) wizard_ask TARGET_REPORT 'Target report path' "$TARGET_REPORT" wizard_valid_path ;;
         agents) wizard_ask REQUESTED_AGENTS 'Multi-review agents (codex,claude; comma-separated)' "$REQUESTED_AGENTS" validate_agent_list ;;
         confirm) wizard_finish ;;
     esac
 }
 
 wizard_finish() {
-    local -a args show
-    if [ "$mode" = resume ]; then
-        args=("$source" --mem "$MEM" --cpus "$CPUS" --time "$TIME_LIMIT")
-        show=("$source")
-    else
-        args=(--agent "$AGENT" --repo "$REPO" --mem "$MEM" --cpus "$CPUS" --time "$TIME_LIMIT")
-        show=(--agent "$AGENT")
-        [ "$REPO" = "$(pwd -P)" ] || show+=(--repo "$REPO")
-    fi
-    [ "$MEM" = "$(profile_mem "$profile")" ] || show+=(--mem "$MEM")
-    [ "$CPUS" = "$(profile_cpus "$profile")" ] || show+=(--cpus "$CPUS")
-    [ "$TIME_LIMIT" = "$(profile_time "$profile")" ] || show+=(--time "$TIME_LIMIT")
+    local -a args
+    if [ "$mode" = resume ]; then args=("$source" --no-binds)
+    else args=(--agent "$AGENT" --repo "$REPO"); fi
+    args+=(--mem "$MEM" --cpus "$CPUS" --time "$TIME_LIMIT" --partition "$PARTITION" --gpus "$GPUS")
     local arg
-    for arg in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do args+=(--bind "$arg"); show+=(--bind "$arg"); done
-    [ "$GH_BROKER_DISABLED" -eq 0 ] || { args+=(--no-gh-broker); show+=(--no-gh-broker); }
+    for arg in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do args+=(--bind "$arg"); done
+    if [ "$GH_BROKER_DISABLED" -eq 1 ]; then args+=(--no-gh-broker); else args+=(--gh-broker); fi
+    if [ "$ALLOW_FUSE" -eq 1 ]; then args+=(--allow-fuse); else args+=(--no-allow-fuse); fi
+    if secrets_enabled; then args+=(--secrets-file "$SECRETS_FILE"); else args+=(--no-secrets); fi
+    [ -z "$GOAL" ] || args+=(--goal "$GOAL")
+    [ -z "$REVIEWERS" ] || args+=(--reviewers "$REVIEWERS")
+    [ -z "$TARGET_DIFF" ] || args+=(--target-diff "$TARGET_DIFF")
+    [ -z "$TARGET_REPORT" ] || args+=(--target-report "$TARGET_REPORT")
+    [ -z "$REQUESTED_AGENTS" ] || args+=(--agents "$REQUESTED_AGENTS")
     if [ "$mode" != resume ]; then
-        args+=(--partition "$PARTITION" --gpus "$GPUS")
-        [ "$PARTITION" = "${AGENTRUN_SLURM_PARTITION:-}" ] || show+=(--partition "$PARTITION")
-        [ "$GPUS" -eq 0 ] || show+=(--gpus "$GPUS")
-        if [ "$ALLOW_FUSE" -eq 1 ]; then args+=(--allow-fuse); show+=(--allow-fuse)
-        else args+=(--no-allow-fuse); fi
-        if secrets_enabled; then args+=(--secrets-file "$SECRETS_FILE"); show+=(--secrets-file "$SECRETS_FILE")
-        else args+=(--no-secrets); show+=(--no-secrets); fi
-        local -a tail=()
-        [ -z "$GOAL" ] || tail+=(--goal "$GOAL")
-        [ -z "$REVIEWERS" ] || tail+=(--reviewers "$REVIEWERS")
-        [ -z "$TARGET_DIFF" ] || tail+=(--target-diff "$TARGET_DIFF")
-        [ -z "$TARGET_REPORT" ] || tail+=(--target-report "$TARGET_REPORT")
-        [ -z "$REQUESTED_AGENTS" ] || tail+=(--agents "$REQUESTED_AGENTS")
-        [ "$SUBMIT" -eq 0 ] || tail+=(--submit)
-        [ -z "$PROMPT" ] || tail+=(-- "$PROMPT")
-        args+=("${tail[@]+"${tail[@]}"}"); show+=("${tail[@]+"${tail[@]}"}")
+        [ "$SUBMIT" -eq 0 ] || args+=(--submit)
+        [ -z "$PROMPT" ] || args+=(-- "$PROMPT")
     fi
-    local command_line="agentrun $mode" summary rc=0
-    for arg in "${show[@]}"; do command_line+=" $(wizard_shell_quote "$arg")"; done
+    local command_line="agentrun $mode" summary rc=0 key prefix=''
+    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
+        AGENT_REVIEW_MAX_EXCHANGES AGENT_REVIEW_ACTIVE_TIMEOUT AGENT_REVIEW_REPLY_TIMEOUT AGENT_REVIEW_THREAD_TIMEOUT; do
+        [ -z "${!key:-}" ] || prefix+="$key=$(wizard_shell_quote "${!key}") "
+    done
+    [ -z "$prefix" ] || command_line="env $prefix$command_line"
+    for arg in "${args[@]}"; do command_line+=" $(wizard_shell_quote "$arg")"; done
     summary="mode: $mode / agent: $AGENT / profile: $profile"$'\n'"repo: $REPO"$'\n'"mem/cpus/time: $MEM / $CPUS / $TIME_LIMIT"$'\n'
-    [ "$mode" != resume ] || summary+="再開対象: $selected"$'\n'
-    summary+="partition: ${PARTITION:-<cluster default>} / GPU: $GPUS / gh broker: $(gh_broker_enabled && printf enabled || printf disabled)"$'\n'
-    [ "$mode" = resume ] || summary+="launch: $(if [ "$SUBMIT" -eq 1 ]; then printf sbatch; elif [ "$mode" = assist ]; then printf 'srun --pty'; else printf 'prepare only'; fi)"$'\n'
+    [ "$mode" != resume ] || summary+="再開対象: $selected"$'\n'"$(settings_tool describe "$source")"$'\n'
+    summary+="partition: ${PARTITION:-<cluster default>} / GPU: $GPUS / FUSE: $ALLOW_FUSE"$'\n'
+    summary+="secrets file: ${SECRETS_FILE:-<none>} / gh broker: ${GH_ENV_FILE:-<disabled>}"$'\n'
+    summary+="extra bind mounts:"$'\n'
+    if [ "${#EXTRA_BINDS[@]}" -eq 0 ]; then summary+="  <none>"$'\n'
+    else for arg in "${EXTRA_BINDS[@]}"; do summary+="  $arg"$'\n'; done; fi
+    if [ "$mode" = resume ]; then summary+="launch: srun --pty（対話再開）"$'\n'
+    else summary+="launch: $(if [ "$SUBMIT" -eq 1 ]; then printf sbatch; elif [ "$mode" = assist ]; then printf 'srun --pty'; else printf 'prepare only'; fi)"$'\n'; fi
     summary+=$'\n'"Same run without the wizard:"$'\n'"$command_line"$'\n'
     if wizard_confirm "${summary}Launch this run?" 1; then
-        local -a mounts=("$REPO" "$PWD/.agent-runs")
-        for arg in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do mounts+=("${arg%%:*}"); done
         wizard_save_last "$mode" "$profile" || return $?
         trap - INT TERM
         printf '\nSame run without the wizard:\n  %s\n\n' "$command_line"
         finished=1
+        # The wizard already displayed the complete configuration and obtained approval.
+        local _AGENTRUN_RESUME_CONFIRMED=1
         if [ "$mode" = resume ]; then command_resume "${args[@]}"
         else command_prepare "$mode" "${args[@]}"; fi
     else
@@ -372,6 +388,24 @@ command_wizard() {
     ensure_default_secrets_file
     ensure_default_gh_env_file
     parse_run_args "$@"
+    local -A RESUME_ENV_INPUT=()
+    remember_review_environment
+    local DEFAULT_GH_ENV_FILE="$DEFAULT_GH_ENV_FILE"
+    local _RESUME_DEFAULT_GH_ENV_FILE="$DEFAULT_GH_ENV_FILE"
+    local -a wizard_resume_overrides=()
+    local -a wizard_original_args=("$@")
+    local option_index option
+    for ((option_index=0; option_index<${#wizard_original_args[@]}; option_index++)); do
+        option="${wizard_original_args[option_index]}"
+        case "$option" in
+            --mem|--cpus|--time|--partition|--gpus|--repo|--goal|--secrets-file|--bind|--reviewers|--agents|--target-diff|--target-report)
+                wizard_resume_overrides+=("$option" "${wizard_original_args[option_index+1]}"); option_index=$((option_index+1)) ;;
+            --no-binds|--allow-fuse|--no-allow-fuse|--no-secrets|--no-gh-broker|--gh-broker)
+                wizard_resume_overrides+=("$option") ;;
+            --agent) option_index=$((option_index+1)) ;;
+            --) break ;;
+        esac
+    done
     local secrets_candidate="$SECRETS_FILE"
     local cli_mem="$MEM" cli_cpus="$CPUS" cli_time="$TIME_LIMIT" arg key
     WIZARD_EXPLICIT=()
@@ -404,7 +438,7 @@ command_wizard() {
     validate_agent_list "$REQUESTED_AGENTS" 2>/dev/null || REQUESTED_AGENTS=''
     validate_agent_list "$REVIEWERS" 2>/dev/null || REVIEWERS=''
     wizard_banner 'agentrun wizard - Enter accepts the value; :back goes back; Ctrl+C / Esc / :cancel cancels' || wizard_abort
-    local mode='' profile='' source='' selected='' step=0 rc=0 finished=0
+    local mode='' profile='' source='' selected='' loaded_source='' step=0 rc=0 finished=0
     [ "$same_dir" -eq 0 ] || selected="${WIZARD_LAST[resume_id]:-}"
     local -a steps
     while [ "$finished" -eq 0 ]; do

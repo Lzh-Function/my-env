@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import signal
 import socket
 import sys
@@ -257,11 +258,39 @@ assert CREDENTIAL.is_file(), CREDENTIAL
 assert "nameserver" in Path("/etc/resolv.conf").read_text()
 socket.getaddrinfo("controller", 6817)
 if AGENT == "codex":
-    config = tomllib.loads((HOME / ".codex/config.toml").read_text())
+    config_path = HOME / ".codex/config.toml"
+    config_text = config_path.read_text()
+    config = tomllib.loads(config_text)
     assert "cross-review" in config["mcp_servers"]
     tomllib.loads(Path("/etc/codex/requirements.toml").read_text())
+    effort = "low" if config.get("model_reasoning_effort") != "low" else "high"
+    setting = f'model_reasoning_effort = "{effort}"'
+    if "model_reasoning_effort" in config:
+        config_text = re.sub(
+            r"(?m)^model_reasoning_effort\s*=.*$", setting, config_text, count=1
+        )
+    else:
+        config_text = setting + "\n" + config_text
+    temporary = config_path.with_name("config.toml.tmp.capsule-test")
+    temporary.write_text(config_text)
+    temporary.replace(config_path)
 else:
-    json.loads((HOME / ".claude/settings.json").read_text())
+    settings_path = HOME / ".claude/settings.json"
+    settings = json.loads(settings_path.read_text())
+    original = json.loads(Path("/runs/container_config/settings.json").read_text())
+    assert settings == original
+    # Exercise the real atomic rename used by Claude's /effort settings save.
+    settings["effortLevel"] = (
+        "medium" if settings.get("effortLevel") != "medium" else "high"
+    )
+    temporary = settings_path.with_name("settings.json.tmp.capsule-test")
+    temporary.write_text(json.dumps(settings) + "\n")
+    temporary.replace(settings_path)
+    assert json.loads(settings_path.read_text()) == settings
+    assert (
+        json.loads(Path("/runs/container_config/settings.json").read_text()) == original
+    )
+    print("CLAUDE_SETTINGS_ATOMIC_SAVE_OK", flush=True)
     mcp = json.loads(Path("/runs/container_config/review-mcp.json").read_text())
     assert "cross-review" in mcp["mcpServers"]
 print("CONFIG_AND_DNS_OK", flush=True)
