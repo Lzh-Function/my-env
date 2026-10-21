@@ -193,16 +193,24 @@ def main():
             Path.home() / ".codex/config.toml", mcp_environment
         )
     atomic_json(runtime / "config.json", config)
-    service = subprocess.Popen(
-        [
-            sys.executable,
-            str(runtime_source / "review.py"),
-            str(runtime / "config.json"),
-            str(endpoint),
-        ],
-        env=env,
-        start_new_session=True,
-    )
+    # Detached helpers must never inherit the worker's terminal streams.
+    # Their diagnostics can arrive after the foreground UI or srun has exited.
+    service_log = run / "live/review_service.log"
+    service_log.parent.mkdir(parents=True, exist_ok=True)
+    with service_log.open("a") as log:
+        service = subprocess.Popen(
+            [
+                sys.executable,
+                str(runtime_source / "review.py"),
+                str(runtime / "config.json"),
+                str(endpoint),
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
     worker = None
     interrupted = [None]
 
@@ -225,7 +233,7 @@ def main():
                 or time.monotonic() > deadline
                 or interrupted[0]
             ):
-                raise RuntimeError("Review service failed to start")
+                raise RuntimeError(f"Review service failed to start; see {service_log}")
             time.sleep(0.05)
         worker = subprocess.Popen(command, env=env)
         while worker.poll() is None:

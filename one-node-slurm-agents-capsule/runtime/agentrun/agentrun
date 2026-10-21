@@ -601,12 +601,12 @@ _cleanup_gh_broker() {
     fi
     timeout --kill-after=2s 5s rm -rf "\$GH_BROKER_DIR" || true
     exit "\$rc"
-}
+} >>$(printf '%q' "$run_dir/live/gh_broker.log") 2>&1
 trap _cleanup_gh_broker EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-apptainer exec --containall --cleanenv --no-mount hostfs,bind-paths,cwd --pwd /tmp --bind /etc/resolv.conf:/etc/resolv.conf:ro --bind /etc/hosts:/etc/hosts:ro --env-file $(printf '%q' "$(apptainer_env_file_arg "$GH_ENV_FILE")") --bind $(printf '%q' "$GH_BROKER_SRC"):$GH_BROKER_CONTAINER_DIR-src:ro --bind "\$GH_BROKER_DIR":$GH_BROKER_CONTAINER_DIR:rw $(printf '%q' "$image") python3 $GH_BROKER_CONTAINER_DIR-src/gh_broker.py $GH_BROKER_CONTAINER_DIR/gh.sock 2>>$(printf '%q' "$run_dir/live/gh_broker.log") &
+apptainer exec --containall --cleanenv --no-mount hostfs,bind-paths,cwd --pwd /tmp --bind /etc/resolv.conf:/etc/resolv.conf:ro --bind /etc/hosts:/etc/hosts:ro --env-file $(printf '%q' "$(apptainer_env_file_arg "$GH_ENV_FILE")") --bind $(printf '%q' "$GH_BROKER_SRC"):$GH_BROKER_CONTAINER_DIR-src:ro --bind "\$GH_BROKER_DIR":$GH_BROKER_CONTAINER_DIR:rw $(printf '%q' "$image") python3 $GH_BROKER_CONTAINER_DIR-src/gh_broker.py $GH_BROKER_CONTAINER_DIR/gh.sock </dev/null >>$(printf '%q' "$run_dir/live/gh_broker.log") 2>&1 &
 GH_BROKER_PID=\$!
 for _ in \$(seq 150); do
     [ -S "\$GH_BROKER_DIR/gh.sock" ] && break
@@ -1923,6 +1923,7 @@ run_interactive_session() {
     fi
     _cleanup_interactive_session
     trap - EXIT HUP INT TERM
+    printf 'agentrun: 対話セッション終了（exit=%s）。実行記録: %s\n' "$rc" "$run_dir" >&2
     return "$rc"
 }
 

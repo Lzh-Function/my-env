@@ -720,6 +720,32 @@ class ClusterTests(unittest.TestCase):
             "CAPSULE_DOCKER_SYNTHETIC_TOKEN", (run / "live/gh_broker.log").read_text()
         )
 
+    def test_interactive_helpers_leave_terminal_quiet_after_exit(self):
+        token = CAPSULE / "secrets/gh.env"
+        token.write_text(
+            "GH_TOKEN=CAPSULE_DOCKER_SYNTHETIC_TOKEN\nGH_BROKER_REPOS=owner/repo\n"
+        )
+        token.chmod(0o600)
+        self.addCleanup(token.unlink, missing_ok=True)
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                repo = self.repo("helper-terminal-" + agent)
+                self.options(repo, gh=True)
+                session = self.assist(repo, agent, extra=("--gh-broker",))
+                run = session.until(("AGENT_READY:" + agent + ":").encode())
+                self.assertEqual(session.finish(), 0, session.output)
+                self.ended(session)
+                self.assertIn("対話セッション終了（exit=0）".encode(), session.output)
+                self.assertNotIn(b"Killed", session.output)
+                self.assertNotIn(b"gh_broker.py", session.output)
+                self.assertTrue((run / "live/review_service.log").is_file())
+                self.assertIn(
+                    "ran gh issue view", (run / "live/gh_broker.log").read_text()
+                )
+                before = bytes(session.output)
+                session.pump(1)
+                self.assertEqual(bytes(session.output), before)
+
     def test_github_broker_env_filename_with_quotes_and_comma(self):
         import re
 

@@ -199,6 +199,11 @@ command_prepare assist --agent codex
             if export_hang:
                 self.assertIn('timed out', status['error'])
         self.assertTrue((runs[0] / "apptainer_exec.sh").exists())
+        if not host_signal:
+            self.assertIn(
+                f"agentrun: 対話セッション終了（exit={proc.returncode}）".encode(),
+                output,
+            )
         # Verify that the actual emulator modes the mock enabled are disabled
         # AFTER its last output, separately from restoring kernel termios.
         cleanup = bytes(output).split(b"MOCK_READY")[-1]

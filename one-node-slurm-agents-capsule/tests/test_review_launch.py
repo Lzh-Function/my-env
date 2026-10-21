@@ -89,6 +89,14 @@ class ReviewLaunchTests(unittest.TestCase):
 import json, os, signal, subprocess, sys, time
 from pathlib import Path
 client={str(fixtures.RUNTIME / "agent-review")!r}
+supervisor=os.getppid()
+children=Path(f'/proc/{{supervisor}}/task/{{supervisor}}/children').read_text().split()
+services=[int(p) for p in children if int(p)!=os.getpid()]
+assert len(services)==1, services
+service_fds=Path(f'/proc/{{services[0]}}/fd')
+assert os.readlink(service_fds/'0')=='/dev/null'
+assert os.readlink(service_fds/'1')=={str(fixture.run / "live/review_service.log")!r}
+assert os.readlink(service_fds/'2')==os.readlink(service_fds/'1')
 def call(*args):
     value=subprocess.run([sys.executable,client,*args],capture_output=True,text=True,check=True)
     return json.loads(value.stdout)
@@ -103,11 +111,7 @@ if {crash!r}:
         time.sleep(.02)
     assert active
     state['reviewer_pid']=active[0]['pid']
-    supervisor=os.getppid()
-    children=Path(f'/proc/{{supervisor}}/task/{{supervisor}}/children').read_text().split()
-    candidates=[int(p) for p in children if int(p)!=os.getpid()]
-    assert len(candidates)==1, candidates
-    os.kill(candidates[0],signal.SIGKILL)
+    os.kill(services[0],signal.SIGKILL)
 else:
     for _ in range(15):
         state=call('events',state['review_id'],'--after',str(state['cursor']),'--wait-seconds','1')

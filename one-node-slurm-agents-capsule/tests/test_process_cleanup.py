@@ -21,6 +21,9 @@ class ProcessCleanupTests(unittest.TestCase):
 pid=$!
 for attempt in {1..100}; do [ ! -f "$3" ] || break; sleep 0.02; done
 _agentrun_stop_process "$pid" test-helper
+rc=$?
+jobs -p > "$3.jobs"
+exit "$rc"
 '''
             start = time.monotonic()
             result = subprocess.run(['bash', '-c', script, 'bash', str(HELPER), sys.executable,
@@ -28,6 +31,7 @@ _agentrun_stop_process "$pid" test-helper
             self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
             self.assertLess(time.monotonic() - start, 7)
             self.assertIn('強制停止', result.stderr)
+            self.assertEqual(Path(str(ready) + '.jobs').read_text(), '')
             pid = int(ready.read_text())
             stat = Path(f'/proc/{pid}/stat')
             # Reaping can race with opening/reading procfs; a process that

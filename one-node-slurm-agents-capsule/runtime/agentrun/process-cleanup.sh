@@ -29,6 +29,14 @@ _agentrun_stop_process() {
     done
     printf '%sが5秒以内に終了しないため、強制停止します。\n' "$label" >&2
     kill -KILL "$pid" 2>/dev/null || true
-    # kill後もD state等のprocessをwaitして終了処理を止めない。
+    # Reap a killed child before returning, so Bash cannot report its death
+    # during a later command. Keep the wait bounded for uninterruptible I/O.
+    for attempt in {1..20}; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 0.05 200>&-
+    done
     return 124
 }
