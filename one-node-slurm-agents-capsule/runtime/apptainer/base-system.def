@@ -9,6 +9,8 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 %post
     set -eux
     export DEBIAN_FRONTEND=noninteractive
+    # Use the built-in UTF-8 locale until locales has been installed/generated.
+    export LANG=C.UTF-8 LC_ALL=C.UTF-8
 
     apt-get update
     # libfuse3-3/liblzo2-2/squashfuse は、capsule の中でさらに apptainer exec を
@@ -36,6 +38,7 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
         squashfuse \
         tini \
         wget
+    locale-gen en_US.UTF-8
 
     # --no-install-recommends のため、日本語フォントと biblatex も明示する。
     # texlive-lang-japanese に LuaTeX-ja / ltjsarticle が含まれる。
@@ -111,12 +114,17 @@ ENVEOF
     chmod +x /etc/profile.d/sandbox-env.sh
 
 %environment
+    # Do not inherit a host locale whose data is absent from this image.
+    export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
     export RUSTUP_HOME=/opt/rustup
     export PATH="$HOME/.cargo/bin:/opt/cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
     export PYTHONUNBUFFERED=1
 
 %test
     set -eu
+    # Build-time tests must also work without the caller's locale settings.
+    export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+    python3 -c 'import locale; locale.setlocale(locale.LC_ALL, ""); assert locale.nl_langinfo(locale.CODESET) == "UTF-8"'
     smoke_dir=$(mktemp -d)
     trap 'rm -rf "$smoke_dir"' EXIT
     cd "$smoke_dir"
