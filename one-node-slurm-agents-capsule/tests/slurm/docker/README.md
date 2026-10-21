@@ -105,7 +105,7 @@ Slurm の `KillWait=30` などは参照元と同じ設定です。1 分のタイ
 | `work/` | 各テストの作業リポジトリと実行記録 |
 | `history/` | 共通の Markdown・SQLite 保存領域 |
 
-`SLURM_TEST_ARTIFACTS` で保存先を変更できます。GitHub Actions ではログと成果物を 7 日間保存します。
+`SLURM_TEST_ARTIFACTS` で保存先を変更できます。GitHub Actions ではログと成果物を `slurm-capsule-test-logs.tar.gz` にまとめ、7 日間保存します。引用符などを含む検証用のファイル名も保持するため、ダウンロードした成果物に含まれる tar.gz を展開して確認してください。
 
 正常終了・失敗のどちらでも、今回のコンテナ、ネットワーク、名前付きボリューム、自動命名したイメージを削除します。Docker のビルドキャッシュや他のプロジェクトの資源は削除しません。`SLURM_TEST_IMAGE_TAG` を明示した場合は、そのイメージを残します。
 

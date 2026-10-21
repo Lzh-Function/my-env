@@ -46,11 +46,18 @@ jobs:
         env:
           PREVIOUS_USERNS: ${{ steps.userns.outputs.previous }}
         run: sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$PREVIOUS_USERNS"
+      # Preserve tested filenames that upload-artifact rejects as individual paths.
+      - name: Package test logs and artifacts
+        if: always()
+        run: |
+          if [ -d .agent-runs ]; then
+            tar -czf "$RUNNER_TEMP/slurm-capsule-test-logs.tar.gz" -C .agent-runs -- .
+          fi
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: slurm-capsule-test-logs
-          path: one-node-slurm-agents-capsule/.agent-runs/one-node-slurm-*
-          include-hidden-files: true
+          path: ${{ runner.temp }}/slurm-capsule-test-logs.tar.gz
+          compression-level: 0
           if-no-files-found: warn
           retention-days: 7
