@@ -144,12 +144,18 @@ if "--help" in ARGS:
     )
     raise SystemExit(0)
 
+if ARGS and ARGS[0] == "sandbox":
+    assert 'sandbox_mode="read-only"' in ARGS
+    print("CAPSULE_REVIEW_SANDBOX_READ_ONLY_OK")
+    raise SystemExit(0)
+
 if os.environ.get("AGENTRUN_ROLE") == "reviewer":
     assert "AGENT_REVIEW_SOCKET" not in os.environ
     assert not any("bypass" in value for value in ARGS)
     assert CREDENTIAL.is_file()
     if AGENT == "codex":
         assert 'sandbox_mode="read-only"' in ARGS
+        assert any(a.startswith("mcp_servers.capsule-input.command=") for a in ARGS)
     else:
         assert ARGS[ARGS.index("--tools") + 1] == "Read,Glob,Grep"
         assert "--safe-mode" in ARGS and "--restricted" in ARGS

@@ -149,7 +149,7 @@ sequenceDiagram
 
 | Provider | 会話の開始・継続と結果の取得 | 初期版の監査権限 |
 | --- | --- | --- |
-| Codex | 初期の実行処理は`codex exec`で開始し、取得したIDを明示して`codex exec resume <SESSION_ID>`で継続する。構造化した発言とJSONイベントログを取得する | 読み取り専用sandbox、監査専用設定、snapshotの参照。sandboxを迂回する設定へ自動で切り替えない |
+| Codex | 初期の実行処理は`codex exec`で開始し、取得したIDを明示して`codex exec resume <SESSION_ID>`で継続する。構造化した発言とJSONイベントログを取得する | 読み取り専用sandboxを維持し、snapshot専用の読み取りMCPで資料を参照する。sandboxを迂回する設定へ自動で切り替えない |
 | Claude Code | print実行で開始し、取得したIDを明示して`--resume <session-id>`で継続する。JSON Schemaに沿った発言と、応答を格納するJSONを取得する | 読み取り・検索toolを明示した制限付き実行、専用設定、既存MCP serverを引き継がない構成 |
 
 両CLIとも非対話実行での会話継続と構造化した出力に対応するが、発言を包む応答の形式は異なる。provider別の実行処理で共通形式へ変換してから、実行管理処理で検証する。初期版では発言ごとにCLI processが終了してもよく、会話IDと履歴を維持する。すべての継続実行で専用設定・権限・対象の結びつきを再確認し、必要なflagが継続コマンドに対応することも導入versionごとに検証する。[OpenAIの非対話実行](https://learn.chatgpt.com/docs/non-interactive-mode)と[Claudeのプログラム実行](https://code.claude.com/docs/en/headless)を参照する。
@@ -162,9 +162,11 @@ Claudeの利用可能toolは`--tools`で制限する。許可toolの指定だけ
 
 作業agentの権限確認を迂回するflag、自動整形hook、branch・worktree作成hook、Stop通知、共通状態ファイルへの書き込み、自動memory、監査の自動委譲は引き継がない。必要なproject・研究分野の規約は監査用の文脈として渡し、project独自の処理を実行させない。agentの設定や指示ファイル自体が監査対象の場合は、それらを自動設定・hook・skillの探索対象にならない場所へ、確認用の資料として保存する。
 
-監査agentは基本的にsnapshotを読み、質問または結果を標準出力へ返す。レポートと状態ファイルは実行管理処理が書き、監査agentには親の出力契約に属するファイルを更新させない。Codexのファイル出力を使う場合は、CLI実行処理を通じて監査専用の出力先だけに書く。会話継続でも同じ権限制限を適用する。sandboxや制限付き実行が起動できない場合は、無制限の実行へ切り替えず失敗を返す。
+監査agentは基本的にsnapshotを読み、質問または結果を標準出力へ返す。レポートと状態ファイルは実行管理処理が書き、監査agentには親の出力契約に属するファイルを更新させない。Codexのファイル出力を使う場合は、CLI実行処理を通じて監査専用の出力先だけに書く。会話継続でも同じ権限制限を適用する。Codexは各ラウンドのsnapshotに限定した `capsule-input` MCPを使う。ファイル一覧、行指定読み取り、文字列検索だけを提供し、絶対パス・範囲外参照・symlink・書き込みを拒否する。
 
-初期版の監査では、学習、任意のshell command、テスト、GitHubへの書き込み、修正を実行しない。Codexはsandbox内で確認用commandを使い、Claudeは用意された差分とsourceをファイルtoolで確認する。必要な確認ができない場合は、確認範囲の制約を結果に明記する。toolの制御と入力ハッシュの検証を併用する。snapshotをコピーするだけでは、元のworkspaceへの書き込みを防げない。
+モデル起動前にMCPの読み取りと内側sandboxの読み取り・書き込み拒否を検査する。`bwrap` の起動に必要なnamespaceやmountが利用できない場合も、Codexのread-only設定は維持し、資料はMCPで読む。無制限実行へは切り替えない。MCPも起動できない場合、またはsandboxが書き込みを許可するなど検査に異常がある場合は、ラウンドを消費せず失敗を返す。環境について質問する応答は `evidence=[]`、`coverage=incomplete` とし、問題を本文とlimitationsへ記す。
+
+初期版の監査では、学習、任意のshell command、テスト、GitHubへの書き込み、修正を実行しない。Codexは専用MCP、Claudeは読み取り用のファイルtoolで用意された差分とsourceを確認する。必要な確認ができない場合は、確認範囲の制約を結果に明記する。toolの制御と入力ハッシュの検証を併用する。snapshotをコピーするだけでは、元のworkspaceへの書き込みを防げない。
 
 ## 監査対象を実際の作業内容に結びつける
 

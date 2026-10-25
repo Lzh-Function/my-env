@@ -3,8 +3,10 @@
 import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 loader = SourceFileLoader(
     "review_client", str(Path(__file__).with_name("agent-review"))
@@ -18,14 +20,19 @@ mcp = FastMCP("cross-review", log_level="WARNING")
 @mcp.tool()
 def review_start(
     request_id: str,
-    brief: str,
+    brief: Annotated[
+        str,
+        Field(
+            description="Path to an existing UTF-8 brief file, NOT its text. Write it under /runs/artifacts, e.g. /runs/artifacts/review-brief.md."
+        ),
+    ],
     kind: str = "research",
     base: str | None = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     one_shot: bool = False,
 ) -> dict:
-    """Start the opposite-provider reviewer; poll review_events and answer its questions."""
+    """Start the opposite-provider reviewer. brief is a FILE PATH; include names evidence paths, exclude names repository glob patterns. Poll review_events and answer questions."""
     params = {
         "request_id": request_id,
         "brief": brief,

@@ -1,5 +1,6 @@
 """Provider-specific, isolated reviewer execution. Never falls back to the worker."""
 
+import importlib.util
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from review_snapshot import atomic_json
@@ -228,6 +230,11 @@ class Reviewer:
         self.last_metadata = {}
         self.last_session_id = None
         self.last_exit_code = None
+        self.input_command = None
+        self.input_access = None
+        self.env["UV_CACHE_DIR"] = os.environ.get(
+            "UV_CACHE_DIR", str(Path(cache).parent / "uv")
+        )
         atomic_json(
             self.home / ".claude/settings.json",
             {"disableAllHooks": True, "autoMemoryEnabled": False},
@@ -411,6 +418,107 @@ class Reviewer:
             )
             self.checked = True
 
+    def prepare_input_transport(self, directory, cancelled):
+        if self.provider != "codex":
+            return
+        script = str(Path(__file__).with_name("review_inputs.py"))
+        self.input_command = (
+            [sys.executable, script, str(directory)]
+            if importlib.util.find_spec("mcp") is not None
+            else [
+                "uv",
+                "run",
+                "--no-project",
+                "--python",
+                "/usr/bin/python3",
+                "--with",
+                "mcp==1.26.0",
+                "python",
+                script,
+                str(directory),
+            ]
+        )
+        check = self.runtime / "probe-inputs"
+        try:
+            self.execute(
+                [*self.input_command, "--check"], directory, check, "", 120, cancelled
+            )
+            if (
+                "CAPSULE_REVIEW_INPUTS_READY"
+                not in (check / "stdout.jsonl").read_text()
+            ):
+                raise ValueError("Input reader did not confirm readiness")
+        except (ProviderError, ValueError) as error:
+            raise ProviderError(
+                "input_reader_unavailable",
+                f"Read-only input MCP failed its preflight; see {check}/stderr.log",
+            ) from error
+        # This diagnostic never weakens the CLI policy. MCP reads are confined
+        # to the captured input even when the OS cannot create an inner sandbox.
+        probe = self.runtime / "probe-sandbox"
+        self.execute(
+            [self.binary, "sandbox", "--help"],
+            self.home,
+            probe / "help",
+            "",
+            15,
+            cancelled,
+        )
+        help_text = (probe / "help/stdout.jsonl").read_text()
+        command = [self.binary, "sandbox"]
+        if re.search(r"(?m)^\s+linux\s", help_text):
+            command.append("linux")
+        code = (
+            "import errno, json, pathlib, sys; "
+            "root=pathlib.Path(sys.argv[1]); json.loads((root/'manifest.json').read_text()); "
+            "target=root/('.capsule-write-probe-' + sys.argv[2]); "
+            "\ntry: target.open('x').close()"
+            "\nexcept OSError as error:"
+            "\n if error.errno not in (errno.EACCES, errno.EPERM, errno.EROFS): raise"
+            "\n print('CAPSULE_REVIEW_SANDBOX_READ_ONLY_OK')"
+            "\nelse:"
+            "\n target.unlink(); raise SystemExit('Sandbox allowed writes to review inputs')\n"
+        )
+        command += [
+            "-c",
+            'sandbox_mode="read-only"',
+            "--",
+            sys.executable,
+            "-I",
+            "-c",
+            code,
+            str(directory),
+            uuid.uuid4().hex,
+        ]
+        try:
+            self.execute(command, directory, probe / "read", "", 15, cancelled)
+            available = (
+                "CAPSULE_REVIEW_SANDBOX_READ_ONLY_OK"
+                in (probe / "read/stdout.jsonl").read_text()
+            )
+            if not available:
+                raise ProviderError(
+                    "sandbox_probe_failed",
+                    "Sandbox probe returned no read-only confirmation",
+                )
+        except ProviderError as error:
+            diagnostic = (probe / "read/stderr.log").read_text(errors="replace")
+            if not any(
+                word in diagnostic.lower()
+                for word in ("bwrap:", "bubblewrap", "namespace", "unshare")
+            ):
+                raise ProviderError(
+                    "sandbox_probe_failed",
+                    f"Cannot verify the read-only sandbox; see {probe}/read/stderr.log",
+                ) from error
+            available = False
+        self.input_access = {
+            "transport": "capsule-input MCP",
+            "read_only": True,
+            "shell_sandbox_available": available,
+            "sandbox_diagnostic": str(probe),
+        }
+
     def turn(self, directory, prompt, schema, turn, session_id, timeout, cancelled):
         self.last_session_id = session_id
         self.last_exit_code = None
@@ -421,6 +529,10 @@ class Reviewer:
         if session_id and not IDENT.fullmatch(session_id):
             raise ValueError("Invalid native session ID")
         if self.provider == "codex":
+            if self.input_command is None:
+                raise ProviderError(
+                    "input_reader_unavailable", "Read-only input MCP was not prepared"
+                )
             command = [self.binary, "exec"]
             if session_id:
                 command += ["resume", session_id]
@@ -433,6 +545,17 @@ class Reviewer:
                 'sandbox_mode="read-only"',
                 "-c",
                 'approval_policy="never"',
+                "-c",
+                "mcp_servers.capsule-input.command="
+                + json.dumps(self.input_command[0], ensure_ascii=False),
+                "-c",
+                "mcp_servers.capsule-input.args="
+                + json.dumps(self.input_command[1:], ensure_ascii=False),
+                "-c",
+                "mcp_servers.capsule-input.startup_timeout_sec=120",
+                "-c",
+                "mcp_servers.capsule-input.env.UV_CACHE_DIR="
+                + json.dumps(self.env["UV_CACHE_DIR"], ensure_ascii=False),
                 "-c",
                 "sqlite_home=" + json.dumps(str(self.home / ".codex/sqlite")),
                 "-c",
@@ -500,6 +623,7 @@ class Reviewer:
             ident = sessions[-1] if sessions else session_id
             result = json.loads((turn / "answer.json").read_text())
             metadata = {
+                "input_access": self.input_access,
                 "model": next(
                     (
                         r["model"]

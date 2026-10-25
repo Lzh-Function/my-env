@@ -28,6 +28,14 @@ if '--help' in args:
 if '--version' in args:
     print('fake reviewer 1.0');sys.exit(0)
 home=Path(os.environ['HOME'])
+if args and args[0]=='sandbox':
+    if (home/'sandbox-policy-broken').exists():
+        print('Sandbox allowed writes to review inputs',file=sys.stderr)
+        sys.exit(1)
+    if (home/'sandbox-unavailable').exists():
+        print("bwrap: Can't bind mount /oldroot/ on /newroot/: Invalid argument",file=sys.stderr)
+        sys.exit(1)
+    print('CAPSULE_REVIEW_SANDBOX_READ_ONLY_OK');sys.exit(0)
 assert os.environ['AGENTRUN_ROLE']=='reviewer'
 assert 'CLAUDECODE' not in os.environ
 assert 'AGENT_REVIEW_SOCKET' not in os.environ
@@ -35,6 +43,7 @@ assert not any('bypass' in a for a in args)
 provider='codex' if 'exec' in args else 'claude'
 if provider=='codex':
     assert 'sandbox_mode="read-only"' in args
+    assert any(a.startswith('mcp_servers.capsule-input.command=') for a in args)
 else:
     assert args[args.index('--tools')+1]=='Read,Glob,Grep'
     assert '--bare' not in args
@@ -52,6 +61,11 @@ result={'kind':'review_result','target_id':context['target_id'],'summary':'revie
         'findings':[],'prior_dispositions':[], 'praise':[], 'checked_scope':['source/code.py']}
 if (context['message'] is None or mode=='questions-forever') and context['dialogue'] and mode in ('question','questions-forever'):
     result.update(kind='question',verdict='none',questions=[{'question_id':'q1','text':'Why this split?','evidence':['source/code.py']}])
+if mode=='environment-question':
+    result.update(kind='question',verdict='none',coverage='incomplete',limitations=['Input access failed'],questions=[{'question_id':'environment','text':'Please repair the input reader','evidence':[]}])
+if mode=='sandbox-unavailable':
+    assert context['input_access']['shell_sandbox_available'] is False
+    assert context['input_access']['read_only'] is True
 if mode=='finding':
     result.update(verdict='request_changes', findings=[{'finding_id':'f1','severity':'major',
         'confidence':'high','basis':'observed','evidence_method':'static_source',
@@ -294,6 +308,60 @@ class CrossReviewTests(unittest.TestCase):
         link.symlink_to(self.repo / "code.py")
         with self.assertRaisesRegex(ValueError, "Symlink"):
             review_snapshot.read_file(link, (self.repo,))
+
+    def test_broken_bwrap_uses_confined_input_mcp_without_weakening_sandbox(self):
+        home = self.home / ".reviewer/codex"
+        home.mkdir(parents=True)
+        (home / "sandbox-unavailable").touch()
+        ident = self.start("sandbox-unavailable")
+        state = self.wait(ident)
+        self.assertEqual(state["status"], "success", state)
+        self.assertFalse(state["input_access"]["shell_sandbox_available"])
+        self.assertEqual(state["input_access"]["transport"], "capsule-input MCP")
+        diagnostic = self.run / "reviews/runtime/codex/probe-sandbox/read/stderr.log"
+        self.assertIn("bwrap:", diagnostic.read_text())
+
+    def test_environment_question_needs_no_fabricated_file_reference(self):
+        ident = self.start("environment-question")
+        state = self.wait(ident)
+        self.assertEqual(state["status"], "waiting_reply", state)
+        self.assertEqual(state["question"]["payload"]["questions"][0]["evidence"], [])
+
+    def test_permissive_sandbox_probe_is_not_treated_as_a_mount_failure(self):
+        home = self.home / ".reviewer/codex"
+        home.mkdir(parents=True)
+        (home / "sandbox-policy-broken").touch()
+        ident = self.start("approve")
+        state = self.wait(ident)
+        self.assertEqual(state["status"], "failed", state)
+        self.assertEqual(state["error_kind"], "sandbox_probe_failed")
+        self.assertEqual(state["remaining_rounds"], 2)
+        self.assertFalse((home / "calls.jsonl").exists())
+
+    def test_invalid_brief_is_rejected_before_launch_or_budget_consumption(self):
+        for brief in (
+            "Please review\nthis text",
+            "x" * 5000,
+            str(self.run / "artifacts/missing.md"),
+        ):
+            with (
+                self.subTest(brief=brief[:20]),
+                self.assertRaisesRegex(ValueError, "brief"),
+            ):
+                self.reviews.call(
+                    "run", {"request_id": str(len(brief)), "brief": brief}
+                )
+        self.assertEqual(self.reviews.rounds, {})
+        self.assertEqual(self.reviews.peers, {})
+
+    def test_omitted_large_file_cannot_be_approved(self):
+        with (self.repo / "large.png").open("wb") as stream:
+            stream.truncate(review_snapshot.MAX_FILE + 1)
+        self.git("add", ".")
+        ident = self.start("approve", one_shot=True)
+        state = self.wait(ident)
+        self.assertEqual(state["status"], "failed", state)
+        self.assertIn("Approval contradicts", state["error"])
 
     def test_cancel_and_reply_deadline_preserve_partial_conversation(self):
         ident = self.start()

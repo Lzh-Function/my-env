@@ -21,6 +21,7 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
     apt-get install -y --no-install-recommends \
         bash \
         build-essential \
+        bubblewrap \
         ca-certificates \
         curl \
         fuse3 \

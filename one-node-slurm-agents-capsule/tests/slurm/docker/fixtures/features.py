@@ -87,11 +87,12 @@ def check_features(agent, options):
                 ["gh", *args], check=False, capture_output=True, text=True, timeout=15
             )
             assert rejected.returncode != 0, rejected
-    if options.get("review"):
+    if options.get("review") or options.get("review_negative"):
         # Seed the exact production uv command's dependency cache; runtime has
         # no external network and uses the real uv executable and MCP SDK.
         shutil.copytree("/opt/test-uv-cache", "/cache/uv", dirs_exist_ok=True)
         os.environ["UV_OFFLINE"] = "1"
+    if options.get("review"):
         sys.path.insert(0, "/opt/test-deps/lib/python3.12/site-packages")
         asyncio.run(review_dialogue(options["review"]))
     if options.get("review_negative"):

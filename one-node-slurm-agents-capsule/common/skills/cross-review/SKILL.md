@@ -9,6 +9,8 @@ Use the capsule's `cross-review` MCP tools, or `agent-review` CLI when MCP is un
 
 Write a brief under `/runs/artifacts/` stating the purpose, claims, acceptance criteria, scope, existing checks, evidence paths and known limitations. For research, consult [research.md](references/research.md). Explicitly include untracked code and relevant artifacts; the runtime otherwise captures tracked source and the diff against the worker-start commit. Do not include private files, caches or whole datasets.
 
+Pass the brief's **file path**, such as `/runs/artifacts/review-brief.md`, to `review_start.brief` or `--brief`; do not pass its text. The runtime prioritizes explicit evidence and changed source, and records automatically omitted oversized/context files in `manifest.json`. Inspect omissions; narrow the scope with `exclude` and provide smaller text artifacts when necessary. An omitted required input prevents complete approval.
+
 Start with `review_start`, retaining the review ID and event cursor. Use a fresh `request_id` for every new operation, and reuse that ID only to retry the identical operation. Poll `review_events` (maximum wait: 20 seconds) until a question or terminal state arrives. Do not finish the task while a requested review is still running.
 
 When `waiting_reply` arrives, call `review_reply` with its message ID and answers to all question IDs. Use this shape:
@@ -18,6 +20,8 @@ When `waiting_reply` arrives, call `review_reply` with its message ID and answer
 ```
 
 `evidence` references paths in the snapshot manifest; `include` explicitly names additional original files to capture. Explanations are claims; provide inspectable evidence. Keep the reviewed files unchanged during this dialogue. If the snapshot must change, cancel this round before modifying it and use the remaining round to review the changed snapshot.
+
+For environment/access problems, use `evidence: []` and explain the limitation in text rather than inventing a file reference. Codex reviewers receive the snapshot-only `capsule-input` MCP reader; a failed inner shell sandbox does not prevent those file reads and never permits unrestricted commands. Report `input_reader_unavailable` separately from a review verdict.
 
 After a result, inspect its applicability and every finding. Fix valid problems and document evidence-based disagreement or deferral. Do not automatically apply a reviewer's patch. Call `review_recheck` after fixing or rebutting findings, providing a response for every previous finding:
 

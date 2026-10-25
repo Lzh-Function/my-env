@@ -1,12 +1,15 @@
 """Bounded, explicit review inputs. No repository code is executed here."""
 
 import difflib
+import errno
 import fnmatch
 import hashlib
 import json
 import os
+import signal
 import stat
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -28,6 +31,15 @@ PRIVATE = {
     "__pycache__",
 }
 SPECIAL = {"AGENTS.md", "CLAUDE.md", ".mcp.json"}
+
+
+class InputTooLarge(ValueError):
+    def __init__(self, path, size):
+        self.size = size
+        super().__init__(
+            f"Input exceeds the {MAX_FILE / 1024 / 1024:g} MiB file size limit "
+            f"({size} bytes): {path}"
+        )
 
 
 def digest(value):
@@ -122,17 +134,102 @@ def read_file(path, roots):
         os.close(directory)
     with os.fdopen(fd, "rb") as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_FILE:
-            raise ValueError("Input is not a bounded regular file: " + str(path))
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("Input is not a regular file: " + str(path))
+        if before.st_size > MAX_FILE:
+            raise InputTooLarge(path, before.st_size)
         content = stream.read(MAX_FILE + 1)
         after = os.fstat(stream.fileno())
-        if len(content) > MAX_FILE or (
+        if len(content) > MAX_FILE:
+            raise InputTooLarge(path, len(content))
+        if (
             before.st_size,
             before.st_mtime_ns,
             before.st_ino,
         ) != (after.st_size, after.st_mtime_ns, after.st_ino):
             raise ValueError("Input changed while being read: " + str(path))
     return content
+
+
+def brief_file(value, repo, run):
+    """Validate the file-path contract before scheduling or installing a reviewer."""
+    if not isinstance(value, str) or not value or "\n" in value or "\0" in value:
+        raise ValueError(
+            "brief must be an existing UTF-8 file path, not the brief text"
+        )
+    path = Path(value) if Path(value).is_absolute() else Path(repo) / value
+    try:
+        content = read_file(
+            path, (Path(repo), Path(run) / "artifacts", Path(run) / "reviews")
+        )
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise ValueError(
+            "brief must name an existing file; write the brief under /runs/artifacts first"
+        ) from error
+    except OSError as error:
+        if error.errno == errno.ENAMETOOLONG:
+            raise ValueError(
+                "brief is a file path, not inline text (path is too long)"
+            ) from error
+        raise
+    if not content.strip():
+        raise ValueError("Review brief file is empty")
+    try:
+        content.decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError("Review brief must be a UTF-8 text file") from error
+    return path
+
+
+def bounded_patch(repo, selected, limit):
+    """Bound Git's patch output as well as the copied working-tree files."""
+    if not selected:
+        return b""
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-C",
+                str(repo),
+                "--literal-pathspecs",
+                "diff",
+                "-p",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                *selected,
+            ],
+            stdout=output,
+            stderr=errors,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 30
+        try:
+            while process.poll() is None:
+                if os.fstat(output.fileno()).st_size > limit:
+                    return None
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Review patch acquisition deadline exceeded")
+                time.sleep(0.02)
+            if process.returncode:
+                errors.seek(0)
+                raise ValueError(
+                    "Could not capture review patch: "
+                    + errors.read(4096).decode(errors="replace")
+                )
+            output.seek(0)
+            patch = output.read(limit + 1)
+            return patch if len(patch) <= limit else None
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=2)
 
 
 def capture(
@@ -152,12 +249,15 @@ def capture(
     )
     index_hash = digest(git(repo, "ls-files", "--stage", "-z", binary=True))
     names = set(git(repo, "ls-files", "-z", binary=True).decode().split("\0")) - {""}
-    names.update(
+    changed = set(
         git(repo, "diff", "--name-only", "-z", "--no-renames", base, binary=True)
         .decode()
         .split("\0")
-    )
+    ) - {""}
+    names.update(changed)
     entries, omitted, excluded, total = [], [], [], 0
+    # Leave room for the manifest, patch, and subsequent round context.
+    payload_limit = MAX_TOTAL - min(MAX_FILE, MAX_TOTAL // 4)
 
     def add(path, category, explicit=False):
         nonlocal total
@@ -183,12 +283,35 @@ def capture(
                 {"original": str(path), "path": None, "sha256": None, "deleted": True}
             )
             return
-        content = read_file(path, roots)
-        total += len(content)
-        if total > MAX_TOTAL:
-            raise ValueError(
-                "Review input exceeds total size limit; select a smaller scope"
+        try:
+            content = read_file(path, roots)
+        except InputTooLarge as error:
+            if explicit:
+                raise
+            omitted.append(
+                {
+                    "path": str(path),
+                    "reason": str(error),
+                    "size": error.size,
+                    "limit_bytes": MAX_FILE,
+                }
             )
+            return
+        if total + len(content) > payload_limit:
+            if explicit:
+                raise ValueError(
+                    "Explicit review inputs exceed the snapshot payload limit; select a smaller scope"
+                )
+            omitted.append(
+                {
+                    "path": str(path),
+                    "reason": "snapshot payload size limit",
+                    "size": len(content),
+                    "limit_bytes": payload_limit,
+                }
+            )
+            return
+        total += len(content)
         if category == "source":
             relative = path.relative_to(repo)
         else:
@@ -225,15 +348,15 @@ def capture(
             }
         )
 
-    for name in sorted(names - {""}):
+    # Required brief and explicit evidence cannot be crowded out by large repositories.
+    add(brief_file(brief, repo, run), "brief", True)
+    for name in sorted(set(includes)):
+        add(Path(name) if Path(name).is_absolute() else repo / name, "artifacts", True)
+    for name in sorted(names - {""}, key=lambda name: (name not in changed, name)):
         if any(fnmatch.fnmatchcase(name, pattern) for pattern in excludes):
             excluded.append({"path": name, "reason": "explicit scope exclusion"})
             continue
         add(repo / name, "source")
-    for name in sorted(set(includes)):
-        add(Path(name) if Path(name).is_absolute() else repo / name, "artifacts", True)
-    brief_path = Path(brief) if Path(brief).is_absolute() else repo / brief
-    add(brief_path, "brief", True)
     # Generate a patch only for selected, non-private source paths.
     selected = [
         str(Path(e["original"]).relative_to(repo))
@@ -241,26 +364,7 @@ def capture(
         if Path(e["original"]).is_relative_to(repo)
         and not private(Path(e["original"]).relative_to(repo))
     ]
-    patch = (
-        git(
-            repo,
-            "diff",
-            "--binary",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-renames",
-            base,
-            "--",
-            *selected,
-            binary=True,
-        )
-        if selected
-        else b""
-    )
-    if len(patch) + total > MAX_TOTAL:
-        raise ValueError("Review patch exceeds total input limit")
     destination.mkdir(parents=True, exist_ok=True)
-    (destination / "diff.patch").write_bytes(patch)
     if head != git(repo, "rev-parse", "HEAD") or status != git(
         repo, "status", "--porcelain=v1", "-z", "--untracked-files=no", binary=True
     ):
@@ -279,10 +383,35 @@ def capture(
         "limits": {
             "file_bytes": MAX_FILE,
             "total_bytes": MAX_TOTAL,
+            "payload_bytes": payload_limit,
             "files": MAX_FILES,
         },
-        "patch_sha256": digest(patch),
+        "patch_sha256": "0" * 64,
     }
+    # Account for metadata before allocating the remaining patch budget. The
+    # small reserve also covers the target ID and a possible patch omission.
+    metadata_bytes = (
+        len(json.dumps(result, ensure_ascii=False, indent=2).encode()) + 512
+    )
+    patch_limit = min(MAX_FILE, MAX_TOTAL - total - metadata_bytes)
+    if patch_limit < 0:
+        raise ValueError(
+            "Review metadata and explicit context exceed the total input limit; exclude irrelevant paths"
+        )
+    patch = bounded_patch(
+        repo, [base, "--", *selected] if selected else [], patch_limit
+    )
+    if patch is None:
+        patch = b""
+        omitted.append(
+            {
+                "path": "diff.patch",
+                "reason": "patch size limit; review captured source and provide a smaller explicit patch",
+                "limit_bytes": patch_limit,
+            }
+        )
+    (destination / "diff.patch").write_bytes(patch)
+    result["patch_sha256"] = digest(patch)
     result["target_id"] = digest(canonical(result))
     atomic_json(destination / "manifest.json", result)
     if not current(result, roots):

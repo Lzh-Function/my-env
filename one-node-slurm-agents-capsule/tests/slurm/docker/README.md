@@ -122,3 +122,13 @@ docker compose -p PROJECT_NAME -f tests/slurm/docker/compose.yaml down --volumes
 結合テストには、起動に必要な基盤プログラムと固定のエージェントを含む専用 SIF を使います。本番の `base-system.def` 全体のビルド、Rust・TeX の実行、GPU、NFS・autofs の障害、サイト固有の prolog / epilog / PAM、systemd の設定までは再現しません。共有ボリュームはローカルファイルシステムです。コンテナはホストと同じカーネルを使うため、Ubuntu イメージを変えてもカーネルの差は検証できません。
 
 実クラスタ用の検査は [上位のテスト手順](../README.md)を参照してください。
+
+実物CodexのMCP接続と資料読み取りは、別のスモークテストで確認できます。事前に取得したCodexパッケージのディレクトリ（`bin/codex` と `codex-resources/` を含む）を指定します。スクリプトはパッケージと実行コードだけを読み取り専用でマウントし、認証ストアは渡しません。
+
+```bash
+SLURM_TEST_IMAGE_TAG=native-review tests/slurm/docker/run.sh
+bash tests/slurm/native-codex-review-smoke.sh /path/to/codex-package \
+  one-node-capsule-slurm-test:native-review
+```
+
+この追加テストでは、一般ユーザーで起動した実際のApptainer内で、**実物Codex CLIと実際のMCPサーバー**を使い、Codexが `manifest.json` とソースをMCPで読めることを確認します。`bwrap` 自体も実物を使い、利用可否を結果に出力します。同じPythonプローブを非特権Docker内で直接実行すると、内側のnamespaceを作れない環境での読み取りも検証できます。モデルAPIはループバック上の固定応答サーバーへ向け、Dockerの外部ネットワークも無効にします。実モデル・実アカウントの認証を確認する試験ではありません。

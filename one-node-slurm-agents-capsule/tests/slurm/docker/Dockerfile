@@ -2,13 +2,16 @@
 FROM ubuntu:24.04 AS agent-root
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates coreutils git jq python3 python3-venv && \
+    bash bubblewrap ca-certificates coreutils git jq python3 python3-venv && \
     python3 -m venv /opt/test-deps && \
     /opt/test-deps/bin/pip install --no-cache-dir uv==0.9.5 mcp==1.26.0 pyyaml==6.0.3 && \
     ln -s /opt/test-deps/bin/uv /usr/local/bin/uv && \
     UV_CACHE_DIR=/opt/test-uv-cache /usr/local/bin/uv run --no-project \
         --python /usr/bin/python3 --with mcp==1.26.0 python -c 'import mcp' && \
     rm -rf /var/lib/apt/lists/*
+RUN rm /usr/local/bin/uv && \
+    printf '#!/bin/sh\nexport UV_OFFLINE=1\nexec /opt/test-deps/bin/uv "$@"\n' > /usr/local/bin/uv && \
+    chmod 755 /usr/local/bin/uv
 COPY tests/slurm/docker/fixtures/curl.py /usr/local/bin/curl
 COPY tests/slurm/docker/fixtures/agent.py /opt/capsule-test/agent.py
 COPY tests/slurm/docker/fixtures/features.py /opt/capsule-test/features.py

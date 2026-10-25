@@ -704,6 +704,8 @@ apptainer_command() {
         "$run_dir/cache" "/cache:rw"
     printf ' "${AGENTRUN_NODE_SCRATCH_ARGS[@]}"'
     printf ' --bind /etc/resolv.conf:/etc/resolv.conf:ro --bind /etc/hosts:/etc/hosts:ro'
+    # --containall omits /dev/full, which bubblewrap's inner /dev expects.
+    printf ' --bind /dev/full:/dev/full'
     local spec
     while IFS= read -r spec; do
         printf ' --bind %q' "$spec"
@@ -1362,6 +1364,7 @@ command_validate() {
         runtime/apptainer/base-system.def \
         runtime/agentrun/sessions.py \
         runtime/agentrun/run_settings.py \
+        runtime/agentrun/review_inputs.py \
         runtime/agentrun/history.py \
         runtime/agentrun/history_export.py \
         runtime/agentrun/agent-review \

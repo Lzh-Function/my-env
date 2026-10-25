@@ -40,7 +40,7 @@ def main():
         if action in ("run", "reply", "recheck", "cancel", "extend"):
             p.add_argument("--request-id", required=True)
         if action in ("run", "recheck"):
-            p.add_argument("--brief")
+            p.add_argument("--brief", help="Path to an existing UTF-8 brief file, not inline text")
             p.add_argument("--base")
             p.add_argument("--include", action="append")
             p.add_argument("--exclude", action="append")

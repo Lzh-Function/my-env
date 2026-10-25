@@ -17,6 +17,7 @@ from agent_cli import IDENT, Reviewer, cleanup_recorded_processes
 from review_snapshot import (
     MAX_TOTAL,
     atomic_json,
+    brief_file,
     canonical,
     capture,
     compare_snapshots,
@@ -67,7 +68,16 @@ DISPOSITION = object_schema(
         "evidence": STRINGS,
     }
 )
-QUESTION = object_schema({"question_id": STRING, "text": STRING, "evidence": STRINGS})
+QUESTION = object_schema(
+    {
+        "question_id": STRING,
+        "text": STRING,
+        "evidence": {
+            **STRINGS,
+            "description": "Exact snapshot-relative file paths only. For environment/access failures use [] and explain in text and limitations.",
+        },
+    }
+)
 MESSAGE_SCHEMA = object_schema(
     {
         "kind": {"type": "string", "enum": ["question", "review_result"]},
@@ -228,6 +238,7 @@ class Reviews:
                 "started_at",
                 "ended_at",
                 "active_seconds",
+                "input_access",
                 "findings_path",
                 "report_path",
             )
@@ -579,6 +590,7 @@ class Reviews:
             not isinstance(p, str) for p in params.get("exclude", [])
         ):
             raise ValueError("Excluded inputs must be path patterns")
+        brief_file(params["brief"], self.repo, self.run)
         ident = "review-" + uuid.uuid4().hex
         provider = "codex" if self.config["primary_agent"] == "claude" else "claude"
         state = {
@@ -682,6 +694,7 @@ class Reviews:
                 if "manifest" not in state
                 else None
             )
+            peer.prepare_input_transport(directory / "input", cancelled)
             with self.lock:
                 if state["status"] in TERMINAL:
                     return
@@ -689,6 +702,8 @@ class Reviews:
                     state["manifest"], state["context_files"] = prepared
                     state["target_id"] = state["manifest"]["target_id"]
                 state["status"] = "running"
+                if peer.input_access is not None:
+                    state["input_access"] = peer.input_access
                 self.event(state, "running", recipient="reviewer")
                 prompt = self.prompt(state, message)
                 native = state["session_id"]
@@ -870,6 +885,8 @@ class Reviews:
             "Report evidence using exact paths relative to this input directory, with valid line numbers. "
             "Declare missing/binary/visual evidence and never approve incomplete required coverage. "
             "Ask specific clarification questions when necessary. Return only the supplied JSON schema. "
+            "For environment or access problems, use questions[].evidence=[] and describe the problem "
+            "in question text and limitations with coverage=incomplete; never put explanatory prose in evidence. "
             "For questions use verdict=none; for results questions=[] and a real verdict. "
             "Reassess every previous finding with a prior_dispositions entry; preserve finding IDs. "
         )
@@ -888,7 +905,15 @@ class Reviews:
             "previous_diff": "prior/changes.patch"
             if "prior/changes.patch" in state.get("context_files", {})
             else None,
+            "input_access": state.get("input_access"),
         }
+        if state["provider"] == "codex":
+            policy += (
+                "Read input files using the capsule-input MCP tools list_files, read_file and search_text. "
+                "They expose only this review's captured files and do not require shell execution. "
+                "Use relative paths such as manifest.json, diff.patch and source/code.py. "
+                "When shell_sandbox_available=false do not try shell commands; continue using these MCP tools. "
+            )
         if not context["dialogue"] or not context["remaining_exchanges"]:
             policy += " No more questions are permitted: produce a result with explicit limitations. "
         return policy + "\n" + json.dumps(context, ensure_ascii=False)
@@ -911,7 +936,10 @@ class Reviews:
         for item in (
             result["findings"] + result["questions"] + result["prior_dispositions"]
         ):
-            if any(p not in allowed for p in item["evidence"]):
+            evidence_paths = (
+                set(allowed) | set(state.get("context_files", {})) | {"diff.patch"}
+            )
+            if any(p not in evidence_paths for p in item["evidence"]):
                 raise ValueError("Invalid evidence reference")
         for finding in result["findings"]:
             path = finding["file"]
