@@ -131,6 +131,16 @@ class SupportedAgentTests(unittest.TestCase):
                 for agent in ("codex", "claude"):
                     self.assertTrue((capsule / "agents" / agent / "skills/regression-example/SKILL.md").is_file())
 
+    def test_git_push_is_allowed_by_both_agents_and_shared_hook(self):
+        for filename in ("settings.json", "settings.assist.json", "settings.experiment.json"):
+            settings = json.loads((ROOT / "agents/claude" / filename).read_text())
+            self.assertNotIn("Bash(git push *)", settings["permissions"]["deny"])
+        for tool in ("Bash", "exec_command"):
+            result = subprocess.run(["python3", str(ROOT / "common/hooks/git_branch_guard.py")],
+                                    input=json.dumps({"tool_name": tool, "tool_input": {"command": "git push origin main"}}),
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_shared_hooks_still_block_commands_and_secret_files(self):
         for tool in ("Bash", "exec_command"):
             for hook, command, allocation in (
@@ -138,7 +148,7 @@ class SupportedAgentTests(unittest.TestCase):
                 ("check_pip_forbidden", "pip install example", "1"),
                 ("check_sbatch_forbidden", "sbatch train.sbatch", "1"),
                 ("check_login_node", "python train.py", ""),
-                ("git_branch_guard", "git push", "1"),
+                ("git_branch_guard", "git merge feature", "1"),
             ):
                 with self.subTest(tool=tool, hook=hook):
                     for value, expected in ((command, 2), ("git status", 0)):

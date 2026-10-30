@@ -138,6 +138,27 @@ write_plan experiment "$6" "$1" "$4" "$GPUS" "$TIME_LIMIT" task "$5" "$PARTITION
             os.close(master)
             os.close(slave)
 
+    def test_resume_removes_legacy_push_deny_but_keeps_preferences(self):
+        run = self.prepare("claude")
+        path = run / "home/.claude/settings.json"
+        value = json.loads(path.read_text())
+        value["permissions"]["deny"].append("Bash(git push *)")
+        value["effortLevel"] = "medium"
+        path.write_text(json.dumps(value))
+        self.cleanup_home(run)
+        destination = self.root / "new-run"
+        settings.restore(run, destination)
+        restored = json.loads((destination / "home/.claude/settings.json").read_text())
+        self.assertNotIn("Bash(git push *)", restored["permissions"]["deny"])
+        self.assertIn("Bash(sudo *)", restored["permissions"]["deny"])
+        self.assertEqual(restored["effortLevel"], "medium")
+        self.assertIn(
+            "Bash(git push *)",
+            json.loads((run / "saved_settings/settings.json").read_text())[
+                "permissions"
+            ]["deny"],
+        )
+
     def test_launch_settings_survive_home_cleanup_and_run_rename(self):
         run = self.prepare()
         self.cleanup_home(run)

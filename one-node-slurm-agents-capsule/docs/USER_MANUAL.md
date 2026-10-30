@@ -1140,7 +1140,7 @@ export AGENTRUN_SECRETS_FILE=/path/to/other.env   # 常に別ファイルを使�
 
 ### GitHub 操作の仲介サービス（任意）
 
-エージェントに GitHub の認証情報を一切渡さずに、許可した `gh` コマンドだけを使わせる仕組みです。
+エージェントに GitHub の認証情報を渡さず、許可した `gh` コマンドと通常の `git push` を使えるようにする仕組みです。
 
 ```bash
 ./install.sh --apply        # secrets/gh.env が無ければテンプレートから作成（chmod 600）
@@ -1154,6 +1154,7 @@ agentrun doctor --agent claude   # gh-broker:token が [OK] になることを�
 
 - `apptainer_exec.sh` はエージェントのコンテナより先に、**別の Apptainer コンテナ** で仲介サービス（`runtime/gh-broker/gh_broker.py`）を起動します。`GH_TOKEN` は `--env-file secrets/gh.env` でこのコンテナにだけ渡ります。
 - エージェントのコンテナでは `/usr/local/bin/gh` が `runtime/gh-broker/gh-client` に置き換わります。クライアントはコマンドを Unix ソケット（計算ノードの `/tmp/agentrun-gh.*`、コンテナ内では `/opt/gh-broker/gh.sock`）で仲介サービスに送り、結果を受け取るだけです。
+- `git push` は専用のGit通信経路を使います。一時ホームのGit設定により、GitHubへのpushだけを `git-remote-agentrun` へ送り、`/opt/gh-broker/git.sock` を通じて仲介サービスが認証します。HTTPS形式、`git@github.com:OWNER/REPO.git`、`ssh://git@github.com/OWNER/REPO.git` のoriginに対応し、リポジトリのorigin設定やfetch先は変更しません。`gh auth setup-git` やトークンの取得は不要です。
 - `--containall` により 2 つのコンテナは PID 名前空間が分かれているため、エージェントから仲介サービスのプロセスや環境変数は見えません。`secrets/gh.env` もどちらのコンテナにもマウントされません。
 - 仲介サービスは `runtime/gh-broker/allowlist.txt` に書かれたコマンドだけを、書かれた位置引数と長形式のオプションだけで実行します。それ以外（未記載のサブコマンド・オプション、短形式のオプション、URL、余分な位置引数）はすべて拒否します。既定の許可リストは research-harness（RDH）が発行する gh 呼び出しの全体です。
 
@@ -1178,18 +1179,19 @@ agentrun doctor --agent claude   # gh-broker:token が [OK] になることを�
 - 対象リポジトリは `--repo`、`GH_REPO`、またはコンテナ内 Git リポジトリの `origin` リモートからクライアントが推定し、仲介サービスに渡します。仲介サービスは空の作業ディレクトリで `gh` を実行し、エージェントが書き換えられる Git の設定を読みません。
 - `--body-file FILE` はクライアント（コンテナ内）がファイルを読み、`--body-file -` に置き換えて標準入力で送ります。仲介サービス側でパスを開くことは一切ありません。そのため仲介サービス側で読めるパスを制限する必要はありません（エージェントはコンテナ内で読めるファイルなら `--body-file` を使わなくても本文に書けるため、クライアント側でのパス制限は防御になりません）。
 - `pr create` で `--head` を省略すると、クライアントがコンテナ内の現在のブランチを `--head` として付けます（仲介サービスは Git リポジトリの外で `gh` を実行するため）。
-- 仲介サービスの返す出力とログからは、トークン文字列を `***` に置き換えます。実行・拒否したコマンドは `live/gh_broker.log` に記録されます（トークンは含みません）。`issue close --comment` の本文と `--title` はログに文字数だけを残します（`issue close` には `--body-file` が無く、本文がコマンドの引数に含まれるため）。
+- `gh` コマンドの返す出力と仲介ログからは、トークン文字列を `***` に置き換えます。実行・拒否したコマンドとGit通信のHTTP状態は `live/gh_broker.log` に記録します。Gitの通信データはそのまま中継し、仲介サービスが付けた認証ヘッダーはエージェントへ返しません。`issue close --comment` の本文と `--title` はログに文字数だけを残します。
 - 実行が終わると仲介サービスは停止し、ソケットディレクトリは削除されます。
 
 制限と注意:
 
 - 対話的な操作（プロンプト、`--web`、`--editor`）は使えません。Issue / PR 番号は明示してください（現在のブランチからの推定は仲介サービス側ではできません）。`pr create --fill` のようにローカルの Git リポジトリを参照する使い方もできません。
-- `git push` は仲介サービスの対象外です。コンテナには GitHub の認証情報が無いため、HTTPS リモートへのプッシュは失敗します（`gh auth setup-git` もトークンが無いので使えません）。プッシュが必要な場合は、リポジトリを限定した SSH デプロイキーを渡す（鍵ファイル自体はエージェントから読めます）か、ホスト側でプッシュしてください。
+- 通常の `git push origin BRANCH` を許可します。既存の `GH_TOKEN` には対象リポジトリへの **Contents: Read and write** が必要です。`GH_BROKER_REPOS` が設定されている場合、push先もその範囲に限定します。`gh` の既定対象とは異なり、許可していないpush先を別のリポジトリへ自動で置き換えることはありません。`--no-gh-broker` の実行では、この認証経路も無効になります。
+- Gitのデータはストリームで転送し、仲介サービスはGitHubのpush用エンドポイントだけへ接続します。GitHubトークンをコンテナのGitへ返すことはありません。転送上限は[GitHubの上限](https://docs.github.com/en/get-started/using-git/troubleshooting-the-2-gb-push-limit)に合わせて1回2 GiBです。明示的な `remote.NAME.pushurl` がある場合はGit側でその設定が優先されるため、pushurlを解除するか `agentrun://github.com/OWNER/REPO.git` を指定してください。
 - エージェントは許可リストの範囲内でなら `gh` を自由に使えます（Issue の大量作成など）。許可リストとトークンの権限（例: Issue・プルリクエストの読み書きとメタデータの読み取りだけを許可し、対象リポジトリも限定する）の両方で絞ってください。
 - コンテナ内の `/usr/bin/gh` を直接呼ぶことはできますが、認証情報が無いため認証の必要な操作は失敗します。
 - `gh` はイメージ（`base-system.def`）に入っています。`gh` 追加前にビルドした `.sif` の場合は再ビルドしてください。`git pull` で `base-system.def` が更新されていれば `build-images.sh --run` でシステムイメージが作り直されます。確実に作り直す場合は `--run --force` を使います。
 - 隔離は Apptainer の名前空間と「トークンファイルをマウントしない」ことに依存しています。同じ UID で動くため、カーネルの脆弱性などによるコンテナからの脱出までは防げません。
-- `git push` の禁止（Claude の拒否ルール、Codex の実行ルール、`git_branch_guard.py`）はコマンド文字列での判定で、`git -C . push` などは通ります。プッシュの可否は、コンテナにプッシュ用の認証情報を渡さないこと、トークンの権限、リモート側のブランチ保護で決まります。
+- Claude・Codexの設定と共通フックでは通常のpushを禁止しません。GitHubが受け付けるかは、トークンの権限とリモート側のブランチ保護で決まります。既存runをresumeする際は、保存済みClaude設定にある旧 `Bash(git push *)` 拒否だけを取り除き、ほかの設定は保持します。
 
 ## 設定の管理
 
@@ -1267,7 +1269,7 @@ Claude Code の設定は実行専用ホーム内の通常ファイルなので�
 | `agents/codex/config.experiment.toml` | experiment 用設定（現在は [tui] のみ） |
 | `agents/codex/hooks.manifest.json` | フックの定義ファイル |
 | `agents/codex/requirements.toml` | 定義ファイルから生成した管理対象フックの設定 |
-| `agents/codex/rules/` | コマンド実行ルール。禁止ルールのみを使用。承認を省略して起動するため許可ルールは使わない |
+| `agents/codex/rules/` | コマンド実行ルール。通常の `git push` を禁止するルールはありません。共通フックによる制限は別途適用します |
 
 起動コマンド:
 
@@ -1473,7 +1475,7 @@ agentrun validate
 | `check_login_node.py` | Slurm ログインノード上での計算用コマンド（`python`、`pytest`、`jupyter`、`torchrun` 等）をブロックします。`SLURM_JOB_ID` が設定されていない場合のみ動作するため、計算ノード内では処理を制限しません。 |
 | `check_pip_forbidden.py` | `pip` の直接呼び出しと `uv pip install`/`uninstall`/`sync`/`compile` をブロックします。パッケージ管理は `uv add`/`uv remove` を使います。`uv pip list`/`show`/`freeze`/`check` は許可されます。 |
 | `check_sbatch_forbidden.py` | Slurm ジョブ割り当ての内部（`SLURM_JOB_ID` が設定されている環境）での `sbatch`/`salloc` 呼び出しをブロックします。ネストしたジョブ投入を防ぎます。 |
-| `git_branch_guard.py` | `git merge`、`git rebase`、`git push`、`.git` ディレクトリへの直接操作をブロックします。Claude では定義ファイルの `if: "Bash(git *)"` フィルタにより、git コマンド以外では発火しません。コマンド文字列での判定なので、`git -C . push` のような書き方や `gh pr merge`・`gh api` は止められません。プッシュやマージを確実に防ぐには、GitHub トークンの権限とリモート側のブランチ保護で制限してください。 |
+| `git_branch_guard.py` | `git merge`、`git rebase`、`.git` ディレクトリへの直接操作をブロックします。通常の `git push` は許可します。Claude では定義ファイルの `if: "Bash(git *)"` フィルタにより、git コマンド以外では発火しません。 |
 
 <a id="posttooluse-コマンド実行後"></a>
 

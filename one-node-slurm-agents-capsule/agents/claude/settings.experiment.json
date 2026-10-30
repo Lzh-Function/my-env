@@ -3,7 +3,6 @@
   "runtimeProfile": "experiment",
   "permissions": {
     "deny": [
-      "Bash(git push *)",
       "Bash(sbatch *)",
       "Bash(salloc *)",
       "Bash(pip *)",

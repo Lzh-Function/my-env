@@ -332,6 +332,15 @@ def restore(source, destination):
             "保存されたエージェント設定を読めません。--fresh-config で初期設定から再開できます"
         ) from error
     agent = manifest(source)["agent"]
+    if agent == "claude":
+        values = json.loads(data)
+        permissions = values.get("permissions", {})
+        denied = permissions.get("deny", [])
+        if "Bash(git push *)" in denied:
+            permissions["deny"] = [
+                value for value in denied if value != "Bash(git push *)"
+            ]
+            data = (json.dumps(values, ensure_ascii=False, indent=2) + "\n").encode()
     atomic(destination / "home" / CONFIG[agent], data, destination)
     atomic(destination / "container_config" / path.name, data, destination)
 

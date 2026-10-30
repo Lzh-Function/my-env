@@ -477,6 +477,7 @@ append_gh_broker_note() {
     cat >> "$1" <<EOF
 
 GitHub CLI: \`gh\` works through a broker; no GitHub credentials exist in this capsule, so do not look for them.
+Normal \`git push\` to GitHub also uses the broker automatically. Keep the origin URL as configured; no credential setup or token extraction is needed.
 Only these commands, with only the listed long flags (\`--flag value\`), are accepted:
 $allowed
 Pass issue/PR numbers explicitly (no URLs), and use --body-file FILE (or --body-file -) for bodies. \`gh api\` is not available; read issue comments with \`gh issue view <number> --json comments\`.
@@ -716,6 +717,8 @@ apptainer_command() {
     if gh_broker_enabled; then
         printf ' --bind "$GH_BROKER_DIR":%s:ro --bind %q:/usr/local/bin/gh:ro' \
             "$GH_BROKER_CONTAINER_DIR" "$GH_BROKER_SRC/gh-client"
+        printf ' --bind %q:/opt/gh-broker-src:ro --bind %q:/usr/local/bin/git-remote-agentrun:ro' \
+            "$GH_BROKER_SRC" "$GH_BROKER_SRC/git-remote-agentrun"
     fi
     printf ' --bind %q:/opt/agentrun:ro' "$ROOT_DIR/runtime/agentrun"
     local review_key
@@ -769,6 +772,15 @@ write_plan() {
     fi
     if [ -n "${RESUME_SOURCE:-}" ] && [ "${RESUME_FRESH_CONFIG:-0}" -ne 1 ]; then
         settings_tool restore "$RESUME_SOURCE" "$run_dir" || return $?
+    fi
+    if gh_broker_enabled; then
+        cat > "$run_dir/home/.gitconfig" <<'GITCONFIG'
+[url "agentrun://github.com/"]
+    pushInsteadOf = https://github.com/
+    pushInsteadOf = git@github.com:
+    pushInsteadOf = ssh://git@github.com/
+GITCONFIG
+        chmod 600 "$run_dir/home/.gitconfig"
     fi
     write_prompt "$run_dir/prompt.txt" "$mode" "$agent" "$repo" "$prompt" "$launch" \
         "$mem" "$cpus" "$gpus" "$time_limit" "$partition"
@@ -1381,6 +1393,9 @@ command_validate() {
         runtime/agentrun/interactive-runner.py \
         runtime/agentrun/process-cleanup.sh \
         runtime/agentrun/node-scratch.sh \
+        runtime/gh-broker/gh_broker.py \
+        runtime/gh-broker/git_bridge.py \
+        runtime/gh-broker/git-remote-agentrun \
         runtime/agentrun/agentrun.bash
     do
         if [ -e "$ROOT_DIR/$path" ]; then

@@ -20,7 +20,8 @@ These rules apply to Claude Code and Codex launched through `agentrun`.
 
 - Do not overwrite user changes.
 - Do not run destructive git operations unless explicitly requested.
-- Do not push, force-push, rebase, or reset without explicit approval.
+- Normal `git push` is allowed, including GitHub pushes through the configured broker.
+- Do not force-push, rebase, or reset without explicit approval.
 - Write patches and reports to the run directory when working inside a capsule.
 
 ## Secrets

@@ -13,6 +13,7 @@
       "Bash(git log *)",
       "Bash(git add *)",
       "Bash(git commit *)",
+      "Bash(git push *)",
       "Bash(git checkout *)",
       "Bash(git branch *)",
       "Bash(git worktree *)",
@@ -59,7 +60,6 @@
       "Bash(rm -rf ~/*)",
       "Bash(rm -rf /*)",
       "Bash(git config *)",
-      "Bash(git push *)",
       "Bash(pip *)",
       "Bash(conda *)"
     ]

@@ -34,9 +34,6 @@ def main() -> int:
     if re.search(r"(^|\s|/)\.git(/|\s|$)", cmd):
         return block(".git ディレクトリへの直接操作は禁止されています。")
 
-    if re.search(r"git\s+push\b", cmd):
-        return block("git push は禁止されています。ユーザーが最終的な push を実行してください。")
-
     return 0
 
 

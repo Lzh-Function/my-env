@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Keep Git pack generation local and relay its Smart HTTP requests to the broker."""
+
+import http.client
+import os
+import secrets
+import subprocess
+import sys
+import threading
+from contextlib import closing
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
+
+sys.path.insert(0, "/opt/gh-broker-src")
+from git_bridge import UnixConnection, relay, repo_name, request_target
+
+
+def main():
+    if len(sys.argv) != 3:
+        raise ValueError("Git must invoke this helper with a remote name and URL")
+    remote, url = sys.argv[1:]
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "agentrun"
+        or parsed.netloc != "github.com"
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("This transport accepts only agentrun://github.com/OWNER/REPO")
+    repo = repo_name(parsed.path.removeprefix("/"))
+    nonce = "/" + secrets.token_hex(24)
+    endpoint = os.environ.get("AGENTRUN_GIT_BROKER_SOCKET", "/opt/gh-broker/git.sock")
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            self.forward()
+
+        def do_POST(self):
+            self.forward()
+
+        def forward(self):
+            if not self.path.startswith(nonce + "/"):
+                self.send_error(403)
+                return
+            path = self.path[len(nonce) :]
+            try:
+                requested, path = request_target(path, self.command)
+                if requested != repo:
+                    self.send_error(403)
+                    return
+                with closing(UnixConnection(endpoint)) as connection:
+                    relay(self, connection, path)
+            except (OSError, ValueError, http.client.HTTPException):
+                self.send_error(502, "GitHub push broker is unavailable")
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        env = dict(
+            os.environ,
+            GIT_TERMINAL_PROMPT="0",
+            NO_PROXY="127.0.0.1",
+            no_proxy="127.0.0.1",
+        )
+        # These overrides affect only the private loopback relay. The caller's
+        # origin URL, credentials and repository configuration are not changed.
+        local = f"http://127.0.0.1:{server.server_port}{nonce}/{repo}.git"
+        try:
+            return subprocess.call(
+                [
+                    "git",
+                    "-c",
+                    "http.proxy=",
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "http.extraHeader=",
+                    "remote-http",
+                    remote,
+                    local,
+                ],
+                env=env,
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError) as error:
+        print("git push (agentrun broker): " + str(error), file=sys.stderr)
+        raise SystemExit(1)

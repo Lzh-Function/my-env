@@ -3,7 +3,6 @@
   "runtimeProfile": "assist",
   "permissions": {
     "deny": [
-      "Bash(git push *)",
       "Bash(pip *)",
       "Bash(sudo *)",
       "Bash(apt *)",

@@ -6,6 +6,8 @@ capsule. It is the only process that holds GH_TOKEN (passed with --env-file);
 the agent's container never sees the token file or this process (separate PID
 namespace). The agent talks to it through a Unix socket with `gh-client`,
 which is bound over `gh` inside the capsule.
+Git pushes use a separate `git.sock` Smart HTTP bridge with the same repository
+pinning and token. Only the broker adds GitHub authentication headers.
 
 Request  (one JSON object, then EOF): {"argv": [...], "stdin": b64, "repo": "owner/name" | null}
 Response (one JSON object):           {"stdout": b64, "stderr": b64, "code": int}
@@ -22,7 +24,7 @@ Guards:
   commands may target; with exactly one, it is also the default.
 - gh runs with a fixed environment and an empty working directory (no agent
   controlled git config is ever read), with prompts/browser/editor disabled.
-- The token is redacted from anything sent back or logged; --comment values
+- The token is redacted from gh responses and logs; --comment values
   are not logged.
 """
 
@@ -37,9 +39,12 @@ import socketserver
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from git_bridge import GitServer
 
 HERE = Path(__file__).resolve().parent
 ALLOWLIST_FILE = Path(os.environ.get("GH_BROKER_ALLOWLIST", HERE / "allowlist.txt"))
@@ -309,9 +314,18 @@ def main() -> int:
         os.unlink(socket_path)
     os.umask(0o077)
     load_allowlist()
-    with Server(socket_path, Handler) as server:
+    git_path = str(Path(socket_path).with_name("git.sock"))
+    if os.path.exists(git_path):
+        os.unlink(git_path)
+    with GitServer(git_path, check_repo, lambda: os.environ["GH_TOKEN"], log) as git_server, Server(socket_path, Handler) as server:
+        thread = threading.Thread(target=git_server.serve_forever, daemon=True)
+        thread.start()
         log(f"listening on {socket_path}")
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            git_server.shutdown()
+            thread.join(timeout=2)
     return 0
 
 

@@ -8,6 +8,7 @@ import runpy
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -15,6 +16,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "runtime/gh-broker"))
 TOKEN = "FAKE_GH_TOKEN_FOR_LOCAL_TEST_ONLY"
 MOCK_GH = r'''#!/usr/bin/env python3
 import json
