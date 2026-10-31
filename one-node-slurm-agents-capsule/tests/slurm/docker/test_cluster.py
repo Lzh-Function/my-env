@@ -814,7 +814,7 @@ class ClusterTests(unittest.TestCase):
                         (run / "artifacts/dialogue-check.json").read_text()
                     )
                     self.assertEqual(state["verdict"], "approve")
-                    self.assertEqual(state["round"], 2)
+                    self.assertEqual(state["round"], 3)
                     peer = "claude" if agent == "codex" else "codex"
                     manifest = json.loads((run / "session.json").read_text())
                     store = (
@@ -830,9 +830,10 @@ class ClusterTests(unittest.TestCase):
                         .read_text()
                         .splitlines()
                     ]
-                    self.assertEqual(len(calls), 3)
+                    self.assertEqual(len(calls), 4)
                     self.assertEqual(calls[0]["session"], calls[1]["session"])
                     self.assertNotEqual(calls[1]["session"], calls[2]["session"])
+                    self.assertNotEqual(calls[2]["session"], calls[3]["session"])
                     _data, markdown = self.archived(run)
                     self.assertIn("Why this value?", markdown)
                     self.assertIn("A fixture defect", markdown)

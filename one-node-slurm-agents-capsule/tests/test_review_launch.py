@@ -59,11 +59,13 @@ class ReviewLaunchTests(unittest.TestCase):
                         },
                     )
 
-    def scenario(self, crash=False):
+    def scenario(self, crash=False, review_env=None):
         fixture = fixtures.CrossReviewTests(
             "test_idempotency_and_stale_question_rejection"
         )
         fixture.setUp()
+        if review_env is not None:
+            (fixture.run / "launch.json").write_text(json.dumps({"review_env": review_env}))
         if crash:
             fixture.brief.write_text("timeout")
         self.addCleanup(fixture.doCleanups)
@@ -93,6 +95,8 @@ supervisor=os.getppid()
 children=Path(f'/proc/{{supervisor}}/task/{{supervisor}}/children').read_text().split()
 services=[int(p) for p in children if int(p)!=os.getpid()]
 assert len(services)==1, services
+service_args=Path(f'/proc/{{services[0]}}/cmdline').read_bytes().decode().rstrip('\\0').split('\\0')
+review_config=json.loads(Path(service_args[-2]).read_text())
 service_fds=Path(f'/proc/{{services[0]}}/fd')
 assert os.readlink(service_fds/'0')=='/dev/null'
 assert os.readlink(service_fds/'1')=={str(fixture.run / "live/review_service.log")!r}
@@ -117,13 +121,14 @@ else:
         state=call('events',state['review_id'],'--after',str(state['cursor']),'--wait-seconds','1')
         if state['status']=='waiting_reply':break
     assert state['status']=='waiting_reply',state
-Path({str(fixture.root / "worker-state.json")!r}).write_text(json.dumps(dict(state,socket=os.environ['AGENT_REVIEW_SOCKET'])))
+Path({str(fixture.root / "worker-state.json")!r}).write_text(json.dumps(dict(state,socket=os.environ['AGENT_REVIEW_SOCKET'],review_config=review_config)))
 sys.exit(42)
 """)
         env = dict(
             os.environ,
             HOME=str(fixture.home),
             PATH=str(binary) + ":" + os.environ["PATH"],
+            SLURM_JOB_END_TIME="1",
         )
         result = subprocess.run(
             [
@@ -190,6 +195,23 @@ sys.exit(42)
             config["mcpServers"]["cross-review"]["env"]["AGENT_REVIEW_SOCKET"],
             worker_state["socket"],
         )
+        self.assertNotIn("job_deadline", worker_state["review_config"])
+        return worker_state
+
+    def test_saved_review_options_reach_container_supervisor(self):
+        state = self.scenario(review_env={
+            "AGENT_REVIEW_CODEX_MODEL": "fixture-model",
+            "AGENT_REVIEW_CODEX_EFFORT": "low",
+            "AGENT_REVIEW_ACTIVE_TIMEOUT": "600",
+            "AGENT_REVIEW_MAX_EXCHANGES": "1",
+            "AGENT_REVIEW_THREAD_TIMEOUT": "1",
+        })
+        config = state["review_config"]
+        self.assertEqual(config["model"], "fixture-model")
+        self.assertEqual(config["effort"], "low")
+        self.assertEqual(config["active_timeout"], 600)
+        self.assertNotIn("max_exchanges", config)
+        self.assertNotIn("thread_timeout", config)
 
     def test_installer_dialogue_and_parent_exit_preserve_native_history(self):
         self.scenario()

@@ -100,6 +100,18 @@ write_plan experiment "$6" "$1" "$4" "$GPUS" "$TIME_LIMIT" task "$5" "$PARTITION
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((run / "home").exists())
 
+    def test_legacy_review_caps_are_ignored_on_resume(self):
+        run = self.prepare()
+        path = run / 'launch.json'
+        data = json.loads(path.read_text())
+        data['review_env'].update(AGENT_REVIEW_MAX_EXCHANGES='1',
+                                  AGENT_REVIEW_REPLY_TIMEOUT='1',
+                                  AGENT_REVIEW_THREAD_TIMEOUT='1')
+        path.write_text(json.dumps(data))
+        restored = settings.load(run)['review_env']
+        self.assertEqual(restored, {'AGENT_REVIEW_CODEX_EFFORT': 'high'})
+
+
     def pty_resume(self, run, answer, *overrides):
         master, slave = pty.openpty()
 

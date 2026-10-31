@@ -16,8 +16,10 @@ REVIEW_ENV = (
     "AGENT_REVIEW_CODEX_EFFORT",
     "AGENT_REVIEW_CLAUDE_MODEL",
     "AGENT_REVIEW_CLAUDE_EFFORT",
-    "AGENT_REVIEW_MAX_EXCHANGES",
     "AGENT_REVIEW_ACTIVE_TIMEOUT",
+)
+REMOVED_REVIEW_ENV = (
+    "AGENT_REVIEW_MAX_EXCHANGES",
     "AGENT_REVIEW_REPLY_TIMEOUT",
     "AGENT_REVIEW_THREAD_TIMEOUT",
 )
@@ -240,11 +242,15 @@ def load(run):
         or not isinstance(data.get("allow_fuse"), bool)
         or not isinstance(data.get("review_env"), dict)
         or any(
-            k not in REVIEW_ENV or not isinstance(v, str)
+            k not in REVIEW_ENV + REMOVED_REVIEW_ENV or not isinstance(v, str)
             for k, v in data["review_env"].items()
         )
     ):
         raise ValueError("保存された起動設定が不正です")
+    # Read legacy runs without restoring the removed review limits.
+    data["review_env"] = {
+        key: value for key, value in data["review_env"].items() if key in REVIEW_ENV
+    }
     strings = [
         *data["options"].values(),
         *data["binds"],

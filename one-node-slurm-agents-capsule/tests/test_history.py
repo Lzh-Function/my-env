@@ -320,23 +320,39 @@ class HistoryTests(unittest.TestCase):
         completed = subprocess.CompletedProcess([], 0, "", "")
         invalid = subprocess.CompletedProcess([], 1, "", "invalid job id")
         accounting = subprocess.CompletedProcess([], 0, "123|TIMEOUT\n123.batch|FAILED\n", "")
-        with patch.object(collector.subprocess, "run", return_value=completed) as run:
+        with patch.object(collector, "slurm_query", return_value=completed) as run:
             self.assertFalse(collector.query_active("123;cluster"))
             self.assertIn("cluster", run.call_args.args[0])
-        with patch.object(collector.subprocess, "run", side_effect=[invalid, accounting]), patch.object(collector.shutil, "which", return_value="/fake/sacct"):
+        with patch.object(collector, "slurm_query", side_effect=[invalid, accounting]), patch.object(collector.shutil, "which", return_value="/fake/sacct"):
             self.assertFalse(collector.query_active("123"))
-        with patch.object(collector.subprocess, "run", return_value=invalid), patch.object(collector.shutil, "which", return_value=None):
+        with patch.object(collector, "slurm_query", return_value=invalid), patch.object(collector.shutil, "which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "completion has not been established"):
                 collector.query_active("123")
 
     def test_host_queue_filters_cannot_hide_an_active_batch_job(self):
         active = subprocess.CompletedProcess([], 0, "123\n", "")
         with patch.dict(os.environ, SQUEUE_PARTITION="unrelated", SQUEUE_STATES="pending"), \
-             patch.object(collector.subprocess, "run", return_value=active) as query:
+             patch.object(collector, "slurm_query", return_value=active) as query:
             self.assertTrue(collector.query_active("123"))
         env = query.call_args.kwargs["env"]
         self.assertFalse(any(key.startswith("SQUEUE_") for key in env))
         self.assertEqual(env["LC_ALL"], "C")
+
+    def test_suspended_jobs_are_active_and_retained_terminal_jobs_are_complete(self):
+        for state, active in (('SUSPENDED', True), ('COMPLETING', True), ('RUNNING', True), ('TIMEOUT', False), ('COMPLETED', False)):
+            with self.subTest(state=state), patch.object(collector, 'slurm_query', return_value=subprocess.CompletedProcess([], 0, '123|' + state + '\n', '')) as query:
+                self.assertEqual(collector.query_active('123'), active)
+                self.assertIn('--states=all', query.call_args.args[0])
+
+
+    def test_query_returns_without_waiting_for_descendant_pipes(self):
+        import time
+        start = time.monotonic()
+        result = collector.slurm_query([sys.executable, "-c",
+            "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); print('123')"], timeout=1)
+        self.assertEqual(result.stdout.strip(), "123")
+        self.assertLess(time.monotonic() - start, 2)
+
 
     def test_manual_cli_export_records_failure_and_can_retry(self):
         self.codex()
@@ -358,13 +374,13 @@ class HistoryTests(unittest.TestCase):
         failure = subprocess.CompletedProcess([], 17, "", "submission failed")
         success = subprocess.CompletedProcess([], 0, "123\n", "")
         with patch.object(collector.shutil, "which", return_value="/fake/squeue"), \
-             patch.object(collector.subprocess, "run", return_value=failure), \
+             patch.object(collector, "slurm_query", return_value=failure), \
              patch.object(collector.subprocess, "Popen") as start, contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaisesRegex(RuntimeError, "sbatch failed"):
                 collector.submit(self.run)
             start.assert_not_called()
         with patch.object(collector.shutil, "which", return_value="/fake/squeue"), \
-             patch.object(collector.subprocess, "run", return_value=success), \
+             patch.object(collector, "slurm_query", return_value=success), \
              patch.object(collector.subprocess, "Popen", side_effect=OSError("start failed")):
             with self.assertRaisesRegex(RuntimeError, "Job 123 was submitted"):
                 collector.submit(self.run)

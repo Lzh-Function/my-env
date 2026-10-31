@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 
@@ -103,6 +105,60 @@ class RuntimeBackportTests(unittest.TestCase):
         self.assertIn('#SBATCH --nodes=1', (run / 'submit.sbatch').read_text())
         self.assertIn('#SBATCH --ntasks=1', (run / 'submit.sbatch').read_text())
         self.assertEqual((run / 'live/slurm_job_id.txt').read_text(), '9001\n')
+
+    def test_batch_title_rename_keeps_a_newer_planned_latest(self):
+        run = self.prepare()
+        (run / 'artifacts/run_title.txt').write_text('finished batch')
+        newer = self.prepare()
+        self.assertNotEqual(newer, run)
+        result = subprocess.run(['bash', str(run / 'submit.sbatch')], cwd=self.root,
+                                env=self.env, capture_output=True, text=True, timeout=10, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        renamed = run.with_name(run.name + '_finished-batch')
+        self.assertFalse(run.exists())
+        self.assertTrue((renamed / 'live/session_finished.txt').is_file())
+        self.assertFalse((renamed / 'home').exists())
+        self.assertEqual((self.root / '.agent-runs/latest').resolve(), newer)
+
+    def test_batch_rename_precedes_unlock_and_completion_marker(self):
+        run = self.prepare()
+        (run / 'artifacts/run_title.txt').write_text('finished batch')
+        ready, release = self.root / 'marker-ready', self.root / 'release-marker'
+        wrapper = self.root / 'bin/date'
+        wrapper.write_text(f'''#!{sys.executable}
+import os, sys, time
+from pathlib import Path
+if sys.argv[1:] == ['-Iseconds']:
+    Path({str(ready)!r}).touch()
+    deadline = time.monotonic() + 6
+    while not Path({str(release)!r}).exists() and time.monotonic() < deadline:
+        time.sleep(.02)
+os.execv('/bin/date', ['/bin/date', *sys.argv[1:]])
+''')
+        wrapper.chmod(0o755)
+        child = subprocess.Popen(['bash', str(run / 'submit.sbatch')], cwd=self.root,
+                                 env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 8
+            while not ready.exists():
+                self.assertIsNone(child.poll())
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.02)
+            renamed = run.with_name(run.name + '_finished-batch')
+            self.assertTrue(renamed.is_dir())
+            self.assertFalse(run.exists())
+            with (self.root / '.agentrun.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            newer = self.prepare()
+            release.touch()
+            self.assertEqual(child.wait(timeout=5), 0)
+            self.assertEqual((self.root / '.agent-runs/latest').resolve(), newer)
+            self.assertTrue((renamed / 'live/session_finished.txt').is_file())
+        finally:
+            release.touch()
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=3)
 
     def test_batch_preserves_exit_code_and_excludes_credentials_from_environment_log(self):
         self.env.update(TEST_CONTAINER_EXIT='42', OPENAI_API_KEY='private-test-value',

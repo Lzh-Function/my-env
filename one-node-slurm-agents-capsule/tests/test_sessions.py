@@ -102,6 +102,66 @@ class SessionTests(unittest.TestCase):
         self.assertIn('更新済み', sessions.describe(run, {})[2])
 
 
+    def test_resume_choices_keep_latest_run_of_same_conversation(self):
+        run, store = self.new_run(name="z-original")
+        codex_history(store)
+        chain = [run]
+        for index in range(3):
+            resumed = self.parent / f"a-resumed-{index}"
+            resumed.mkdir()
+            sessions.init(resumed, "codex", str(self.root), "assist", chain[-1])
+            chain.append(resumed)
+        latest = chain[-1]
+        renamed = latest.with_name("a-renamed-with-title")
+        latest.rename(renamed)
+        for action in ("list", "choices"):
+            lines = self.cli(action, self.parent).stdout.splitlines()
+            self.assertEqual(len(lines), 1, lines)
+            self.assertTrue(lines[0].startswith(latest.name + "  "), lines)
+        # Deduplication does not remove any run or prevent explicit ID access.
+        for path in (run, chain[1], chain[2], renamed):
+            self.assertTrue(path.is_dir())
+            self.assertIn("修正しました", self.cli("preview", path).stdout)
+        self.assertEqual(self.cli("resolve", self.parent, latest.name).stdout.strip(), str(renamed))
+        with mock.patch("sys.argv", ["sessions.py", "pick", str(self.parent)]), \
+                mock.patch("sys.stdin") as stdin, mock.patch("sys.stdout") as stdout, \
+                mock.patch("sys.stderr"):
+            stdin.isatty.return_value = True
+            stdin.readline.return_value = run.name + "\n"
+            sessions.main()
+        self.assertEqual(stdout.write.call_args_list[0].args[0], str(run))
+
+
+    def test_different_native_conversations_in_shared_store_remain_visible(self):
+        run, store = self.new_run()
+        codex_history(store)
+        resumed = self.parent / "resumed"
+        resumed.mkdir()
+        sessions.init(resumed, "codex", str(self.root), "assist", run)
+        other = "22345678-1234-1234-1234-123456789abc"
+        codex_history(store, other, "別の会話")
+        self.cli("finalize", resumed)
+        lines = self.cli("choices", self.parent).stdout.splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertTrue(lines[0].startswith("resumed  "), lines)
+        self.assertIn("別の会話", lines[0])
+        self.assertIn("修正しました", lines[1])
+
+
+    def test_latest_unavailable_run_does_not_hide_resumable_conversation(self):
+        run, store = self.new_run()
+        codex_history(store)
+        resumed = self.parent / "resumed-with-missing-history"
+        resumed.mkdir()
+        sessions.init(resumed, "codex", str(self.root), "assist", run)
+        data = sessions.manifest(resumed)
+        data.update(native_id="missing-id", native_cli="codex")
+        sessions.save(resumed, data)
+        lines = self.cli("choices", self.parent).stdout.splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith("test-run  "), lines)
+
+
     def test_finalize_does_not_read_message_previews_and_keeps_status_metadata(self):
         run, store = self.new_run()
         codex_history(store)

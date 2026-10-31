@@ -252,28 +252,23 @@ async def review_dialogue(transport):
         if session:
             via_mcp = await action("review_status", review_id=ident)
             assert via_mcp["verdict"] == "approve"
+        Path("/workspace/code.py").write_text("value = 3\n")
+        if session:
+            state = await action("review_recheck", review_id=ident,
+                                 request_id="third", response={"responses": []})
+        else:
+            file.write_text('{"responses":[]}')
+            state = cli("recheck", ident, "--request-id", "third", "--response", str(file))
+        ident = state["review_id"]
+        for _ in range(50):
+            state = cli("events", ident, "--after", str(state["cursor"]), "--wait-seconds", "1")
+            if state["status"] not in ("prepared", "running"):
+                break
+        assert state["status"] == "success" and state["verdict"] == "approve", state
+        assert state["round"] == 3, state
+        assert state["remaining_rounds"] is None and state["remaining_exchanges"] is None
         result = Path("/runs/artifacts/dialogue-check.json")
         result.write_text(json.dumps(state))
-        third_response = Path("/runs/artifacts/third-response.json")
-        third_response.write_text('{"responses":[]}')
-        rejected = await asyncio.to_thread(
-            subprocess.run,
-            [
-                command,
-                "recheck",
-                ident,
-                "--request-id",
-                "third",
-                "--response",
-                str(third_response),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        assert rejected.returncode != 0, rejected
-        assert "budget exhausted" in rejected.stderr, rejected
         print("CROSS_REVIEW_OK:" + transport, flush=True)
 
     if transport == "mcp":

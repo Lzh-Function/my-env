@@ -226,6 +226,10 @@ if os.environ.get("AGENTRUN_ROLE") == "reviewer":
                 "evidence": ["source/code.py"],
             }
         ]
+    if context["round"] >= 3:
+        prior = json.loads(Path("prior/review.json").read_text())
+        assert prior["response"]["responses"] == []
+        assert Path("source/code.py").read_text() == f"value = {context['round']}\n"
     transcript(ident, "offline reviewer turn", json.dumps(result))
     persisted = (
         (HOME / (".codex/sessions" if AGENT == "codex" else ".claude/projects"))

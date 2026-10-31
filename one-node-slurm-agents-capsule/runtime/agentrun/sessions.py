@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -214,6 +215,34 @@ def runs(parent):
                    and not p.name.startswith(".")), key=lambda p: p.name, reverse=True) if parent.is_dir() else []
 
 
+def choices(parent, available_only=False):
+    """Keep the newest launch of each native conversation, including after rename."""
+    cache = {}
+    candidates = [(path, describe(path, cache)) for path in runs(parent)]
+
+    def recency(item):
+        path, (data, _, _) = item
+        timestamp = data.get("created_at", 0) if data else 0
+        if not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+            timestamp = 0
+        return timestamp, data["run_id"] if data else path.name
+
+    seen = set()
+    result = []
+    for path, info in sorted(candidates, key=recency, reverse=True):
+        data, session, _ = info
+        if available_only and not session:
+            continue
+        if data:
+            key = (data["agent"], data["repo"], session["cli"], session["id"]) if session else (
+                data["agent"], data["repo"], "unavailable", data["session_key"])
+            if key in seen:
+                continue
+            seen.add(key)
+        result.append((path, info))
+    return result
+
+
 def resolve(parent, target):
     path = Path(target)
     if path.is_dir():
@@ -302,13 +331,10 @@ def main():
         for item in session["messages"] if session else []:
             print("\n[" + item["role"] + "]\n" + safe_text(item["text"]))
     elif args.action == "list":
-        cache = {}
-        for path in runs(run):
-            print(describe(path, cache)[2])
+        for _, info in choices(run):
+            print(info[2])
     elif args.action in ("pick", "choices"):
-        cache = {}
-        candidates = [(p, describe(p, cache)) for p in runs(run)]
-        candidates = [(p, info) for p, info in candidates if info[1]]
+        candidates = choices(run, available_only=True)
         if not candidates:
             raise ValueError("再開可能な run がありません。導入後に開始した会話が対象です")
         if args.action == "choices":
@@ -328,6 +354,14 @@ def main():
                 if answer in (str(n), info[0]["run_id"], path.name):
                     print(path)
                     return
+            # Explicit historical IDs retain their own saved launch settings.
+            try:
+                path = resolve(run, answer)
+            except ValueError:
+                path = None
+            if path is not None and describe(path)[1]:
+                print(path)
+                return
             print("一覧の番号か run ID を入力してください", file=sys.stderr)
 
 

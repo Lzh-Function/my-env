@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -159,18 +160,14 @@ class Reviews:
         self.config = config
         if config.get("primary_agent") not in ("codex", "claude"):
             raise ValueError("Unsupported primary agent")
-        for key, default in (
-            ("max_exchanges", 3),
-            ("active_timeout", 600),
-            ("reply_timeout", 600),
-            ("thread_timeout", 3600),
-        ):
-            self.config.setdefault(key, default)
-            if (
-                not isinstance(self.config[key], (int, float))
-                or not 0 < self.config[key] < 86400
-            ):
-                raise ValueError("Invalid review limit: " + key)
+        # Ignore removed limits even when loading legacy configuration.
+        for key in ("max_rounds", "max_exchanges", "reply_timeout", "thread_timeout", "job_deadline"):
+            self.config.pop(key, None)
+        # Zero means unlimited; an explicit timeout applies to each CLI call.
+        timeout = self.config.setdefault("active_timeout", 0)
+        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                or not math.isfinite(timeout) or timeout < 0):
+            raise ValueError("Invalid review CLI timeout")
         self.run, self.repo = (
             Path(config["run"]).resolve(),
             Path(config["repo"]).resolve(),
@@ -190,9 +187,13 @@ class Reviews:
         self.closed = False
         for path in (self.root / "threads").glob("*/state.json"):
             state = load(path)
+            for key in ("max_rounds", "deadline", "consumed_rounds"):
+                state.pop(key, None)
             self.threads[state["review_thread_id"]] = state
         for path in self.root.glob("review-*/state.json"):
             state = load(path)
+            state.pop("reply_deadline", None)
+            state.pop("budget_consumed", None)
             self.rounds[state["review_id"]] = state
             if state["status"] not in TERMINAL:
                 state.update(
@@ -206,6 +207,12 @@ class Reviews:
         request_path = self.root / "requests.json"
         if request_path.exists():
             self.requests = load(request_path)
+            for request in self.requests.values():
+                result = request.get("result")
+                if isinstance(result, dict):
+                    for key in ("remaining_rounds", "remaining_exchanges"):
+                        if key in result:
+                            result[key] = None
 
     def persist(self, state):
         atomic_json(self.root / state["review_id"] / "state.json", state)
@@ -243,13 +250,10 @@ class Reviews:
                 "report_path",
             )
         }
-        thread = self.threads[state["review_thread_id"]]
         result.update(
             cursor=state.get("sequence", 0),
-            remaining_rounds=thread.get("max_rounds", 2)
-            - thread.get("consumed_rounds", 0),
-            remaining_exchanges=self.config["max_exchanges"]
-            - state.get("exchanges", 0),
+            remaining_rounds=None,
+            remaining_exchanges=None,
         )
         result["applicability"] = self.applicability(state)
         return result
@@ -405,30 +409,7 @@ class Reviews:
             atomic_json(self.root / "requests.json", self.requests)
             if action == "extend":
                 state = self.get(params["review_id"])
-                maximum, reason = params.get("max_rounds"), params.get("reason")
-                thread = self.threads[state["review_thread_id"]]
-                if (
-                    params.get("user_requested") is not True
-                    or not isinstance(reason, str)
-                    or not reason.strip()
-                ):
-                    raise ValueError(
-                        "Budget extension requires an explicit user continuation request and reason"
-                    )
-                if (
-                    not isinstance(maximum, int)
-                    or not thread["max_rounds"] < maximum <= 20
-                ):
-                    raise ValueError(
-                        "New round limit must increase the budget, at most 20"
-                    )
-                thread["max_rounds"] = maximum
-                self.event(
-                    state,
-                    "budget_extended",
-                    payload={"max_rounds": maximum, "reason": reason},
-                    request_id=ident,
-                )
+                # Legacy clients may still call extend; no extension is needed.
                 result = self.public(state)
             elif action == "run":
                 result = self.start(params)
@@ -553,23 +534,11 @@ class Reviews:
             thread = self.threads[previous["review_thread_id"]]
             if thread["rounds"][-1] != previous["review_id"]:
                 raise ValueError("Recheck must follow the latest round in this thread")
-            if thread.get("consumed_rounds", 0) >= thread.get("max_rounds", 2):
-                raise ValueError(
-                    "Review round budget exhausted; report unresolved issues"
-                )
-            if time.time() >= thread["deadline"]:
-                raise ValueError("Review thread deadline exceeded")
         else:
             ident = "thread-" + uuid.uuid4().hex
             thread = {
                 "review_thread_id": ident,
                 "rounds": [],
-                "consumed_rounds": 0,
-                "max_rounds": 2,
-                "deadline": min(
-                    time.time() + self.config["thread_timeout"],
-                    self.config.get("job_deadline", float("inf")),
-                ),
             }
             self.threads[ident] = thread
         if params.get("kind", "research") not in ("code", "research"):
@@ -596,7 +565,7 @@ class Reviews:
         state = {
             "review_id": ident,
             "review_thread_id": thread["review_thread_id"],
-            "round": thread.get("consumed_rounds", 0) + 1,
+            "round": len(thread["rounds"]) + 1,
             "status": "prepared",
             "request": params,
             "provider": provider,
@@ -649,18 +618,6 @@ class Reviews:
                 if state["status"] == "running" and "pending_message" in state:
                     message = state.pop("pending_message")
                     self.spawn(state, message)
-                thread = self.threads[state["review_thread_id"]]
-                if state["status"] not in TERMINAL and (
-                    time.time() >= thread["deadline"]
-                    or (
-                        state["status"] == "waiting_reply"
-                        and time.time() >= state["reply_deadline"]
-                    )
-                ):
-                    state.update(status="timeout", error="Review deadline exceeded")
-                    if state["review_id"] in self.jobs:
-                        self.jobs[state["review_id"]][1].set()
-                    self.event(state, "timeout")
 
     def peer(self, provider, cancelled):
         if provider not in self.peers:
@@ -707,14 +664,9 @@ class Reviews:
                 self.event(state, "running", recipient="reviewer")
                 prompt = self.prompt(state, message)
                 native = state["session_id"]
-                budget = min(
-                    self.config["active_timeout"] - state["active_seconds"],
-                    self.threads[state["review_thread_id"]]["deadline"] - time.time(),
-                )
+                timeout = self.config["active_timeout"] or None
                 turn = directory / "turns" / ("turn-" + uuid.uuid4().hex)
-                if not state.get("budget_consumed"):
-                    self.threads[state["review_thread_id"]]["consumed_rounds"] += 1
-                    state["budget_consumed"] = True
+                if "started_at" not in state:
                     state["started_at"] = time.time()
                     self.persist(state)
             attempted = True
@@ -724,7 +676,7 @@ class Reviews:
                 MESSAGE_SCHEMA,
                 turn,
                 native,
-                budget,
+                timeout,
                 cancelled,
             )
             with self.lock:
@@ -736,10 +688,7 @@ class Reviews:
                 state["provider_metadata"] = peer.last_metadata
                 self.validate_result(state, result)
                 if result["kind"] == "question":
-                    state.update(
-                        status="waiting_reply",
-                        reply_deadline=time.time() + self.config["reply_timeout"],
-                    )
+                    state.update(status="waiting_reply")
                     event = self.event(state, "question", "reviewer", "worker", result)
                     state["question"] = event
                     self.persist(state)
@@ -894,7 +843,7 @@ class Reviews:
             "target_id": state["target_id"],
             "round": state["round"],
             "kind": state["request"].get("kind", "research"),
-            "remaining_exchanges": self.config["max_exchanges"] - state["exchanges"],
+            "remaining_exchanges": None,
             "dialogue": not state["request"].get("one_shot", False),
             "message": message,
             "manifest": "manifest.json",
@@ -914,7 +863,7 @@ class Reviews:
                 "Use relative paths such as manifest.json, diff.patch and source/code.py. "
                 "When shell_sandbox_available=false do not try shell commands; continue using these MCP tools. "
             )
-        if not context["dialogue"] or not context["remaining_exchanges"]:
+        if not context["dialogue"]:
             policy += " No more questions are permitted: produce a result with explicit limitations. "
         return policy + "\n" + json.dumps(context, ensure_ascii=False)
 
@@ -959,10 +908,9 @@ class Reviews:
             if (
                 not result["questions"]
                 or result["verdict"] != "none"
-                or state["exchanges"] >= self.config["max_exchanges"]
                 or state["request"].get("one_shot")
             ):
-                raise ValueError("Unexpected question or exhausted conversation budget")
+                raise ValueError("Unexpected question in one-shot review or invalid question verdict")
             qids = [q["question_id"] for q in result["questions"]]
             if (
                 len(qids) != len(set(qids))

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from review import Reviews
 from review_snapshot import atomic_json, git
+from run_settings import REVIEW_ENV
 
 
 def update_codex_mcp_environment(path, environment):
@@ -121,6 +122,12 @@ def main():
         UV_CACHE_DIR=str(args.cache_dir / "uv"),
         PATH=str(runtime_source) + ":" + os.environ["PATH"],
     )
+    # --cleanenv drops host variables; recover only the saved review settings.
+    launch_file = run / "launch.json"
+    if launch_file.is_file():
+        values = json.loads(launch_file.read_text()).get("review_env", {})
+        env.update({key: value for key, value in values.items()
+                    if key in REVIEW_ENV and isinstance(value, str)})
     env.setdefault("MCP_TIMEOUT", "120000")
     try:
         baseline = {
@@ -166,14 +173,12 @@ def main():
     for key in ("model", "effort"):
         # Settings refer to the reviewer provider, not the worker provider.
         peer = "CODEX" if args.agent == "claude" else "CLAUDE"
-        value = os.environ.get("AGENT_REVIEW_" + peer + "_" + key.upper())
+        value = env.get("AGENT_REVIEW_" + peer + "_" + key.upper())
         if value:
             config[key] = value
-    for key in ("max_exchanges", "active_timeout", "reply_timeout", "thread_timeout"):
-        if os.environ.get("AGENT_REVIEW_" + key.upper()):
-            config[key] = int(os.environ["AGENT_REVIEW_" + key.upper()])
-    if os.environ.get("SLURM_JOB_END_TIME"):
-        config["job_deadline"] = float(os.environ["SLURM_JOB_END_TIME"])
+    if env.get("AGENT_REVIEW_ACTIVE_TIMEOUT"):
+        config["active_timeout"] = int(env["AGENT_REVIEW_ACTIVE_TIMEOUT"])
+    # Slurm owns the allocation lifetime, including extensions after startup.
     mcp_environment = {
         "AGENT_REVIEW_SOCKET": str(endpoint),
         "UV_CACHE_DIR": str(args.cache_dir / "uv"),

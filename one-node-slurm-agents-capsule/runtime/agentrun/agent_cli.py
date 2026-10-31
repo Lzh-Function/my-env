@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -224,6 +225,10 @@ class Reviewer:
         self.env = environment(self.home, self.runtime, provider)
         self.binary, self.installer, self.cache = binary, installer, cache
         self.model, self.effort = model, effort
+        self.worker_home = Path(worker_home)
+        relative = ".codex/auth.json" if provider == "codex" else ".claude/.credentials.json"
+        credential = self.home / relative
+        self.credential_baseline = credential.read_bytes() if credential.is_file() else None
         self.process = None
         self.temporary = None
         self.checked = False
@@ -249,15 +254,37 @@ class Reviewer:
             )
             temporary = self.home / ".codex/tmp"
             if not temporary.exists():
-                import tempfile
-
                 self.temporary = Path(
                     tempfile.mkdtemp(prefix="review-codex-", dir="/tmp")
                 )
                 temporary.symlink_to(self.temporary)
 
+    def sync_credentials(self):
+        # Publish only refreshed credentials through the existing run-HOME sync.
+        # Authentication never belongs in persisted transcript directories.
+        relative = ".codex/auth.json" if self.provider == "codex" else ".claude/.credentials.json"
+        credential = self.home / relative
+        if credential.is_file() and not credential.is_symlink():
+            try:
+                raw = credential.read_bytes()
+                value = json.loads(raw)
+                if raw != self.credential_baseline and isinstance(value, dict) and value:
+                    target = self.worker_home / relative
+                    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+                        temporary = Path(stream.name)
+                        try:
+                            stream.write(raw)
+                            stream.flush()
+                            os.replace(temporary, target)
+                            self.credential_baseline = raw
+                        finally:
+                            temporary.unlink(missing_ok=True)
+            except (OSError, ValueError) as error:
+                print("Reviewer credential synchronization failed: " + str(error), file=sys.stderr)
+
     def close(self):
         stop(self.process)
+        self.sync_credentials()
         if self.temporary:
             shutil.rmtree(self.temporary, ignore_errors=True)
             (self.home / ".codex/tmp").unlink(missing_ok=True)
@@ -304,10 +331,14 @@ class Reviewer:
                 )
                 # No provider starts until its identity has been persisted.
                 gate.touch()
+                last_sync = started
                 while self.process.poll() is None:
+                    if time.monotonic() - last_sync >= 1:
+                        self.sync_credentials()
+                        last_sync = time.monotonic()
                     if cancelled.is_set():
                         raise InterruptedError("Review cancelled")
-                    if time.monotonic() - started > timeout:
+                    if timeout is not None and time.monotonic() - started > timeout:
                         raise TimeoutError("Reviewer execution deadline exceeded")
                     if (
                         sum(p.stat().st_size for p in turn.glob("*") if p.is_file())
@@ -328,6 +359,7 @@ class Reviewer:
                     )
             finally:
                 stop(self.process)
+                self.sync_credentials()
                 self.last_exit_code = self.process.returncode
                 atomic_json(
                     turn / "status.json",

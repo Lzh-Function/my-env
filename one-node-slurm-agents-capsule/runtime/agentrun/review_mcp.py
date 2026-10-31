@@ -79,7 +79,7 @@ def review_recheck(
 
 @mcp.tool()
 def review_status(review_id: str) -> dict:
-    """Read state, verdict, applicability and remaining budgets without starting a model turn."""
+    """Read state, verdict and applicability without starting a model turn; remaining counts are null (unlimited)."""
     return client.call("status", {"review_id": review_id})
 
 
@@ -99,9 +99,10 @@ def review_cancel(review_id: str, request_id: str) -> dict:
 
 @mcp.tool()
 def review_extend(
-    review_id: str, request_id: str, max_rounds: int, reason: str, user_requested: bool
+    review_id: str, request_id: str, max_rounds: int | None = None,
+    reason: str = "", user_requested: bool = False
 ) -> dict:
-    """Increase the round budget only after the user explicitly asks to continue; record their reason."""
+    """Legacy compatibility operation: review rounds are unlimited and require no extension."""
     return client.call(
         "extend",
         {

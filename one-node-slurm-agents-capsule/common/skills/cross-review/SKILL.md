@@ -19,7 +19,7 @@ When `waiting_reply` arrives, call `review_reply` with its message ID and answer
 {"answers":[{"question_id":"q1","answer":"Explanation or unavailable","evidence":[]}],"questions":[],"include":[]}
 ```
 
-`evidence` references paths in the snapshot manifest; `include` explicitly names additional original files to capture. Explanations are claims; provide inspectable evidence. Keep the reviewed files unchanged during this dialogue. If the snapshot must change, cancel this round before modifying it and use the remaining round to review the changed snapshot.
+`evidence` references paths in the snapshot manifest; `include` explicitly names additional original files to capture. Explanations are claims; provide inspectable evidence. Keep the reviewed files unchanged during this dialogue. If the snapshot must change, cancel this round before modifying it and start a new round to review the changed snapshot.
 
 For environment/access problems, use `evidence: []` and explain the limitation in text rather than inventing a file reference. Codex reviewers receive the snapshot-only `capsule-input` MCP reader; a failed inner shell sandbox does not prevent those file reads and never permits unrestricted commands. Report `input_reader_unavailable` separately from a review verdict.
 
@@ -33,7 +33,7 @@ Actions are `fixed`, `disputed`, or `deferred`. Recheck captures current files a
 
 Recheck returns a new `review_id` and cursor in the same `review_thread_id`. Replace the current ID and cursor with those returned values before polling, replying, or reporting the next round. The previous ID continues to return the previous round's final result.
 
-The default budget is two review rounds (initial plus recheck), with at most three question/answer exchanges within each round. Stop after approval or budget exhaustion; report remaining disagreements, unavailable evidence or execution failures. Additional rounds require an explicit continuation request; do not create another review thread to bypass the budget.
+Review rounds and question/answer exchanges are unlimited. Continue the dialogue, fixes and rechecks until the agents agree on the current version or the user stops the review. Recheck every later edit before reporting final approval; an approval for an older snapshot does not cover newer changes. The runtime has no thread deadline or reply-wait deadline, and does not cache the Slurm job end time because the allocation can be extended. Parent-session exit and explicit cancellation still stop the service. Report unavailable evidence or execution failures, and do not present them as approval.
 
 Report the reviewer provider, review ID, target ID, verdict, applicability, unresolved findings and limitations. A successful process is not approval; stale, incomplete or failed reviews cannot establish completion. Supplied test logs do not count as independently reproduced tests.
 

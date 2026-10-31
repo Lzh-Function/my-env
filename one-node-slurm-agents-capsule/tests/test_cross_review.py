@@ -17,6 +17,7 @@ import history_export
 import review
 import review_snapshot
 import sessions
+from agent_cli import Reviewer
 
 FAKE = r"""#!/usr/bin/env python3
 import json, os, sys, uuid
@@ -71,7 +72,7 @@ if mode=='finding':
         'confidence':'high','basis':'observed','evidence_method':'static_source',
         'file':'source/code.py','line':1,'message':'A defect','suggestion':'Fix it',
         'evidence':['source/code.py']}])
-if context['round']==2:
+if context['round']>=2:
     prior=json.loads(Path('prior/review.json').read_text())
     assert prior['response'] is not None
     result.update(verdict='approve',findings=[],prior_dispositions=[
@@ -223,41 +224,37 @@ class CrossReviewTests(unittest.TestCase):
                     )
                 )
 
-    def test_recheck_uses_response_new_snapshot_and_enforces_two_rounds(self):
+    def test_rechecks_continue_past_twenty_rounds_with_latest_files(self):
         ident = self.start("finding")
-        first = self.wait(ident)
-        self.assertEqual(first["verdict"], "request_changes", first)
-        (self.repo / "code.py").write_text("value = 2\n")
-        self.assertEqual(
-            self.reviews.call("status", {"review_id": ident})["applicability"], "stale"
-        )
-        response = {
-            "responses": [
-                {
-                    "finding_id": "f1",
-                    "action": "fixed",
-                    "reason": "Changed value",
-                    "evidence": ["source/code.py"],
-                }
-            ]
-        }
-        params = {"review_id": ident, "request_id": "recheck", "response": response}
-        second = self.reviews.call("recheck", params)
-        self.reviews.tick()
-        final = self.wait(second["review_id"])
-        self.assertEqual(final["status"], "success", final)
-        self.assertEqual(final["verdict"], "approve")
-        self.assertNotEqual(final["session_id"], first["session_id"])
-        self.assertEqual(final["remaining_rounds"], 0)
-        with self.assertRaisesRegex(ValueError, "budget"):
-            self.reviews.call(
-                "recheck",
-                {
-                    "review_id": final["review_id"],
-                    "request_id": "third",
-                    "response": {"responses": []},
-                },
-            )
+        previous = self.wait(ident)
+        self.assertEqual(previous["verdict"], "request_changes", previous)
+        thread = self.reviews.threads[previous["review_thread_id"]]
+        # Old persisted caps and an expired cached Slurm end time must not block rechecks.
+        thread.update(max_rounds=2, consumed_rounds=100, deadline=time.time() - 3600)
+        self.reviews.config.update(max_exchanges=1, reply_timeout=1, thread_timeout=1,
+                                   job_deadline=time.time() - 3600)
+        for number in range(2, 23):
+            (self.repo / "code.py").write_text(f"value = {number}\n")
+            self.assertEqual(self.reviews.call("status", {"review_id": previous["review_id"]})["applicability"], "stale")
+            for job, _ in self.reviews.jobs.values():
+                job.join(timeout=2)
+            findings = self.reviews.rounds[previous["review_id"]].get("result", {}).get("findings", [])
+            response = {"responses": [
+                {"finding_id": finding["finding_id"], "action": "fixed", "reason": "Checked latest changes",
+                 "evidence": ["source/code.py"]} for finding in findings]}
+            current = self.reviews.call("recheck", {"review_id": previous["review_id"],
+                "request_id": f"recheck-{number}", "response": response})
+            self.reviews.tick()
+            state = self.wait(current["review_id"])
+            self.assertEqual(state["status"], "success", state)
+            self.assertEqual(state["verdict"], "approve", state)
+            self.assertEqual(state["round"], number)
+            self.assertIsNone(state["remaining_rounds"])
+            self.assertEqual(state["applicability"], "valid")
+            self.assertNotEqual(state["session_id"], previous["session_id"])
+            snapshot = self.run / "reviews" / state["review_id"] / "input/source/code.py"
+            self.assertEqual(snapshot.read_text(), f"value = {number}\n")
+            previous = state
 
     def test_idempotency_and_stale_question_rejection(self):
         ident = self.start()
@@ -335,7 +332,7 @@ class CrossReviewTests(unittest.TestCase):
         state = self.wait(ident)
         self.assertEqual(state["status"], "failed", state)
         self.assertEqual(state["error_kind"], "sandbox_probe_failed")
-        self.assertEqual(state["remaining_rounds"], 2)
+        self.assertIsNone(state["remaining_rounds"])
         self.assertFalse((home / "calls.jsonl").exists())
 
     def test_invalid_brief_is_rejected_before_launch_or_budget_consumption(self):
@@ -363,23 +360,37 @@ class CrossReviewTests(unittest.TestCase):
         self.assertEqual(state["status"], "failed", state)
         self.assertIn("Approval contradicts", state["error"])
 
-    def test_cancel_and_reply_deadline_preserve_partial_conversation(self):
+    def test_reply_wait_has_no_deadline_and_cancel_keeps_partial_conversation(self):
         ident = self.start()
         self.wait(ident)
         with self.reviews.lock:
             self.reviews.rounds[ident]["reply_deadline"] = time.time() - 1
-        self.reviews.tick()
-        self.assertEqual(self.wait(ident)["status"], "timeout")
-        self.assertIn(
-            "question", (self.run / "reviews" / ident / "conversation.md").read_text()
-        )
-        second = self.reviews.call(
-            "run", {"request_id": "second", "brief": str(self.brief)}
-        )
-        self.reviews.call(
-            "cancel", {"review_id": second["review_id"], "request_id": "cancel"}
-        )
-        self.assertEqual(self.wait(second["review_id"])["status"], "cancelled")
+            self.reviews.threads[self.reviews.rounds[ident]["review_thread_id"]]["deadline"] = time.time() - 1
+        with patch.object(review.time, "time", return_value=time.time() + 86400):
+            self.reviews.tick()
+        self.assertEqual(self.wait(ident)["status"], "waiting_reply")
+        self.reviews.call("cancel", {"review_id": ident, "request_id": "cancel"})
+        self.assertEqual(self.wait(ident)["status"], "cancelled")
+        self.assertIn("question", (self.run / "reviews" / ident / "conversation.md").read_text())
+
+    def test_peer_auth_only_copies_changed_bytes_and_preserves_refresh(self):
+        home = self.root / 'peer-home'
+        peer = Reviewer('codex', home, self.root / 'peer-state', self.root / 'peer-runtime',
+                        self.home, RUNTIME / 'install-agent.sh', self.root / 'peer-cache', binary=str(self.binary))
+        self.addCleanup(peer.close)
+        worker = self.home / '.codex/auth.json'
+        worker.write_text('{"other-run":"newer"}')
+        peer.sync_credentials()
+        self.assertEqual(worker.read_text(), '{"other-run":"newer"}')
+        refreshed = b'{\n  "refresh": "new-value"\n}\n'
+        (home / '.codex/auth.json').write_bytes(refreshed)
+        peer.sync_credentials()
+        self.assertEqual(worker.read_bytes(), refreshed)
+        self.assertEqual(worker.stat().st_mode & 0o777, 0o600)
+        worker.write_text('{"other-run":"newest"}')
+        peer.close()
+        self.assertEqual(worker.read_text(), '{"other-run":"newest"}')
+
 
     def test_auth_failure_does_not_consume_round_and_never_uses_worker_provider(self):
         (self.home / ".codex/auth.json").unlink()
@@ -387,7 +398,7 @@ class CrossReviewTests(unittest.TestCase):
             ident = self.start()
             state = self.wait(ident)
         self.assertEqual(state["status"], "failed")
-        self.assertEqual(state["remaining_rounds"], 2)
+        self.assertIsNone(state["remaining_rounds"])
         self.assertEqual(state["provider"], "codex")
         self.assertFalse(
             (self.root / "persisted/codex/.codex/sessions/rollout.jsonl").exists()
@@ -398,7 +409,7 @@ class CrossReviewTests(unittest.TestCase):
         ident = self.start("timeout")
         state = self.wait(ident)
         self.assertEqual(state["status"], "timeout", state)
-        self.assertEqual(state["remaining_rounds"], 1)
+        self.assertIsNone(state["remaining_rounds"])
         self.assertIsNone(self.reviews.peers["codex"].process)
         self.assertTrue(
             list((self.run / "reviews" / ident / "turns").glob("*/stderr.log"))
@@ -419,34 +430,20 @@ class CrossReviewTests(unittest.TestCase):
             self.reviews.call("status", {"review_id": ident})["applicability"], "stale"
         )
 
-    def test_explicit_budget_extension_is_recorded(self):
+    def test_cli_timeout_is_unlimited_by_default_and_invalid_values_are_rejected(self):
+        self.assertEqual(self.reviews.config["active_timeout"], 0)
+        for timeout in (-1, True, "600", float("inf"), float("nan")):
+            with self.subTest(timeout=timeout), self.assertRaisesRegex(ValueError, "CLI timeout"):
+                review.Reviews(dict(self.config, active_timeout=timeout))
+
+    def test_legacy_extend_is_unnecessary_and_cannot_add_a_cap(self):
         ident = self.start("finding")
         self.wait(ident)
-        with self.assertRaisesRegex(ValueError, "explicit user"):
-            self.reviews.call(
-                "extend",
-                {
-                    "request_id": "unauthorized",
-                    "review_id": ident,
-                    "max_rounds": 3,
-                    "reason": "automatic",
-                },
-            )
-        state = self.reviews.call(
-            "extend",
-            {
-                "request_id": "authorized",
-                "review_id": ident,
-                "max_rounds": 3,
-                "reason": "User asked to continue",
-                "user_requested": True,
-            },
-        )
-        self.assertEqual(state["remaining_rounds"], 2)
-        self.assertIn(
-            "budget_extended",
-            (self.run / "reviews" / ident / "events.jsonl").read_text(),
-        )
+        for number, maximum in enumerate((1, 3, 1000000)):
+            state = self.reviews.call("extend", {"request_id": f"legacy-{number}",
+                "review_id": ident, "max_rounds": maximum, "reason": "legacy client"})
+            self.assertIsNone(state["remaining_rounds"])
+            self.assertNotIn("max_rounds", self.reviews.threads[state["review_thread_id"]])
 
     def test_host_archive_contains_both_roles_and_rebuttal_after_home_cleanup(self):
         ident = self.start()
@@ -503,35 +500,38 @@ class CrossReviewTests(unittest.TestCase):
         shutil.copytree(self.root / "persisted", store / "reviewers")
         self.assertIsNone(sessions.discover(self.run, data))
 
-    def test_three_exchange_limit_and_restart_preserve_budget(self):
+    def test_many_exchanges_and_legacy_restart_have_no_expired_limits(self):
+        self.reviews.config["active_timeout"] = 60
         ident = self.start("questions-forever")
-        for number in range(3):
+        for number in range(7):
             state = self.wait(ident)
             self.assertEqual(state["status"], "waiting_reply", state)
-            self.reviews.call(
-                "reply",
-                {
-                    "review_id": ident,
-                    "request_id": f"answer-{number}",
-                    "reply_to": state["question"]["message_id"],
-                    "message": {
-                        "answers": [
-                            {"question_id": "q1", "answer": "Evidence", "evidence": []}
-                        ],
-                        "questions": [],
-                        "include": [],
-                    },
-                },
-            )
+            self.reviews.rounds[ident]["active_seconds"] = 1000000
+            self.reviews.call("reply", {"review_id": ident, "request_id": f"answer-{number}",
+                "reply_to": state["question"]["message_id"], "message": {
+                    "answers": [{"question_id": "q1", "answer": "Evidence", "evidence": []}],
+                    "questions": [], "include": []}})
         state = self.wait(ident)
-        self.assertEqual(state["status"], "failed", state)
-        self.assertEqual(state["remaining_exchanges"], 0)
+        self.assertEqual(state["status"], "waiting_reply", state)
+        self.assertIsNone(state["remaining_exchanges"])
+        thread = self.reviews.threads[state["review_thread_id"]]
+        thread.update(max_rounds=2, consumed_rounds=100, deadline=time.time() - 86400)
+        self.reviews.rounds[ident]["reply_deadline"] = time.time() - 86400
         self.reviews.close()
+        self.config.update(thread_timeout=1, reply_timeout=1, max_exchanges=1,
+                           job_deadline=time.time() - 86400)
         self.reviews = review.Reviews(self.config)
         self.addCleanup(self.reviews.close)
-        recovered = self.reviews.call("status", {"review_id": ident})
-        self.assertEqual(recovered["remaining_rounds"], 1)
-        self.assertEqual(recovered["remaining_exchanges"], 0)
+        self.assertNotIn("deadline", self.reviews.threads[state["review_thread_id"]])
+        self.brief.write_text("approve")
+        next_round = self.reviews.call("recheck", {"review_id": ident,
+            "request_id": "after-restart", "response": {"responses": []}})
+        self.reviews.tick()
+        restarted = self.wait(next_round["review_id"])
+        self.assertEqual(restarted["status"], "success", restarted)
+        self.assertEqual(restarted["verdict"], "approve", restarted)
+        self.assertIsNone(restarted["remaining_rounds"])
+        self.assertIsNone(restarted["remaining_exchanges"])
 
     def test_compatibility_output_keeps_existing_findings_contract(self):
         self.reviews.config["mode"] = "review"

@@ -57,9 +57,9 @@ def main():
             p.add_argument("--after", type=int, default=0)
             p.add_argument("--wait-seconds", type=float, default=0)
         elif action == "extend":
-            p.add_argument("--max-rounds", required=True, type=int)
-            p.add_argument("--reason", required=True)
-            p.add_argument("--user-requested", action="store_true", required=True)
+            p.add_argument("--max-rounds", type=int, help="Legacy option; rounds are unlimited")
+            p.add_argument("--reason", default="")
+            p.add_argument("--user-requested", action="store_true")
     params = vars(parser.parse_args())
     action = params.pop("action")
     if action == "mcp":

@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
+import tempfile
 import socket
 import sqlite3
 import subprocess
@@ -36,16 +38,41 @@ def find_run(parent, run_id):
     return sessions.resolve(parent, run_id)
 
 
+def slurm_query(args, *, env=None, timeout=20):
+    # Descendants may inherit stdout. Files keep timeout cleanup independent
+    # of their pipe lifetime, just as in the foreground Slurm monitor.
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(args, stdout=output, stderr=errors,
+                                   env=env, start_new_session=True, stdin=subprocess.DEVNULL)
+        try:
+            process.wait(timeout=timeout)
+            output.seek(0); errors.seek(0)
+            raw, diagnostic = output.read(1024 * 1024 + 1), errors.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024 or len(diagnostic) > 1024 * 1024:
+                raise ValueError("Slurm query output exceeds size limit")
+            return subprocess.CompletedProcess(args, process.returncode,
+                raw.decode("utf-8", errors="replace"), diagnostic.decode("utf-8", errors="replace"))
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+
+
 def query_active(job_ref):
     job, _, cluster = job_ref.partition(";")
     if not re.fullmatch(r"[0-9]+", job) or (cluster and not re.fullmatch(r"[A-Za-z0-9_.-]+", cluster)):
         raise ValueError("Invalid Slurm job ID")
-    args = ["squeue", "--noheader", "--jobs", job, "--format=%i"]
+    args = ["squeue", "--noheader", "--jobs", job, "--states=all", "--format=%i|%T"]
     if cluster:
         args += ["--clusters", cluster]
     env = {key: value for key, value in os.environ.items() if not key.startswith("SQUEUE_")}
     env["LC_ALL"] = "C"
-    result = subprocess.run(args, capture_output=True, text=True, timeout=20, env=env)
+    result = slurm_query(args, env=env)
     if result.returncode:
         # Some Slurm versions reject an ID once it leaves squeue. Accounting
         # may still confirm completion; a failed query alone is never enough.
@@ -53,7 +80,7 @@ def query_active(job_ref):
             accounting = ["sacct", "--noheader", "--parsable2", "--jobs", job, "--format=JobIDRaw,State"]
             if cluster:
                 accounting += ["--clusters", cluster]
-            result2 = subprocess.run(accounting, capture_output=True, text=True, timeout=20)
+            result2 = slurm_query(accounting, env=env)
             terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY",
                         "NODE_FAIL", "BOOT_FAIL", "DEADLINE", "PREEMPTED", "REVOKED"}
             if result2.returncode == 0:
@@ -62,7 +89,14 @@ def query_active(job_ref):
                     if len(fields) >= 2 and fields[0] == job and fields[1].strip() and fields[1].split()[0].rstrip("+") in terminal:
                         return False
         raise RuntimeError("squeue failed; job completion has not been established")
-    return bool(result.stdout.strip())
+    lines = result.stdout.strip().splitlines()
+    completed = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY",
+                 "NODE_FAIL", "BOOT_FAIL", "DEADLINE", "PREEMPTED", "REVOKED"}
+    # --states=all keeps suspended jobs visible. Retained terminal records do
+    # not require waiting for MinJobAge or a working accounting database.
+    return any(not (line.split("|", 1)[0] == job and "|" in line
+                    and line.split("|", 1)[1].strip().rstrip("+") in completed)
+               for line in lines)
 
 
 def watch(parent, run_id, poll_interval=5):
@@ -111,8 +145,10 @@ def submit(run):
         raise ValueError("squeue is required for host-side batch history collection")
     data = sessions.manifest(run)
     control = control_path(run.parent, data["run_id"])
-    result = subprocess.run(["sbatch", "--parsable", "--nodes=1", "--ntasks=1", str(run / "submit.sbatch")],
-                            capture_output=True, text=True)
+    try:
+        result = slurm_query(["sbatch", "--parsable", "--nodes=1", "--ntasks=1", str(run / "submit.sbatch")], timeout=30)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("sbatch timed out; check the queue before retrying submission") from error
     if result.stderr:
         print(result.stderr, file=sys.stderr, end="")
     if result.returncode:

@@ -723,8 +723,7 @@ apptainer_command() {
     printf ' --bind %q:/opt/agentrun:ro' "$ROOT_DIR/runtime/agentrun"
     local review_key
     for review_key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT \
-        AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_MAX_EXCHANGES \
-        AGENT_REVIEW_ACTIVE_TIMEOUT AGENT_REVIEW_REPLY_TIMEOUT AGENT_REVIEW_THREAD_TIMEOUT; do
+        AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ACTIVE_TIMEOUT; do
         if [ -n "${!review_key:-}" ]; then
             printf ' --env %q' "$review_key=${!review_key}"
         fi
@@ -745,7 +744,11 @@ apptainer_command() {
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
         printf ' --bind %q' "$bind"
     done
-    printf ' %q bash -l -c %q\n' "$image" "$cmd"
+    if [ "$launch" = interactive ]; then
+        printf ' %q python3 /opt/agentrun/terminal-session.py bash -l -c %q\n' "$image" "$cmd"
+    else
+        printf ' %q bash -l -c %q\n' "$image" "$cmd"
+    fi
 }
 
 write_plan() {
@@ -834,6 +837,21 @@ _cleanup_home() {
         printf '一時homeの削除を完了できませんでした: %s/home（exit=%s、詳細: live/home_cleanup.log）\n' "\$run_dir" "\$?" >&2
     timeout --kill-after=2s 10s python3 "\$session_helper" finalize "\$run_dir" --exit-code "\$final_rc" 200>&- || \
         printf 'セッションの終了記録を完了できませんでした。保存済みの会話はresume時に再検出します。\n' >&2
+    if [ -f "\$run_dir/artifacts/run_title.txt" ]; then
+        _title="\$(tr ' ' '-' < "\$run_dir/artifacts/run_title.txt" | tr -cd 'a-zA-Z0-9_-')"
+        if [ -n "\$_title" ]; then
+            _renamed="\$runs_dir/\${run_base}_\${_title}"
+            if timeout --kill-after=2s 5s bash -c '
+                mv -- "\$1" "\$2" || exit
+                if [ "\$(readlink "\$3")" = "\$4" ]; then ln -sfn -- "\${2##*/}" "\$3"; fi
+            ' bash "\$run_dir" "\$_renamed" "\$runs_dir/latest" "\$run_base" 200>&-; then
+                run_dir="\$_renamed"
+            else
+                printf '実行ディレクトリの改名を完了できませんでした。\n' >&2
+                if [ ! -d "\$run_dir" ] && [ -d "\$_renamed" ]; then run_dir="\$_renamed"; fi
+            fi
+        fi
+    fi
     exec 200>&-
     date -Iseconds > "\$run_dir/live/session_finished.txt.tmp"
     mv "\$run_dir/live/session_finished.txt.tmp" "\$run_dir/live/session_finished.txt"
@@ -861,15 +879,6 @@ if [ "\$rc" -eq 0 ]; then
     printf '{"status":"success","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\${SLURM_JOB_ID:-}" > "\$run_dir/live/status.json"
 else
     printf '{"status":"failed","exit_code":"%s","agent":"$agent","mode":"$mode","job_id":"%s"}\n' "\$rc" "\${SLURM_JOB_ID:-}" > "\$run_dir/live/status.json"
-fi
-if [ -f "\$run_dir/artifacts/run_title.txt" ]; then
-    _title="\$(tr ' ' '-' < "\$run_dir/artifacts/run_title.txt" | tr -cd 'a-zA-Z0-9_-')"
-    if [ -n "\$_title" ]; then
-        _cleanup_home
-        trap - EXIT
-        mv "\$run_dir" "\$runs_dir/\${run_base}_\${_title}"
-        ln -sfn "\${run_base}_\${_title}" "\$runs_dir/latest"
-    fi
 fi
 exit "\$rc"
 EOF
@@ -1391,6 +1400,7 @@ command_validate() {
         runtime/agentrun/path-input.py \
         runtime/agentrun/install-agent.sh \
         runtime/agentrun/interactive-runner.py \
+        runtime/agentrun/terminal-session.py \
         runtime/agentrun/process-cleanup.sh \
         runtime/agentrun/node-scratch.sh \
         runtime/gh-broker/gh_broker.py \
@@ -1878,6 +1888,8 @@ run_interactive_session() {
         if [ "$agent_started" -eq 1 ] && [ -f "$run_dir/session.json" ]; then
             timeout --kill-after=2s 10s python3 "$ROOT_DIR/runtime/agentrun/sessions.py" finalize "$run_dir" --exit-code "$rc" 200>&- || \
                 printf 'セッションの終了記録を完了できませんでした。保存済みの会話はresume時に再検出します。\n' >&2
+            # Archiving must not hold the repository lock after the agent exits.
+            exec 200>&-
             history_rc=0
             timeout --kill-after=2s 120s python3 "$ROOT_DIR/runtime/agentrun/history.py" export "$run_dir" 200>&- >> "$run_dir/live/history_export.log" 2>&1 || history_rc=$?
             if [ "$history_rc" -ne 0 ]; then
@@ -2082,7 +2094,7 @@ command_list_runs() {
 remember_review_environment() {
     local key
     for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
-        AGENT_REVIEW_MAX_EXCHANGES AGENT_REVIEW_ACTIVE_TIMEOUT AGENT_REVIEW_REPLY_TIMEOUT AGENT_REVIEW_THREAD_TIMEOUT; do
+        AGENT_REVIEW_ACTIVE_TIMEOUT; do
         [ -z "${!key+x}" ] || RESUME_ENV_INPUT["$key"]="${!key}"
     done
 }
@@ -2108,7 +2120,7 @@ load_resume_settings() {
     fi
     local key value
     for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
-        AGENT_REVIEW_MAX_EXCHANGES AGENT_REVIEW_ACTIVE_TIMEOUT AGENT_REVIEW_REPLY_TIMEOUT AGENT_REVIEW_THREAD_TIMEOUT; do
+        AGENT_REVIEW_ACTIVE_TIMEOUT; do
         if [ -n "${RESUME_ENV_INPUT[$key]+x}" ]; then export "$key=${RESUME_ENV_INPUT[$key]}"
         else unset "$key"; fi
     done
@@ -2131,7 +2143,7 @@ resume_summary() {
     if [ "${RESUME_FRESH_CONFIG:-0}" -eq 1 ]; then printf '  エージェント設定: 現在のリポジトリから生成\n' >&2
     else settings_tool describe "$source" >&2 || return $?; fi
     for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
-        AGENT_REVIEW_MAX_EXCHANGES AGENT_REVIEW_ACTIVE_TIMEOUT AGENT_REVIEW_REPLY_TIMEOUT AGENT_REVIEW_THREAD_TIMEOUT; do
+        AGENT_REVIEW_ACTIVE_TIMEOUT; do
         [ -z "${!key:-}" ] || printf '  %s=%q\n' "$key" "${!key}" >&2
     done
     printf '  新しい Slurm ジョブで対話再開します。/node-scratch は割当先ノードで再確認します。\n' >&2
