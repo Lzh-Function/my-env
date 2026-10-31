@@ -1059,6 +1059,69 @@ os.execv('/usr/bin/python3',['/usr/bin/python3',*sys.argv[1:]])
         self.cli(repo, "sync-codex")
         self.cli(repo, "validate")
 
+    def test_overlap_starts_separate_capsule_inside_running_job(self):
+        first_repo = self.repo("overlap-first")
+        self.options(first_repo, hold=True)
+        first = self.assist(first_repo)
+        first_run = first.until(b"AGENT_READY:codex:")
+        job = (first_run / "live/slurm_job_id.txt").read_text().strip()
+        helper = [
+            "python3",
+            str(CAPSULE / "runtime/agentrun/overlap.py"),
+        ]
+        listed = command([*helper, "jobs", str(first_repo / ".agent-runs")])
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        entry = next(
+            line for line in listed.stdout.splitlines() if line.split()[0] == job
+        )
+        self.assertIn("CPU=1", entry)
+        self.assertIn("agentrun=" + first_run.name, entry)
+        info = command([*helper, "info", job])
+        self.assertEqual(info.stdout.splitlines()[:4], [job, "1", "0", "agent"])
+        same = self.session(
+            first_repo,
+            ["assist", "--overlap", job, "--repo", str(first_repo), "--no-gh-broker"],
+        )
+        self.assertEqual(same.finish(seconds=30), 1, same.output)
+        self.assertIn(b"git worktree", same.output)
+        second_repo = self.repo("overlap-second")
+        data = Path(tempfile.mkdtemp(prefix="overlap data ", dir="/shared/work"))
+        (data / "source.txt").write_text("host data")
+        self.options(second_repo, mounts=[{"path": "/overlap-data", "writable": False}])
+        second = self.session(
+            second_repo,
+            [
+                "assist",
+                "--agent",
+                "claude",
+                "--overlap",
+                job,
+                "--repo",
+                str(second_repo),
+                "--bind",
+                f"{data}:/overlap-data:ro",
+                "--no-gh-broker",
+            ],
+        )
+        second_run = second.until(b"AGENT_READY:claude:")
+        self.assertEqual(second.finish(), 0, second.output)
+        self.ended(second)
+        self.assertNotEqual(second_run, first_run)
+        self.assertEqual((second_run / "live/slurm_job_id.txt").read_text().strip(), job)
+        self.assertIn("/overlap-data", (second_run / "apptainer_exec.sh").read_text())
+        self.assertNotIn("/overlap-data", (first_run / "apptainer_exec.sh").read_text())
+        self.assertTrue((second_repo / "workspace-write.txt").is_file())
+        self.archived(second_run)
+        # Leaving the extra step keeps the original session and its job.
+        self.assertIsNone(first.process.poll(), first.output)
+        self.assertTrue((first_run / "home").exists())
+        self.assertIn(
+            "RUNNING", command(["squeue", "-h", "-j", job, "-o", "%T"]).stdout
+        )
+        self.assertEqual(command(["scancel", job]).returncode, 0)
+        self.assertNotEqual(first.finish(), 0)
+        self.ended(first)
+
     def test_validate_doctor_goal_dry_run_smoke_and_run_commands(self):
         repo = self.repo("commands")
         for args in [("validate",), ("doctor", "--all"), ("agents",), ("init-goal",)]:

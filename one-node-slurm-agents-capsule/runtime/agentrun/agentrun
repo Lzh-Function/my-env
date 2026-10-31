@@ -18,8 +18,9 @@ Usage:
   agentrun dry-run MODE [options] PROMPT
   agentrun assist [options] [PROMPT]        # interactive PTY session via srun --pty; PROMPT ignored if given
   agentrun assist --submit [options] PROMPT # batch via sbatch (non-interactive)
+  agentrun assist --overlap JOBID [options]  # interactive, inside a running Slurm job of yours
   agentrun experiment|campaign|review|multi-review [options] PROMPT  # prepare, or batch with --submit
-  agentrun resume [RUN_ID|RUN_DIR] [run options] [--no-binds] [--fresh-config]
+  agentrun resume [RUN_ID|RUN_DIR] [run options] [--no-binds] [--fresh-config] [--overlap JOBID]
   agentrun resume --list
   agentrun resume RUN_ID --preview
   agentrun history [RUN_ID|RUN_DIR] [--watch]  # export now, or recover a host-side batch collector
@@ -47,6 +48,10 @@ Options:
   --cpus N            CPU core count, default comes from the selected profile
   --time HH:MM:SS     walltime, default comes from the selected profile
   --partition NAME    Slurm partition, default: AGENTRUN_SLURM_PARTITION or cluster default
+  --overlap JOBID     start this capsule as an extra step of your running Slurm job
+                      (srun --jobid --overlap); shares its CPUs, memory, GPUs and time
+                      limit, while repo, binds and other settings stay separate.
+                      Interactive assist and resume only
   --bind SRC:DST[:OPTIONS]  extra bind mount (repeatable); OPTIONS: ro|rw
   --no-binds          clear inherited extra bind mounts
   --fresh-config      resume using repository CLI settings instead of saved preferences
@@ -406,6 +411,9 @@ write_prompt() {
     local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5" launch="${6:-batch}" \
         mem="${7:-}" cpus="${8:-}" gpus="${9:-}" time_limit="${10:-}" partition="${11:-}"
     local resources="mem=$mem, cpus=$cpus, time=$time_limit, gpus=$gpus, partition=${partition:-<cluster default>}"
+    if [ -n "${OVERLAP_JOB:-}" ]; then
+        resources="shared with ${OVERLAP_SUMMARY:-Slurm job $OVERLAP_JOB}; other sessions in this allocation use the same CPUs, memory and GPUs"
+    fi
 
     if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
         cat > "$path" <<EOF
@@ -637,6 +645,58 @@ history_tool() {
     python3 "$ROOT_DIR/runtime/agentrun/history.py" "$@"
 }
 
+overlap_tool() {
+    python3 "$ROOT_DIR/runtime/agentrun/overlap.py" "$@"
+}
+
+# A step started with `srun --jobid --overlap` lives inside the running job's
+# allocation: CPU and GPU counts come from that job, and its end stops the step.
+# Repository, mounts, secrets and agent settings remain those of this run.
+apply_overlap_job() {
+    local fields
+    fields="$(overlap_tool info "$OVERLAP_JOB")" || return $?
+    local -a info
+    mapfile -t info <<< "$fields"
+    CPUS="${info[1]}" GPUS="${info[2]}" PARTITION="${info[3]}"
+    OVERLAP_SUMMARY="Slurm job $OVERLAP_JOB${info[7]:+ (${info[7]})} on ${info[4]}: cpus=${info[1]}, gpus=${info[2]}, partition=${info[3]}, time limit=${info[5]}, elapsed=${info[6]}"
+    printf 'overlap: %s の割り当て内で起動します。CPU・メモリ・GPU・制限時間はそのジョブと共有します。\n' "$OVERLAP_SUMMARY" >&2
+}
+
+require_overlap_launch() {
+    [ -n "$OVERLAP_JOB" ] || return 0
+    if [ "$1" != assist ] || [ "$SUBMIT" -eq 1 ]; then
+        printf -- '--overlap は対話式の assist と resume だけで使えます（sbatch は新しいジョブを作るため）\n' >&2
+        return 2
+    fi
+}
+
+repo_lock_busy() {
+    local lock="$1/.agentrun.lock"
+    [ -e "$lock" ] && ! flock -n "$lock" true 2>/dev/null
+}
+
+# The original session usually holds this repository's lock; refuse before
+# creating a run directory rather than after the step has been requested.
+require_overlap_repo() {
+    [ -n "$OVERLAP_JOB" ] || return 0
+    if repo_lock_busy "$1"; then
+        printf 'another agentrun is already active on this repo (%s). overlap では別のリポジトリか git worktree を --repo に指定してください。\n' "$1" >&2
+        return 1
+    fi
+}
+
+# Fills SRUN_ARGS for an interactive launch in a new or an existing allocation.
+interactive_srun_args() {
+    local mode="$1"
+    if [ -n "$OVERLAP_JOB" ]; then
+        SRUN_ARGS=("--jobid=$OVERLAP_JOB" "--overlap" "--nodes=1" "--ntasks=1" "--cpus-per-task=$CPUS" "--pty")
+        return 0
+    fi
+    SRUN_ARGS=("--nodes=1" "--ntasks=1" "--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty")
+    [ -z "$PARTITION" ] || SRUN_ARGS+=("--partition=$PARTITION")
+    SRUN_ARGS+=("--gres=gpu:$GPUS")
+}
+
 command_history() {
     local target="" watch=0 run_dir
     while [ "$#" -gt 0 ]; do
@@ -801,6 +861,7 @@ goal: $goal
 allow_fuse: $(fuse_enabled && printf 'true' || printf 'false')
 secret_keys: $(secrets_enabled && secret_keys_csv "$SECRETS_FILE")
 gh_broker: $(gh_broker_enabled && printf 'true' || printf 'false')
+overlap_job: ${OVERLAP_JOB:-}
 EOF
     apptainer_command "$mode" "$agent" "$run_dir" "$gpus" "$repo" "$launch" > "$run_dir/apptainer_exec.sh" || return $?
     sed -i '1i#!/usr/bin/env bash\nset -euo pipefail' "$run_dir/apptainer_exec.sh"
@@ -887,7 +948,7 @@ EOF
         "--time=$time_limit" "--partition=$partition" "--gpus=$gpus" "--goal=$goal"
         "--reviewers=${REVIEWERS:-}" "--target-diff=${TARGET_DIFF:-}"
         "--target-report=${TARGET_REPORT:-}" "--agents=${REQUESTED_AGENTS:-}"
-        "--secrets-file=${SECRETS_FILE:-}" "--gh-env-file=${GH_ENV_FILE:-}")
+        "--secrets-file=${SECRETS_FILE:-}" "--gh-env-file=${GH_ENV_FILE:-}" "--overlap-job=${OVERLAP_JOB:-}")
     local saved_bind
     for saved_bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do saved_options+=("--bind=$saved_bind"); done
     if fuse_enabled; then saved_options+=(--allow-fuse); fi
@@ -1388,6 +1449,7 @@ command_validate() {
         runtime/agentrun/review_inputs.py \
         runtime/agentrun/history.py \
         runtime/agentrun/history_export.py \
+        runtime/agentrun/overlap.py \
         runtime/agentrun/agent-review \
         runtime/agentrun/agent_cli.py \
         runtime/agentrun/review.py \
@@ -1642,6 +1704,8 @@ parse_run_args() {
     TARGET_REPORT=""
     REQUESTED_AGENTS=""
     PROMPT=""
+    OVERLAP_JOB=""
+    OVERLAP_SUMMARY=""
     EXTRA_BINDS=()
     SECRETS_FILE="${AGENTRUN_SECRETS_FILE:-}"
     GH_BROKER_DISABLED=0
@@ -1662,6 +1726,9 @@ parse_run_args() {
             --cpus) CPUS="$2"; shift 2 ;;
             --time) TIME_LIMIT="$2"; shift 2 ;;
             --partition) PARTITION="$2"; shift 2 ;;
+            --overlap)
+                [[ "$2" =~ ^[0-9]+$ ]] || { printf -- '--overlap requires a numeric Slurm job ID: %s\n' "$2" >&2; exit 2; }
+                OVERLAP_JOB="$2"; shift 2 ;;
             --bind) EXTRA_BINDS+=("$2"); shift 2 ;;
             --no-binds) EXTRA_BINDS=(); shift ;;
             --allow-fuse) ALLOW_FUSE=1; shift ;;
@@ -1774,6 +1841,7 @@ resolve_gh_broker() {
 command_dry_run() {
     local mode="$1"; shift
     parse_run_args "$@"
+    require_overlap_launch "$mode" || return $?
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
         PROMPT=""
@@ -1783,6 +1851,7 @@ command_dry_run() {
     local id run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
     REPO="$(cd "$REPO" && pwd)"
+    [ -z "$OVERLAP_JOB" ] || apply_overlap_job || return $?
     id="$(run_id "$mode" "$AGENT")"
     run_dir="$PWD/.agent-runs/$id"
     printf 'run_id: %s\nselected_profile: %s\nselected_agent: %s\nrepo: %s\nhost_run_directory: %s\n' "$id" "$mode" "$AGENT" "$REPO" "$run_dir"
@@ -1794,6 +1863,12 @@ command_dry_run() {
             printf ' --nodes=1 --ntasks=1 --time=%s --mem=%s --cpus-per-task=%s' "$TIME_LIMIT" "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}"
             printf ' --gres=gpu:%s' "$GPUS"
             printf '\n'
+        elif [ -n "$OVERLAP_JOB" ]; then
+            printf 'launch_method: srun --overlap (interactive, inside running Slurm job %s)\n' "$OVERLAP_JOB"
+            interactive_srun_args "$mode"
+            printf 'slurm_command: srun'
+            printf ' %s' "${SRUN_ARGS[@]}"
+            printf '\noverlap_job: %s\n' "$OVERLAP_SUMMARY"
         else
             printf 'launch_method: srun --pty (interactive)\n'
             printf 'slurm_command: srun'
@@ -1849,9 +1924,9 @@ command_dry_run() {
     fi
     printf 'gh_broker: %s\n' "$(gh_broker_enabled && printf 'enabled (token: %s)' "$GH_ENV_FILE" || printf 'disabled')"
     printf '\n--- capsule.yaml ---\n'
-    printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\nallow_fuse: %s\nsecret_keys: %s\ngh_broker: %s\n' \
+    printf 'run_id: %s\nmode: %s\nagent: %s\nrepo: %s\ngoal: %s\nallow_fuse: %s\nsecret_keys: %s\ngh_broker: %s\noverlap_job: %s\n' \
         "$id" "$mode" "$AGENT" "$REPO" "$GOAL" "$(fuse_enabled && printf 'true' || printf 'false')" \
-        "$(secrets_enabled && secret_keys_csv "$SECRETS_FILE")" "$(gh_broker_enabled && printf 'true' || printf 'false')"
+        "$(secrets_enabled && secret_keys_csv "$SECRETS_FILE")" "$(gh_broker_enabled && printf 'true' || printf 'false')" "$OVERLAP_JOB"
     printf '\n--- prompt.txt ---\n'
     local _ptmp
     _ptmp="$(mktemp)"
@@ -1962,6 +2037,7 @@ command_prepare() {
     ensure_default_secrets_file
     ensure_default_gh_env_file
     parse_run_args "$@"
+    require_overlap_launch "$mode" || return $?
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
         PROMPT=""
@@ -1971,6 +2047,10 @@ command_prepare() {
     fi
     local run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
+    if [ -n "$OVERLAP_JOB" ]; then
+        require_overlap_repo "$(cd "$REPO" && pwd)" || return $?
+        apply_overlap_job || return $?
+    fi
     run_dir="$(allocate_run_dir "$mode" "$AGENT")" || return $?
     local launch="batch"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
@@ -1981,10 +2061,9 @@ command_prepare() {
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         local repo_abs
         repo_abs="$(cd "$REPO" && pwd)"
-        local srun_args=("--nodes=1" "--ntasks=1" "--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty")
-        [ -n "$PARTITION" ] && srun_args+=("--partition=$PARTITION")
-        srun_args+=("--gres=gpu:$GPUS")
-        run_interactive_session "$run_dir" "$repo_abs" "${srun_args[@]}"
+        local -a SRUN_ARGS
+        interactive_srun_args "$mode"
+        run_interactive_session "$run_dir" "$repo_abs" "${SRUN_ARGS[@]}"
         return $?
     fi
     printf 'submit script: %s\n' "$run_dir/submit.sbatch"
@@ -2133,8 +2212,12 @@ load_resume_settings() {
 resume_summary() {
     local source="$1" bind key
     printf '\n再開する設定\n  元の実行: %q\n  agent / mode: %s / %s\n  repo: %q\n' "$source" "$AGENT" "$mode" "$REPO" >&2
-    printf '  mem / cpus / time: %q / %q / %q\n  partition: %q / GPU: %q\n' \
-        "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}" "$TIME_LIMIT" "${PARTITION:-<cluster default>}" "$GPUS" >&2
+    if [ -n "$OVERLAP_JOB" ]; then
+        printf '  overlap: %s\n' "$OVERLAP_SUMMARY" >&2
+    else
+        printf '  mem / cpus / time: %q / %q / %q\n  partition: %q / GPU: %q\n' \
+            "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}" "$TIME_LIMIT" "${PARTITION:-<cluster default>}" "$GPUS" >&2
+    fi
     printf '  FUSE: %s\n  secrets file: %q\n  GitHub broker: %q\n' "$ALLOW_FUSE" "${SECRETS_FILE:-<none>}" "${GH_ENV_FILE:-<disabled>}" >&2
     printf '  extra bind mounts:\n' >&2
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do printf '    %q\n' "$bind" >&2; done
@@ -2146,7 +2229,11 @@ resume_summary() {
         AGENT_REVIEW_ACTIVE_TIMEOUT; do
         [ -z "${!key:-}" ] || printf '  %s=%q\n' "$key" "${!key}" >&2
     done
-    printf '  新しい Slurm ジョブで対話再開します。/node-scratch は割当先ノードで再確認します。\n' >&2
+    if [ -n "$OVERLAP_JOB" ]; then
+        printf '  実行中の Slurm job %s に overlap して対話再開します。元のジョブが終わるとこの再開も終了します。\n' "$OVERLAP_JOB" >&2
+    else
+        printf '  新しい Slurm ジョブで対話再開します。/node-scratch は割当先ノードで再確認します。\n' >&2
+    fi
 }
 
 command_resume() {
@@ -2162,7 +2249,7 @@ command_resume() {
             --list) list=1; shift ;;
             --preview) preview=1; shift ;;
             --fresh-config) RESUME_FRESH_CONFIG=1; shift ;;
-            --time|--mem|--cpus|--bind|--partition|--gpus|--repo|--goal|--secrets-file|--reviewers|--agents|--target-diff|--target-report)
+            --time|--mem|--cpus|--bind|--partition|--gpus|--repo|--goal|--secrets-file|--reviewers|--agents|--target-diff|--target-report|--overlap)
                 [ "$#" -ge 2 ] || { printf '%s requires a value\n' "$1" >&2; return 2; }
                 overrides+=("$1" "$2"); shift 2 ;;
             --no-binds|--allow-fuse|--no-allow-fuse|--no-secrets|--no-gh-broker|--gh-broker)
@@ -2190,6 +2277,10 @@ command_resume() {
     AGENT="${values[0]}"
     [ -d "$REPO" ] || { printf '再開先の repo がありません: %s\n' "$REPO" >&2; return 2; }
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
+    if [ -n "$OVERLAP_JOB" ]; then
+        require_overlap_repo "$(cd "$REPO" && pwd)" || return $?
+        apply_overlap_job || return $?
+    fi
     resume_summary "$source" || return $?
     if [ "${_AGENTRUN_RESUME_CONFIRMED:-0}" -ne 1 ]; then
         # Confirmation precedes run allocation, auth staging, and all scheduler calls.
@@ -2204,9 +2295,9 @@ command_resume() {
     local RESUME_SOURCE="$source"
     write_plan "$mode" "$AGENT" "$REPO" "$GOAL" "$GPUS" "$TIME_LIMIT" "" "$run_dir" "$PARTITION" interactive || return $?
     printf 'resume: %s → %s\n' "$(basename "$source")" "$(basename "$run_dir")"
-    local srun_args=("--nodes=1" "--ntasks=1" "--time=$TIME_LIMIT" "--mem=${MEM:-$(profile_mem "$mode")}" "--cpus-per-task=${CPUS:-$(profile_cpus "$mode")}" "--pty" "--gres=gpu:$GPUS")
-    [ -z "$PARTITION" ] || srun_args+=("--partition=$PARTITION")
-    run_interactive_session "$run_dir" "$REPO" "${srun_args[@]}"
+    local -a SRUN_ARGS
+    interactive_srun_args "$mode"
+    run_interactive_session "$run_dir" "$REPO" "${SRUN_ARGS[@]}"
 }
 
 command_open_run() {

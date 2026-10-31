@@ -3,8 +3,10 @@
 WIZARD_BACK='← 戻る'
 WIZARD_CANCEL='キャンセル'
 WIZARD_LAST_FILE="$HOME/.agentrun/wizard-last"
+WIZARD_NO_OVERLAP='新しい Slurm ジョブを起動する（overlap しない）'
 declare -A WIZARD_LAST=() WIZARD_EXPLICIT=()
-WIZARD_LAST_BINDS=()
+WIZARD_LAST_BINDS=() WIZARD_OVERLAP_JOBS=()
+WIZARD_OVERLAP_LOADED=0 WIZARD_OVERLAP_INFO=''
 
 wizard_abort() {
     trap - INT TERM
@@ -132,7 +134,12 @@ wizard_valid_repo() {
     local path
     path="$(wizard_expand_tilde "${1:-.}")"
     [ -d "$path" ] || { printf 'repository path is not a directory: %s\n' "$1"; return 1; }
-    readlink -f "$path"
+    path="$(readlink -f "$path")"
+    if [ -n "${OVERLAP_JOB:-}" ] && repo_lock_busy "$path"; then
+        printf 'agentrun is already active on %s; with overlap, choose another repository or a git worktree\n' "$path"
+        return 1
+    fi
+    printf '%s\n' "$path"
 }
 
 wizard_valid_gpus() {
@@ -206,6 +213,54 @@ wizard_resource_default() {
     else "profile_$key" "$profile"; fi
 }
 
+# Only interactive launches can join an existing allocation. Query Slurm once,
+# and only when such a launch is selected.
+wizard_overlap_available() {
+    [ "$mode" = resume ] || { [ "$mode" = assist ] && [ "$SUBMIT" -eq 0 ]; } || return 1
+    if [ "$WIZARD_OVERLAP_LOADED" -eq 0 ]; then
+        WIZARD_OVERLAP_LOADED=1
+        local jobs
+        jobs="$(overlap_tool jobs "$PWD/.agent-runs")" || jobs=''
+        [ -z "$jobs" ] || mapfile -t WIZARD_OVERLAP_JOBS <<< "$jobs"
+    fi
+    [ "${#WIZARD_OVERLAP_JOBS[@]}" -gt 0 ] || [ -n "$OVERLAP_JOB" ]
+}
+
+wizard_overlap() {
+    local -a options=() info
+    local line choice fields prompt
+    # Keep a previously chosen job first; otherwise default to a new job.
+    if [ -n "$OVERLAP_JOB" ]; then
+        for line in "${WIZARD_OVERLAP_JOBS[@]+"${WIZARD_OVERLAP_JOBS[@]}"}"; do
+            [ "${line%% *}" != "$OVERLAP_JOB" ] || options+=("$line")
+        done
+        [ "${#options[@]}" -gt 0 ] || options+=("$OVERLAP_JOB  (specified job)")
+    fi
+    options+=("$WIZARD_NO_OVERLAP")
+    for line in "${WIZARD_OVERLAP_JOBS[@]+"${WIZARD_OVERLAP_JOBS[@]}"}"; do
+        [ "${line%% *}" = "$OVERLAP_JOB" ] || options+=("$line")
+    done
+    if [ "${#options[@]}" -eq 2 ]; then
+        prompt='実行中の Slurm ジョブがあります。このジョブに overlap して、同じ割り当て内でエージェントコンテナをもう一つ起動しますか？'
+    else
+        prompt="実行中の Slurm ジョブが $((${#options[@]} - 1)) 件あります。どれかに overlap して、同じ割り当て内でエージェントコンテナをもう一つ起動しますか？"
+    fi
+    while :; do
+        choice="$(wizard_select "$prompt" "${options[@]}")" || return $?
+        if [ "$choice" = "$WIZARD_NO_OVERLAP" ]; then
+            OVERLAP_JOB='' WIZARD_OVERLAP_INFO=''
+            return 0
+        fi
+        if fields="$(overlap_tool info "${choice%% *}" 2>&1)"; then
+            mapfile -t info <<< "$fields"
+            OVERLAP_JOB="${info[0]}"
+            WIZARD_OVERLAP_INFO="job ${info[0]}${info[7]:+ (${info[7]})} / node: ${info[4]} / partition: ${info[3]} / CPU: ${info[1]} / GPU: ${info[2]} / time limit: ${info[5]} (elapsed ${info[6]})"
+            return 0
+        fi
+        wizard_banner "$fields" || return $?
+    done
+}
+
 wizard_bind_mounts() {
     local stage=0 rc src='' dst=''
     while :; do
@@ -266,9 +321,11 @@ wizard_step() {
             fields="$(session_tool fields "$source")" || return $?
             mapfile -t values <<< "$fields"
             if [ "$source" != "$loaded_source" ]; then
-                local fallback_mem="$MEM" fallback_cpus="$CPUS" fallback_time="$TIME_LIMIT"
+                local fallback_mem="$MEM" fallback_cpus="$CPUS" fallback_time="$TIME_LIMIT" overlap_job="$OVERLAP_JOB"
                 local -a fallback_binds=("${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}")
                 load_resume_settings "$source" "${wizard_resume_overrides[@]}" || return $?
+                # The overlap choice belongs to this launch, not to the saved run.
+                OVERLAP_JOB="$overlap_job"
                 # Pre-feature synthetic/old sessions may have no launch script at all.
                 if [ ! -f "$source/launch.json" ] && [ ! -f "$source/submit.sbatch" ]; then
                     [ -n "$MEM" ] || MEM="$fallback_mem"
@@ -311,6 +368,7 @@ wizard_step() {
             if wizard_confirm "Pass secrets from $secrets_candidate into the capsule?" "$(secrets_enabled && printf 1 || printf 0)"; then SECRETS_FILE="$secrets_candidate"
             else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; SECRETS_FILE=''; fi ;;
         binds) wizard_bind_mounts ;;
+        overlap) wizard_overlap ;;
         broker)
             if wizard_confirm 'Start the GitHub CLI broker? (token stays outside the agent capsule)' "$((1 - GH_BROKER_DISABLED))"; then GH_BROKER_DISABLED=0
             else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; GH_BROKER_DISABLED=1; fi
@@ -331,7 +389,9 @@ wizard_finish() {
     local -a args
     if [ "$mode" = resume ]; then args=("$source" --no-binds)
     else args=(--agent "$AGENT" --repo "$REPO"); fi
-    args+=(--mem "$MEM" --cpus "$CPUS" --time "$TIME_LIMIT" --partition "$PARTITION" --gpus "$GPUS")
+    # An overlapping step uses the running job's resources.
+    if [ -n "$OVERLAP_JOB" ]; then args+=(--overlap "$OVERLAP_JOB")
+    else args+=(--mem "$MEM" --cpus "$CPUS" --time "$TIME_LIMIT" --partition "$PARTITION" --gpus "$GPUS"); fi
     local arg
     for arg in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do args+=(--bind "$arg"); done
     if [ "$GH_BROKER_DISABLED" -eq 1 ]; then args+=(--no-gh-broker); else args+=(--gh-broker); fi
@@ -353,14 +413,20 @@ wizard_finish() {
     done
     [ -z "$prefix" ] || command_line="env $prefix$command_line"
     for arg in "${args[@]}"; do command_line+=" $(wizard_shell_quote "$arg")"; done
-    summary="mode: $mode / agent: $AGENT / profile: $profile"$'\n'"repo: $REPO"$'\n'"mem/cpus/time: $MEM / $CPUS / $TIME_LIMIT"$'\n'
+    summary="mode: $mode / agent: $AGENT / profile: $profile"$'\n'"repo: $REPO"$'\n'
+    if [ -n "$OVERLAP_JOB" ]; then
+        summary+="overlap: ${WIZARD_OVERLAP_INFO:-job $OVERLAP_JOB}"$'\n'
+        summary+="  CPU・メモリ・GPU・制限時間は元のジョブと共有し、元のジョブが終わるとこのコンテナも終了します"$'\n'
+    else summary+="mem/cpus/time: $MEM / $CPUS / $TIME_LIMIT"$'\n'; fi
     [ "$mode" != resume ] || summary+="再開対象: $selected"$'\n'"$(settings_tool describe "$source")"$'\n'
-    summary+="partition: ${PARTITION:-<cluster default>} / GPU: $GPUS / FUSE: $ALLOW_FUSE"$'\n'
+    if [ -n "$OVERLAP_JOB" ]; then summary+="FUSE: $ALLOW_FUSE"$'\n'
+    else summary+="partition: ${PARTITION:-<cluster default>} / GPU: $GPUS / FUSE: $ALLOW_FUSE"$'\n'; fi
     summary+="secrets file: ${SECRETS_FILE:-<none>} / gh broker: ${GH_ENV_FILE:-<disabled>}"$'\n'
     summary+="extra bind mounts:"$'\n'
     if [ "${#EXTRA_BINDS[@]}" -eq 0 ]; then summary+="  <none>"$'\n'
     else for arg in "${EXTRA_BINDS[@]}"; do summary+="  $arg"$'\n'; done; fi
-    if [ "$mode" = resume ]; then summary+="launch: srun --pty（対話再開）"$'\n'
+    if [ -n "$OVERLAP_JOB" ]; then summary+="launch: srun --jobid=$OVERLAP_JOB --overlap --pty（実行中のジョブに重ねて$([ "$mode" = resume ] && printf '対話再開' || printf '対話起動')）"$'\n'
+    elif [ "$mode" = resume ]; then summary+="launch: srun --pty（対話再開）"$'\n'
     else summary+="launch: $(if [ "$SUBMIT" -eq 1 ]; then printf sbatch; elif [ "$mode" = assist ]; then printf 'srun --pty'; else printf 'prepare only'; fi)"$'\n'; fi
     summary+=$'\n'"Same run without the wizard:"$'\n'"$command_line"$'\n'
     if wizard_confirm "${summary}Launch this run?" 1; then
@@ -442,8 +508,18 @@ command_wizard() {
     [ "$same_dir" -eq 0 ] || selected="${WIZARD_LAST[resume_id]:-}"
     local -a steps
     while [ "$finished" -eq 0 ]; do
-        if [ "$mode" = resume ]; then steps=(mode session preview mem cpus time binds)
-        else profile="$mode"; steps=(mode agent launch repo partition gpus mem cpus time binds fuse); fi
+        if [ "$mode" = resume ]; then steps=(mode session preview)
+        else profile="$mode"; steps=(mode agent launch); fi
+        # Offer to join a running job only when one exists; resources then come from it.
+        if wizard_overlap_available; then steps+=(overlap)
+        elif [ -n "$mode" ]; then OVERLAP_JOB='' WIZARD_OVERLAP_INFO=''; fi
+        [ "$mode" = resume ] || steps+=(repo)
+        if [ -z "$OVERLAP_JOB" ]; then
+            [ "$mode" = resume ] || steps+=(partition gpus)
+            steps+=(mem cpus time)
+        fi
+        steps+=(binds)
+        [ "$mode" = resume ] || steps+=(fuse)
         if [ -f "$DEFAULT_GH_ENV_FILE" ] && file_sets_key "$DEFAULT_GH_ENV_FILE" GH_TOKEN; then steps+=(broker); fi
         if [ "$mode" != resume ]; then
             [ -z "$secrets_candidate" ] || steps+=(secrets)

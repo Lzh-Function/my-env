@@ -84,6 +84,12 @@ agentrun dry-run assist --agent codex --partition <partition> --show-mounts
 
 `--partition` は環境変数 `AGENTRUN_SLURM_PARTITION` でも指定できます。
 
+実行中の自分のジョブに重ねて、別設定のエージェントコンテナをもう一つ起動することもできます。新しいジョブは作りません。資源は共有し、リポジトリや追加マウントなどは別に指定します。wizard でも、実行中のジョブがあれば overlap するかを尋ねます。詳細は[マニュアル](docs/USER_MANUAL.md#実行中のジョブに重ねて起動する)を参照してください。
+
+```bash
+agentrun assist --overlap <JOBID> --agent codex --repo ../worktree --bind ~/data:/data:ro
+```
+
 ## Conversation archives
 
 Conversations are exported automatically on the host running `agentrun`: before

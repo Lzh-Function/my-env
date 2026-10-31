@@ -20,6 +20,7 @@
 - [実行方法](#実行方法)
   - [対話しながら作業する](#対話しながら作業する)
   - [バッチで実行する](#バッチで実行する)
+  - [実行中のジョブに重ねて起動する](#実行中のジョブに重ねて起動する)
   - [目標ファイルの作成と指定](#目標ファイルの作成と指定)
   - [実験・継続作業・レビューの実行](#実験継続作業レビューの実行)
   - [ウィザードで起動する](#ウィザードで起動する)
@@ -361,6 +362,37 @@ agentrun assist --submit --agent codex --partition <partition> --repo . "実行�
 
 エージェントが必須成果物を作らない場合、Slurm ジョブが成功しても `verify-run` は失敗することがあります。特に `artifacts/report.md` は、空でないことを検証します。
 
+<a id="overlap"></a>
+
+### 実行中のジョブに重ねて起動する
+
+`--overlap JOBID` を指定すると、新しい Slurm ジョブを作らず、実行中の自分のジョブの割り当て内で、エージェントコンテナをもう一つ起動します。内部では `srun --jobid=JOBID --overlap --pty` で、そのジョブに step を追加します。資源の割り当てを待たずに、同じ計算ノードで別の作業を並行できます。
+
+```bash
+squeue --me --states=RUNNING            # 重ねる先のジョブ ID を確認
+agentrun assist --overlap 123456 --agent codex --repo ../my-project-review --bind ~/data:/data:ro
+agentrun resume RUN_ID --overlap 123456  # 保存した会話を、実行中のジョブ内で再開
+agentrun dry-run assist --overlap 123456 # 起動せずに srun と Apptainer のコマンドを確認
+```
+
+ウィザードでも、対話式の `assist` または `resume` を選ぶと実行中のジョブを確認します。ジョブがある場合だけ「このジョブに overlap して…起動しますか？」と尋ねます。詳しくは[ウィザードで起動する](#ウィザードで起動する)を参照してください。
+
+元のジョブと共有するもの、別々にするものは次のとおりです。
+
+| 区分 | 内容 |
+| --- | --- |
+| 共有する | Slurm の割り当て（計算ノード、CPU、メモリ、GPU、制限時間）、ノード固有 SSD の `/node-scratch` |
+| 別にする | 実行ディレクトリ（`/runs`・`/scratch`・`/cache`・一時ホーム）、エージェント種別、作業リポジトリ（`/workspace`）、追加マウント、FUSE、秘密情報ファイル、GitHub 仲介サービス、目標ファイル、会話履歴 |
+
+- 新しい実行ディレクトリと Apptainer コンテナを作ります。追加マウントなどの設定は元のジョブから引き継がず、このコマンドの指定どおりにします。
+- CPU 数と GPU 数は元のジョブの値を使い、GPU があれば `--nv` を付けます。`--mem`・`--cpus`・`--time`・`--partition`・`--gpus` は使いません。CPU・メモリ・GPU は元の作業と取り合いになります。
+- 元のジョブが終了・時間切れ・取り消しになると、重ねたコンテナも同時に終了します。重ねたコンテナを終了しても、元のジョブやセッションには影響しません。
+- 同じリポジトリでは起動できません。元のセッションが保持する `.agentrun.lock` を確認し、実行ディレクトリを作る前に中止します。同じリポジトリを扱う場合は `git worktree add` で作業ツリーを分け、それを `--repo` に指定してください。
+- 重ねる先は、自分の `RUNNING` 状態のジョブに限ります。`agentrun` で起動したジョブ以外にも重ねられます。待機中・終了済み・他人のジョブは、起動前にエラーにします。
+- 対話式の `assist` と `resume` だけで使えます。`--submit` や `experiment` などのバッチ投入では、新しいジョブになるため指定できません。
+- `capsule.yaml` と `launch.json` に重ねた先のジョブ ID を記録します。後でこの実行を `resume` すると、`--overlap` を指定しない限り新しいジョブで再開します。その際は、元のジョブの CPU・GPU 数とパーティションを使います。
+- Slurm の版や設定によっては、元のジョブが資源をすべて使っている間、step の開始が待たされることがあります。
+
 <a id="goal-ファイル"></a>
 
 ### 目標ファイルの作成と指定
@@ -478,10 +510,11 @@ agentrun wizard
 
 1. 実行モードとエージェントを選びます。
 2. 起動方法を選びます。`assist` は対話実行かバッチ投入、それ以外はその場でバッチ投入するか準備だけにするかを選びます。
-3. 作業リポジトリ、パーティション、GPU 数、メモリ、CPU 数、制限時間を指定します。
-4. 追加マウント、FUSE の使用、秘密情報の環境変数、GitHub 操作の仲介を設定します。秘密情報と仲介の質問は、設定がある場合だけ表示します。
-5. 目標ファイルと作業指示を指定します。レビュー用のモードでは、対象ファイルや担当の一覧も指定します。
-6. 設定の要約と CLI コマンドを確認します。最後の起動確認で Yes を選ぶと実行し、No を選ぶと起動せずに終了します。
+3. 対話実行（`assist` の対話式と `resume`）では、`squeue` で自分の実行中のジョブを確認します。ジョブがあれば、そのジョブに [overlap して起動するか](#実行中のジョブに重ねて起動する) を尋ねます。各項目には、ジョブ ID、ジョブ名、パーティション、ノード、CPU 数、経過時間と制限時間を表示します。このプロジェクトの `agentrun` 実行に対応するジョブには、run ID も表示します。既定は「新しい Slurm ジョブを起動する（overlap しない）」です。ジョブがない場合や `squeue` を使えない場合は質問しません。
+4. 作業リポジトリ、パーティション、GPU 数、メモリ、CPU 数、制限時間を指定します。overlap を選んだ場合、資源の項目は尋ねずに元のジョブのものを使います。リポジトリには、元のセッションと別のものを指定します。
+5. 追加マウント、FUSE の使用、秘密情報の環境変数、GitHub 操作の仲介を設定します。秘密情報と仲介の質問は、設定がある場合だけ表示します。overlap の場合も、元のジョブとは別に指定します。
+6. 目標ファイルと作業指示を指定します。レビュー用のモードでは、対象ファイルや担当の一覧も指定します。
+7. 設定の要約と CLI コマンドを確認します。overlap の場合は、重ねる先のジョブと `--overlap JOBID` を含むコマンドを表示します。最後の起動確認で Yes を選ぶと実行し、No を選ぶと起動せずに終了します。
 
 #### 入力と取り消し
 
@@ -528,6 +561,7 @@ agentrun wizard
 - リポジトリ、目標ファイル、作業指示、レビュー対象は、前回と同じディレクトリで起動した場合だけ使います。別のプロジェクトで前回の作業対象を引き継ぐことを防ぐためです。
 - `agentrun wizard --agent claude` のように指定した値は、保存済みの値より優先します。質問は省略せず、既定値として表示します。
 - 中止した場合や、起動確認で No を選んだ場合は保存しません。
+- overlap の選択は保存しません。ジョブは毎回 `squeue` で確認します。
 
 #### 表示される CLI コマンド
 
@@ -1559,10 +1593,11 @@ agentrun validate
 - `resume` による会話の再開と、Markdown・SQLite への履歴保存
 - `cross-review` による対話式の相互監査
 - 計算ノードの SSD 領域の条件付きマウント
+- `--overlap` による、実行中のジョブ内での別設定のエージェントコンテナの追加起動（対話式）
 
 未実装またはひな型段階:
 
-- 複数の作業エージェントを同時に起動・管理する処理
+- 複数の作業エージェントの一括起動と自動管理（`--overlap` による手動の追加起動は実装済み）
 - すべての作業に対する相互監査の強制実行（依頼に基づく対話監査は実装済み）
 - `multi-review` で複数 `sbatch` を発行して結果を自動集約する処理
 - `campaign` の提案を実際の学習ジョブに接続する自動制御
@@ -1748,9 +1783,10 @@ agentrun auth reset --agent NAME
 agentrun dry-run MODE [options] PROMPT
 agentrun assist [options] [PROMPT]
 agentrun assist --submit [options] PROMPT
+agentrun assist --overlap JOBID [options]
 agentrun experiment|campaign|review|multi-review [options] PROMPT
 agentrun wizard [options] [PROMPT]
-agentrun resume [RUN_ID|RUN_DIR] [起動オプション] [--no-binds] [--fresh-config]
+agentrun resume [RUN_ID|RUN_DIR] [起動オプション] [--no-binds] [--fresh-config] [--overlap JOBID]
 agentrun resume --list
 agentrun resume RUN_ID --preview
 agentrun smoke-test [--agent NAME] [--submit]
@@ -1779,6 +1815,7 @@ agentrun history [RUN_ID|RUN_DIR] [--watch]
 | `--cpus N` | CPU コア数。省略時は実行プロファイルの既定値 |
 | `--time HH:MM:SS` | 実行時間の上限。省略時は実行プロファイルの既定値 |
 | `--partition NAME` | Slurm のパーティション。省略時は `AGENTRUN_SLURM_PARTITION`、未設定ならクラスタの既定値 |
+| `--overlap JOBID` | 新しいジョブを作らず、実行中の自分のジョブ内で起動（`srun --jobid --overlap`）。資源は共有し、リポジトリ・マウントなどは別に指定。対話式の `assist` と `resume` のみ |
 | `--bind SRC:DST[:OPTIONS]` | 追加マウント。複数回指定可能。権限は `ro` または `rw` |
 | `--no-binds` | 保存済みの指定を含む追加マウントをすべて解除 |
 | `--fresh-config` | `resume` 時、保存したエージェント設定を使わずリポジトリから生成 |

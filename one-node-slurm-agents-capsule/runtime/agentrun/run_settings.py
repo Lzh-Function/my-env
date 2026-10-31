@@ -372,6 +372,7 @@ def main():
     parser.add_argument("--allow-fuse", action="store_true")
     parser.add_argument("--secrets-file", default="")
     parser.add_argument("--gh-env-file", default="")
+    parser.add_argument("--overlap-job", default="")
     options = parser.parse_args()
     run = options.run.resolve()
     if options.action == "save":
@@ -391,6 +392,10 @@ def main():
                 key: os.environ[key] for key in REVIEW_ENV if key in os.environ
             },
         }
+        if options.overlap_job:
+            # Informational only: `args` never replays it, since the shared
+            # allocation is gone by the time a run is resumed.
+            data["overlap_job"] = options.overlap_job
         atomic(
             run / "launch.json",
             (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode(),
