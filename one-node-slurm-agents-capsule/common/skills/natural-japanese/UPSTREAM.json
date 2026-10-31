@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/coji/natural-japanese",
+  "version": "1.6.4",
+  "ref": "v1.6.4",
+  "commit": "25a8638b780037a2012e2bb3f624a0b1710666fb",
+  "path": "skills/natural-japanese",
+  "retrieved_on": "2026-10-31",
+  "license": "MIT",
+  "local_changes": [
+    "Add a capsule integration section to SKILL.md",
+    "Bundle the repository root LICENSE"
+  ]
+}

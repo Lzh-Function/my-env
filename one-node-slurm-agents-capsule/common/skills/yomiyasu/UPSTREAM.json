@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/nanaism/yomiyasu",
+  "version": "2.5.0",
+  "ref": "v2.5.0",
+  "commit": "29d67ccb05e370b5958d72920a9cd1aa829dee80",
+  "path": "skills/yomiyasu",
+  "retrieved_on": "2026-10-31",
+  "license": "MIT",
+  "local_changes": [
+    "Add a capsule integration section to SKILL.md"
+  ]
+}

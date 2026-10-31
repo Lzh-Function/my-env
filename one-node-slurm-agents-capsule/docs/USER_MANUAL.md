@@ -1411,10 +1411,11 @@ URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれ
 | `experiment-report` | `experiment`・`campaign`・`review`・`multi-review` 各モードで書くべきモード固有ファイルのスキーマです。`artifacts/proposed_next.yaml`・`artifacts/proposed_train.sbatch`・`reviews/review_findings.json`・`reviews/disagreements.json` などのフォーマットを記述します。 |
 | `pytest` | `uv run pytest` によるテスト実行と、結果を `/runs/live/stdout.log`、`artifacts/metrics.json` に記録する方法を説明します。プロジェクトのテストには uv を使い、システム Python はコンテナの起動やフックなどの基盤処理に使います。 |
 | `research-latex` | 学術論文・技術報告書・モノグラフのテンプレートを使い、日英の研究文書を PDF にします。LuaLaTeX、Biber、構造検証、目視確認用のページ画像生成に対応します。付属の例は架空のデータです。 |
-| `yomiyasu` | 意味を保ちながら日本語を推敲します。文章の点検と修正前後の比較に使うツールを含みます。数値や研究上の主張の正しさは、別途検証します。 |
+| `yomiyasu` | 意味を保ちながら日本語を推敲します。文章の点検と修正前後の比較に使うツールを含みます。数値や研究上の主張の正しさは、別途検証します。名前を出して頼んだときだけ使います。 |
+| `natural-japanese` | 議事録・レポート・ガイド・PR の説明文などの仕事の日本語文書を、自然で読みやすく書く・直すためのスキルです。AI らしさの診断（書き換えなし）や文体の学習にも対応します。 |
 | `cross-review` | もう一方のエージェントに監査を依頼し、質問への回答、修正・反論の記録、再監査を進めます。 |
 
-標準搭載のスキルは、この 8 種類です。
+標準搭載のスキルは、この 9 種類です。
 
 #### research-latex による研究文書の作成
 
@@ -1440,19 +1441,41 @@ uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" render --proj
 
 #### yomiyasu による日本語の推敲
 
-`yomiyasu` も Claude Code と Codex で共有します。[nanaism/yomiyasu のコミット 60bf877](https://github.com/nanaism/yomiyasu/tree/60bf877acebc86651e0b67d70112a66245f87758/skills/yomiyasu) から取り込み、MIT ライセンス、Unicode のライセンス告知、参考資料、文章確認用のスクリプトを含めています。この環境向けの説明とコマンド例は uv に合わせていますが、確認用スクリプトは取り込み元から変更していません。
+`yomiyasu` も Claude Code と Codex で共有します。[nanaism/yomiyasu v2.5.0](https://github.com/nanaism/yomiyasu/tree/29d67ccb05e370b5958d72920a9cd1aa829dee80/skills/yomiyasu) から取り込み、MIT ライセンス、Unicode のライセンス告知、参考資料、文章確認用のスクリプトを含めています。取り込み元のコミットとローカル変更は `UPSTREAM.json` に記録しています。変更は、`SKILL.md` の冒頭にこの環境向けの説明を加えたことだけで、スクリプトは取り込み元のままです。
+
+`yomiyasu` は、利用者が名前を出して頼んだとき（`/yomiyasu`、「yomiyasu で推敲して」など）だけ使われます。v2 からは、最終稿の lint と原文との差分検査を `yomiyasu_check.py run` でまとめて実行し、提出直前に `verify` で記録と照合します。コンテナ内では検査の記録を `/runs` に残すため、`--state-dir` を指定します。
 
 ```bash
 SKILL_ROOT=/home/sandbox/ai-agent-config/common/skills/yomiyasu
 uv run --no-project python "$SKILL_ROOT/scripts/yomiyasu_lint.py" /runs/artifacts/report.md
-uv run --no-project python "$SKILL_ROOT/scripts/yomiyasu_diff.py" /runs/before.md /runs/after.md --stance=説明
+uv run --no-project python "$SKILL_ROOT/scripts/yomiyasu_check.py" run --state-dir /runs/yomiyasu \
+  --source /runs/before.md --final /runs/after.md --stance=説明 --fact-gaps
+uv run --no-project python "$SKILL_ROOT/scripts/yomiyasu_check.py" verify --state-dir /runs/yomiyasu --final /runs/after.md
 ```
 
 日本語の執筆や推敲に使います。指定された報告書の形式や、構造化された出力の仕様は維持してください。点検結果は修正候補であり、自動的に正しい修正と判断するものではありません。研究の数値、単位、数式、引用、主張の強さは、元の資料と照合して別途確認します。
 
 LaTeX 文書では、TeX コマンドや数式を変えずに本文を推敲し、その後 `research-latex` でビルドして PDF を確認します。
 
-ツールは Python の標準ライブラリだけを使います。追加の OS・Python パッケージやイメージの再ビルドは不要で、新しく起動したコンテナから利用できます。
+ツールは Python の標準ライブラリだけを使います。追加の OS・Python パッケージやイメージの再ビルドは不要で、新しく起動したコンテナから利用できます。付属の任意フック `yomiyasu_hook.py` は登録していません。
+
+<a id="japanese-writing-with-natural-japanese"></a>
+
+#### natural-japanese による日本語文書の作成と推敲
+
+`natural-japanese` も Claude Code と Codex で共有します。[coji/natural-japanese v1.6.4](https://github.com/coji/natural-japanese/tree/25a8638b780037a2012e2bb3f624a0b1710666fb/skills/natural-japanese) から取り込み、リポジトリ直下の MIT ライセンスを同梱しています。取り込み元のコミットとローカル変更は `UPSTREAM.json` に記録しています。`SKILL.md` の冒頭にこの環境向けの説明を加えた以外は、取り込み元のままです。
+
+議事録、調査レポート、社内ガイド、PR の説明文、スライド構成など、仕事の日本語文書を書く・直す依頼で使われます。`natural-japanese score` で、文書を書き換えずに AI らしさを診断できます。名前を出して頼んだときだけ動く `yomiyasu` と違い、日本語の文書作成や「読みやすくしたい」「AI っぽい」といった依頼でも使われます。
+
+検出用のスクリプトは、作業ディレクトリが `/workspace` なので、絶対パスで実行します。
+
+```bash
+SKILL_ROOT=/home/sandbox/ai-agent-config/common/skills/natural-japanese
+uv run "$SKILL_ROOT/scripts/lint.py" /runs/artifacts/report.md
+uv run "$SKILL_ROOT/scripts/newfacts.py" /runs/before.md /runs/after.md
+```
+
+スクリプトは形態素解析に SudachiPy と辞書を使います。初回の実行時に、uv が実行ごとのキャッシュへ導入するため、計算ノードからパッケージ配布先に接続できる必要があります。イメージの再ビルドは不要です。話題の平板さを測る `semantic.py` は約 1 GB のモデルを取得するため、頼まれたときだけ実行します。
 
 <a id="hooks-maintenance"></a>
 
