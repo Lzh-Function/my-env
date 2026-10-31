@@ -202,13 +202,15 @@ sys.exit(42)
         state = self.scenario(review_env={
             "AGENT_REVIEW_CODEX_MODEL": "fixture-model",
             "AGENT_REVIEW_CODEX_EFFORT": "low",
+            "AGENT_REVIEW_ANTIGRAVITY_MODEL": "fixture-flash-high",
             "AGENT_REVIEW_ACTIVE_TIMEOUT": "600",
             "AGENT_REVIEW_MAX_EXCHANGES": "1",
             "AGENT_REVIEW_THREAD_TIMEOUT": "1",
         })
         config = state["review_config"]
-        self.assertEqual(config["model"], "fixture-model")
-        self.assertEqual(config["effort"], "low")
+        # Settings are kept per reviewer; the worker's own provider is never a reviewer.
+        self.assertEqual(config["reviewer_settings"], {"codex": {"model": "fixture-model", "effort": "low"},
+                                                       "antigravity": {"model": "fixture-flash-high"}})
         self.assertEqual(config["active_timeout"], 600)
         self.assertNotIn("max_exchanges", config)
         self.assertNotIn("thread_timeout", config)

@@ -25,6 +25,8 @@ PRIVATE = {
     ".gnupg",
     ".codex",
     ".claude",
+    ".gemini",
+    ".antigravity",
     ".reviewer",
     "node_modules",
     ".venv",
@@ -89,7 +91,7 @@ def private(path):
         or part == ".env"
         or part.startswith(".env.")
         or part.endswith((".pem", ".key"))
-        or part in {"auth.json", ".credentials.json"}
+        or part in {"auth.json", ".credentials.json", "antigravity-oauth-token"}
         for part in Path(path).parts
     )
 

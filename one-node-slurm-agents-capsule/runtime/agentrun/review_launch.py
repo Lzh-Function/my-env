@@ -16,6 +16,7 @@ from pathlib import Path
 
 from review import Reviews
 from review_snapshot import atomic_json, git
+from agent_cli import CREDENTIALS, PROVIDERS
 from run_settings import REVIEW_ENV
 
 
@@ -154,6 +155,7 @@ def main():
                 or env.get("ANTHROPIC_AUTH_TOKEN")
                 or env.get("CLAUDE_CODE_OAUTH_TOKEN")
             ),
+            "antigravity": (Path.home() / CREDENTIALS["antigravity"][0]).is_file(),
         },
     )
     session = json.loads((run / "session.json").read_text())
@@ -170,12 +172,12 @@ def main():
         "run_id": session.get("run_id", run.name),
         "session_key": session.get("session_key"),
     }
-    for key in ("model", "effort"):
-        # Settings refer to the reviewer provider, not the worker provider.
-        peer = "CODEX" if args.agent == "claude" else "CLAUDE"
-        value = env.get("AGENT_REVIEW_" + peer + "_" + key.upper())
-        if value:
-            config[key] = value
+    # Settings are named after the reviewer provider, not the worker provider.
+    config["reviewer_settings"] = {
+        provider: {key: env["AGENT_REVIEW_" + provider.upper() + "_" + key.upper()]
+                   for key in ("model", "effort")
+                   if env.get("AGENT_REVIEW_" + provider.upper() + "_" + key.upper())}
+        for provider in PROVIDERS if provider != args.agent}
     if env.get("AGENT_REVIEW_ACTIVE_TIMEOUT"):
         config["active_timeout"] = int(env["AGENT_REVIEW_ACTIVE_TIMEOUT"])
     # Slurm owns the allocation lifetime, including extensions after startup.

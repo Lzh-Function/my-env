@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -24,11 +26,30 @@ import json, os, sys, uuid
 from pathlib import Path
 args=sys.argv[1:]
 if '--help' in args:
-    print('--json --output-schema --ignore-user-config --ignore-rules --restricted --safe-mode --tools --strict-mcp-config --permission-prompts --json-schema')
+    # The real agy prints its usage to stderr.
+    print('--json --output-schema --ignore-user-config --ignore-rules --restricted --safe-mode --tools --strict-mcp-config --permission-prompts --json-schema --conversation --settings --disable-slash-commands --print-timeout --input-format --output-format',
+          file=sys.stderr if os.environ.get('AGENTRUN_AGENT')=='antigravity' else sys.stdout)
     sys.exit(0)
 if '--version' in args:
     print('fake reviewer 1.0');sys.exit(0)
 home=Path(os.environ['HOME'])
+if args[:1]==['models']:
+    print('Fetching available models...',file=sys.stderr)
+    print('fake-flash-low\tFake Flash (Low)\nfake-flash-high\tFake Flash (High)');sys.exit(0)
+if args[:2]==['debug','models']:
+    if (home/'models-broken').exists():
+        print('not a catalog');sys.exit(0)
+    print(json.dumps({'models':[{'slug':'gpt-test','display_name':'GPT Test','description':'Workhorse','visibility':'list',
+        'default_reasoning_level':'medium','supported_reasoning_levels':[{'effort':'low'},{'effort':'high'}]},
+        {'slug':'hidden-model','visibility':'hide','supported_reasoning_levels':[]}]}));sys.exit(0)
+if os.environ.get('AGENTRUN_AGENT')=='claude' and '--input-format' in args:
+    request=json.loads(sys.stdin.readline())
+    assert request['request']['subtype']=='initialize' and args[args.index('--setting-sources')+1]==''
+    print(json.dumps({'type':'system','subtype':'hook_started'}))
+    print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':request['request_id'],
+        'response':{'account':{'email':'private@example.invalid'},'models':[
+            {'value':'opus','resolvedModel':'claude-opus-test','displayName':'Opus','description':'Complex work','supportedEffortLevels':['low','high']},
+            {'value':'claude-haiku-old','resolvedModel':'claude-haiku-old','displayName':'Haiku old'}]}}}));sys.exit(0)
 if args and args[0]=='sandbox':
     if (home/'sandbox-policy-broken').exists():
         print('Sandbox allowed writes to review inputs',file=sys.stderr)
@@ -41,14 +62,22 @@ assert os.environ['AGENTRUN_ROLE']=='reviewer'
 assert 'CLAUDECODE' not in os.environ
 assert 'AGENT_REVIEW_SOCKET' not in os.environ
 assert not any('bypass' in a for a in args)
-provider='codex' if 'exec' in args else 'claude'
+provider=os.environ['AGENTRUN_AGENT']
+assert provider==('codex' if 'exec' in args else provider)
 if provider=='codex':
     assert 'sandbox_mode="read-only"' in args
     assert any(a.startswith('mcp_servers.capsule-input.command=') for a in args)
+elif provider=='antigravity':
+    settings=json.loads(Path(args[args.index('--settings')+1]).read_text())
+    assert settings['permissions']['deny']==['command(*)','write_file(*)','read_url(*)','execute_url(*)','mcp(*)']
+    assert settings['permissions']['allow']==['read_file('+os.getcwd()+')']
+    assert 'review_hook.py' in (home/'.gemini/config/hooks.json').read_text()
 else:
     assert args[args.index('--tools')+1]=='Read,Glob,Grep'
     assert '--bare' not in args
 prompt=sys.stdin.read()
+if provider=='antigravity':
+    prompt=json.loads(prompt)['message']['content']
 context=json.loads(prompt.split('\n',1)[1])
 manifest=json.loads(Path('manifest.json').read_text())
 mode=next((p.read_text().strip() for p in Path('brief').glob('**/*') if p.is_file()),'question')
@@ -56,7 +85,8 @@ if mode=='timeout':
     import time
     time.sleep(60)
 ident=(args[args.index('resume')+1] if 'resume' in args else
-       args[args.index('--resume')+1] if '--resume' in args else str(uuid.uuid4()))
+       args[args.index('--resume')+1] if '--resume' in args else
+       args[args.index('--conversation')+1] if '--conversation' in args else str(uuid.uuid4()))
 result={'kind':'review_result','target_id':context['target_id'],'summary':'reviewed',
         'verdict':'approve','coverage':'complete','limitations':[], 'questions':[],
         'findings':[],'prior_dispositions':[], 'praise':[], 'checked_scope':['source/code.py']}
@@ -86,6 +116,19 @@ if mode=='bad-evidence':
         'confidence':'high','basis':'observed','evidence_method':'static_source',
         'file':'../../secret','line':1,'message':'bad','suggestion':'bad','evidence':['../../secret']}])
 if mode=='exit':sys.exit(42)
+if mode=='line-evidence':
+    result.update(verdict='request_changes', findings=[{'finding_id':'f1','severity':'major',
+        'confidence':'high','basis':'observed','evidence_method':'static_source',
+        'file':'source/code.py','line':1,'message':'A defect','suggestion':'Fix it',
+        'evidence':['source/code.py:1','source/code.py:1-1','diff.patch']}])
+if mode=='unknown-line-evidence':
+    result.update(verdict='request_changes', findings=[{'finding_id':'f1','severity':'major',
+        'confidence':'high','basis':'observed','evidence_method':'static_source',
+        'file':'source/code.py','line':1,'message':'A defect','suggestion':'Fix it',
+        'evidence':['source/missing.py:1']}])
+if '--model' in args and args[args.index('--model')+1]=='cli-rejects-model':
+    print("The 'cli-rejects-model' model is not supported when using Codex with a ChatGPT account.",file=sys.stderr)
+    sys.exit(1)
 if provider=='codex':
     path=home/'.codex/sessions'/('rollout-'+ident+'.jsonl')
     records=[{'type':'session_meta','payload':{'id':ident}},
@@ -94,6 +137,20 @@ if provider=='codex':
     Path(args[args.index('-o')+1]).write_text(json.dumps(result))
     print(json.dumps({'type':'thread.started','thread_id':ident}))
     print(json.dumps({'type':'turn.completed'}))
+elif provider=='antigravity':
+    if (home/'.gemini/antigravity-cli/antigravity-oauth-token').read_text()=='expired':
+        print(json.dumps({'event':'result','result':{'status':'ERROR','conversation_id':ident,'error':'Please log in again'}}))
+        sys.exit(1)
+    path=home/'.gemini/antigravity-cli/brain'/(ident+'.jsonl')
+    records=[{'conversation':ident,'result':result}]
+    print(json.dumps({'event':'step_update','step_update':{}}))
+    if mode=='agy-response':
+        # agy 1.4 without structured_output: the checked JSON first, then a pretty copy.
+        print(json.dumps({'event':'result','result':{'status':'SUCCESS','conversation_id':ident,'json_schema':{'type':'object'},
+            'response':json.dumps(result)+'\n'+json.dumps(dict(result,summary='later text'),indent=2)}}))
+    else:
+        print(json.dumps({'event':'result','result':{'status':'SUCCESS','conversation_id':ident,
+            'structured_output':result,'usage':{'tokens':1}}}))
 else:
     path=home/'.claude/projects/review'/ (ident+'.jsonl')
     records=[{'type':'assistant','sessionId':ident,'message':{'role':'assistant','content':[{'type':'text','text':json.dumps(result)}]}}]
@@ -123,7 +180,8 @@ class CrossReviewTests(unittest.TestCase):
         self.brief = self.run / "artifacts/brief.md"
         self.brief.write_text("question")
         self.home = self.run / "home"
-        for name in (".codex/auth.json", ".claude/.credentials.json"):
+        for name in (".codex/auth.json", ".claude/.credentials.json",
+                     ".gemini/antigravity-cli/antigravity-oauth-token", ".gemini/antigravity-cli/installation_id"):
             path = self.home / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('{"synthetic":"auth"}')
@@ -161,7 +219,8 @@ class CrossReviewTests(unittest.TestCase):
         return result["review_id"]
 
     def wait(self, ident, states=review.TERMINAL | {"waiting_reply"}):
-        deadline = time.monotonic() + 8
+        # The first Codex round starts the input MCP through uv, which can take several seconds.
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             self.reviews.tick()
             state = self.reviews.call("status", {"review_id": ident})
@@ -192,6 +251,316 @@ class CrossReviewTests(unittest.TestCase):
                 },
             },
         )
+
+    def provider_calls(self, provider):
+        path = self.reviews.peers[provider].home / "calls.jsonl"
+        return [json.loads(line)["args"] for line in path.read_text().splitlines()] if path.exists() else []
+
+    def reopen(self, primary, **config):
+        self.reviews.close()
+        self.config.update(config, primary_agent=primary,
+                           run=str(self.root / ("run-" + primary + "-" + str(len(config)))))
+        self.run = Path(self.config["run"])
+        self.brief = self.run / "artifacts/brief.md"
+        self.brief.parent.mkdir(parents=True, exist_ok=True)
+        self.brief.write_text("approve")
+        self.reviews = review.Reviews(self.config)
+        self.addCleanup(self.reviews.close)
+
+    def test_models_lists_current_cli_catalog_without_account_data(self):
+        listing = self.reviews.call("models", {})["reviewers"]
+        self.assertEqual([item["provider"] for item in listing], ["codex", "antigravity"])
+        codex, antigravity = listing
+        self.assertTrue(codex["available"], codex)
+        self.assertEqual([m["id"] for m in codex["models"]], ["gpt-test"])  # hidden models are dropped
+        self.assertEqual(codex["models"][0]["efforts"], ["low", "high"])
+        self.assertEqual(codex["configured"], {"model": None, "effort": None})
+        self.assertEqual([m["id"] for m in antigravity["models"]], ["fake-flash-low", "fake-flash-high"])
+        self.assertIn("omit effort", antigravity["notes"])
+        with self.assertRaises(ValueError):
+            self.reviews.call("models", {"reviewers": ["claude"]})  # the worker itself is never a reviewer
+        self.reopen("codex")
+        claude = self.reviews.call("models", {"reviewers": ["claude"]})["reviewers"][0]
+        self.assertEqual([(m["id"], m["resolved"]) for m in claude["models"]],
+                         [("opus", "claude-opus-test"), ("claude-haiku-old", "claude-haiku-old")])
+        self.assertNotIn("private@example.invalid", json.dumps(claude))
+
+    def test_antigravity_reviews_alongside_codex_with_its_own_thread(self):
+        self.brief.write_text("question")
+        group = self.reviews.call("run", dict(request_id="two", brief=str(self.brief), reviewers=["codex", "antigravity"],
+                                              models={"antigravity": "fake-flash-high"}))
+        self.reviews.tick()
+        items = {item["provider"]: item for item in group["reviews"]}
+        self.assertEqual(set(items), {"codex", "antigravity"})
+        self.assertNotEqual(items["codex"]["review_thread_id"], items["antigravity"]["review_thread_id"])
+        with self.assertRaisesRegex(ValueError, "Another review is active for antigravity"):
+            self.reviews.call("run", dict(request_id="busy", brief=str(self.brief), reviewers=["antigravity"]))
+        for provider in ("codex", "antigravity"):
+            ident = items[provider]["review_id"]
+            self.assertEqual(self.wait(ident)["status"], "waiting_reply")
+            self.reviews.call("reply", {"review_id": ident, "request_id": "answer-" + provider,
+                                        "reply_to": self.reviews.rounds[ident]["question"]["message_id"],
+                                        "message": {"answers": [{"question_id": "q1", "answer": "subject-wise",
+                                                                 "evidence": ["source/code.py"]}],
+                                                    "questions": [], "include": []}})
+            state = self.wait(ident, review.TERMINAL)
+            self.assertEqual(state["verdict"], "approve", state)
+        state = self.reviews.rounds[items["antigravity"]["review_id"]]
+        self.assertEqual(state["model_used"], "fake-flash-high")
+        calls = self.provider_calls("antigravity")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--conversation", calls[1])  # the answer continues the same conversation
+        self.assertEqual(calls[1][calls[1].index("--conversation") + 1], state["session_id"])
+        self.assertNotIn("--effort", calls[0])
+        self.brief.write_text("approve")
+        recheck = self.reviews.call("recheck", {"review_id": state["review_id"], "request_id": "recheck-agy",
+                                                "response": {"responses": []}})
+        self.assertEqual(recheck["provider"], "antigravity")
+        self.reviews.tick()
+        state = self.wait(recheck["review_id"], review.TERMINAL)
+        self.assertEqual(state["verdict"], "approve", state)
+
+    def test_antigravity_effort_and_missing_or_expired_login_are_reported(self):
+        result = self.reviews.call("run", dict(request_id="agy-effort", brief=str(self.brief), reviewers=["antigravity"],
+                                               models={"antigravity": "fake-flash-low"}, efforts={"antigravity": "high"}))
+        self.reviews.tick()
+        state = self.wait(result["review_id"], review.TERMINAL)
+        self.assertEqual(state["error_kind"], "invalid_model", state)
+        self.assertIn("omit effort", state["error"])
+        (self.reviews.peers["antigravity"].home / ".gemini/antigravity-cli/antigravity-oauth-token").write_text("expired")
+        result = self.reviews.call("run", dict(request_id="agy-expired", brief=str(self.brief), reviewers=["antigravity"]))
+        self.reviews.tick()
+        state = self.wait(result["review_id"], review.TERMINAL)
+        self.assertEqual(state["error_kind"], "authentication", state)
+        self.reopen("codex")
+        __import__("shutil").rmtree(self.home / ".reviewer/antigravity")
+        for name in ("antigravity-oauth-token", "installation_id"):
+            (self.home / ".gemini/antigravity-cli" / name).unlink()
+        result = self.reviews.call("run", dict(request_id="agy-missing", brief=str(self.brief), reviewers=["antigravity"]))
+        self.reviews.tick()
+        state = self.wait(result["review_id"], review.TERMINAL)
+        self.assertEqual(state["error_kind"], "missing_authentication", state)
+
+    def test_legacy_single_reviewer_config_still_applies_to_the_default_reviewer(self):
+        self.reopen("claude", model="gpt-test", effort="low")
+        listing = {item["provider"]: item["configured"] for item in self.reviews.call("models", {})["reviewers"]}
+        self.assertEqual(listing, {"codex": {"model": "gpt-test", "effort": "low"},
+                                   "antigravity": {"model": None, "effort": None}})
+
+    def test_line_suffixed_evidence_is_normalized_but_unknown_paths_are_rejected(self):
+        ident = self.start("line-evidence", reviewers=["antigravity"], one_shot=True)
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["status"], "success", state)  # agy starts even though its usage is on stderr
+        findings = json.loads(Path(state["findings_path"]).read_text())["findings"]
+        self.assertEqual(findings[0]["evidence"], ["source/code.py", "diff.patch"])
+        prompt = next((self.run / "reviews" / ident / "turns").glob("*/prompt.txt")).read_text()
+        self.assertIn("without a line suffix", prompt)
+        self.brief.write_text("unknown-line-evidence")
+        result = self.reviews.call("run", dict(request_id="unknown", brief=str(self.brief), one_shot=True,
+                                               reviewers=["antigravity"]))
+        self.reviews.tick()
+        state = self.wait(result["review_id"], review.TERMINAL)
+        self.assertEqual(state["error"], "Invalid evidence reference", state)
+
+    def test_antigravity_result_is_read_from_the_first_json_in_its_response(self):
+        ident = self.start("agy-response", reviewers=["antigravity"], one_shot=True)
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["verdict"], "approve", state)
+        summary = json.loads(Path(state["findings_path"]).read_text())["summary"]
+        self.assertEqual(summary, "reviewed")  # not the later copy
+
+    def test_review_hook_allows_only_reads_inside_the_input(self):
+        directory = self.root / "input"
+        (directory / "source").mkdir(parents=True)
+
+        def decide(name, args):
+            result = subprocess.run([sys.executable, str(RUNTIME / "review_hook.py"), str(directory)],
+                                    input=json.dumps({"toolCall": {"name": name, "args": args}}),
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)["decision"]
+
+        self.assertEqual(decide("view_file", {"AbsolutePath": str(directory / "source/code.py")}), "allow")
+        self.assertEqual(decide("grep_search", {"SearchPath": "source", "Query": "x"}), "allow")
+        for name, args in (("view_file", {"AbsolutePath": "/home/sandbox/.codex/auth.json"}),
+                           ("list_dir", {"DirectoryPath": "../.."}),
+                           ("run_command", {"CommandLine": "cat manifest.json"}),
+                           ("write_to_file", {"TargetFile": str(directory / "x")}),
+                           ("read_url_content", {"Url": "https://example.invalid"}),
+                           ("view_file", {"paths": "not-a-list"})):
+            with self.subTest(name=name, args=args):
+                self.assertEqual(decide(name, args), "deny")
+        malformed = subprocess.run([sys.executable, str(RUNTIME / "review_hook.py"), str(directory)],
+                                   input="not json", capture_output=True, text=True, timeout=10)
+        self.assertEqual(json.loads(malformed.stdout)["decision"], "deny")
+
+    def test_agent_selected_model_is_checked_passed_and_reported(self):
+        ident = self.start("approve", one_shot=True, models={"codex": "gpt-test"}, efforts={"codex": "high"})
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["verdict"], "approve", state)
+        self.assertEqual(state["model_selection"], {"model": "gpt-test", "model_source": "agent",
+                                                    "effort": "high", "effort_source": "agent"})
+        self.assertEqual(state["model_used"], "gpt-test")
+        args = self.provider_calls("codex")[-1]
+        self.assertEqual(args[args.index("--model") + 1], "gpt-test")
+        self.assertIn('model_reasoning_effort="high"', args)
+        self.assertIn("モデル: gpt-test (agent) / effort: high (agent)", Path(state["report_path"]).read_text())
+        again = self.reviews.call("recheck", {"review_id": ident, "request_id": "recheck", "response": {"responses": []}})
+        self.reviews.tick()
+        state = self.wait(again["review_id"], review.TERMINAL)
+        self.assertEqual(state["model_selection"]["model"], "gpt-test")  # recheck keeps the previous choice
+        self.assertIn("gpt-test", self.provider_calls("codex")[-1])
+
+    def test_claude_alias_or_resolved_name_is_accepted(self):
+        self.reopen("codex")
+        ident = self.start("approve", one_shot=True, models={"claude": "claude-opus-test"}, efforts={"claude": "low"})
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["verdict"], "approve", state)
+        args = self.provider_calls("claude")[-1]
+        self.assertEqual(args[args.index("--model") + 1], "claude-opus-test")
+        self.assertEqual(args[args.index("--effort") + 1], "low")
+
+    def test_unlisted_model_fails_before_the_turn_and_retry_keeps_the_round(self):
+        ident = self.start("question", models={"codex": "retired-model"})
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["error_kind"], "invalid_model", state)
+        self.assertEqual(state["recovery"]["available_models"], ["gpt-test"])
+        self.assertIn("agent-review models --reviewers codex", state["recovery"]["list_command"])
+        self.assertEqual(self.provider_calls("codex"), [])
+        with self.assertRaises(ValueError):
+            self.reviews.call("retry", {"review_id": ident, "request_id": "bad-effort", "model": "gpt-test", "effort": "Bad!"})
+        retried = self.reviews.call("retry", {"review_id": ident, "request_id": "retry-model", "model": "gpt-test"})
+        self.assertEqual(retried["review_id"], ident)
+        self.answer(ident)
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["verdict"], "approve", state)
+        self.assertEqual(state["round"], 1)
+        self.assertEqual(state["model_used"], "gpt-test")
+        events = self.reviews.call("events", {"review_id": ident})["events"]
+        self.assertIn("model_retry", [event["kind"] for event in events])
+        with self.assertRaisesRegex(ValueError, "invalid_model"):
+            self.reviews.call("retry", {"review_id": ident, "request_id": "retry-success"})
+
+    def test_unsupported_effort_is_rejected_before_the_turn(self):
+        ident = self.start("approve", models={"codex": "gpt-test"}, efforts={"codex": "xhigh"})
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["error_kind"], "invalid_model", state)
+        self.assertIn("does not support effort xhigh", state["error"])
+        self.assertEqual(self.provider_calls("codex"), [])
+
+    def test_user_configured_model_takes_priority_over_agent_choice(self):
+        self.reopen("claude", reviewer_settings={"codex": {"model": "gpt-test", "effort": "low"}})
+        with self.assertRaisesRegex(ValueError, "AGENT_REVIEW_CODEX_MODEL"):
+            self.reviews.call("run", dict(request_id="agent-override", brief=str(self.brief),
+                                          models={"codex": "other-model"}))
+        self.assertEqual(self.reviews.rounds, {})
+        self.assertEqual(self.reviews.call("models", {})["reviewers"][0]["configured"],
+                         {"model": "gpt-test", "effort": "low"})
+        ident = self.start("approve", one_shot=True)
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["model_selection"], {"model": "gpt-test", "model_source": "environment",
+                                                    "effort": "low", "effort_source": "environment"})
+        args = self.provider_calls("codex")[-1]
+        self.assertEqual(args[args.index("--model") + 1], "gpt-test")
+        # Only an explicit user request in the conversation overrides the launch setting.
+        result = self.reviews.call("run", dict(request_id="user-override", brief=str(self.brief), one_shot=True,
+                                               models={"codex": "gpt-test"}, efforts={"codex": "high"},
+                                               model_source="user"))
+        self.reviews.tick()
+        state = self.wait(result["review_id"], review.TERMINAL)
+        self.assertEqual(state["model_selection"]["effort_source"], "user")
+        self.assertIn('model_reasoning_effort="high"', self.provider_calls("codex")[-1])
+
+    def test_invalid_model_requests_are_rejected_before_any_review(self):
+        for index, extra in enumerate((
+                {"models": {"claude": "x"}}, {"models": {"codex": "bad name"}}, {"models": {"codex": "--flag"}},
+                {"efforts": {"codex": "HIGH"}}, {"models": ["gpt-test"]}, {"model": "gpt-test"},
+                {"model_source": "admin"}, {"reviewers": ["claude"]}, {"reviewers": ["gemini"]})):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                self.reviews.call("run", dict(request_id="invalid-model-" + str(index), brief=str(self.brief), **extra))
+        self.assertEqual(self.reviews.rounds, {})
+
+    def test_cli_judges_the_model_when_its_catalog_is_unavailable(self):
+        self.reviews.peer("codex", __import__("threading").Event())
+        (self.reviews.peers["codex"].home / "models-broken").write_text("")
+        listing = self.reviews.call("models", {})["reviewers"][0]
+        self.assertFalse(listing["available"], listing)
+        self.assertEqual(listing["error_kind"], "model_list_unavailable")
+        ident = self.start("approve", one_shot=True, models={"codex": "cli-rejects-model"})
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["error_kind"], "invalid_model", state)
+        self.assertIsNone(state["recovery"]["available_models"])
+
+    def agentrun_reviews(self, *args, expected=0):
+        result = subprocess.run([str(RUNTIME / "agentrun"), "reviews", str(self.run), *args],
+                                capture_output=True, text=True, timeout=20, cwd=self.root)
+        self.assertEqual(result.returncode, expected, result.stderr)
+        return result.stdout if expected == 0 else result.stderr
+
+    def test_agentrun_reviews_lists_numbered_threads_and_renders_one(self):
+        ident = self.start("question", models={"codex": "gpt-test"})
+        self.answer(ident)
+        self.wait(ident, review.TERMINAL)
+        events = self.run / "reviews" / ident / "events.jsonl"
+        with events.open("a") as stream:  # mix terminal controls into reviewer-derived text
+            stream.write(json.dumps({"sequence": 99, "kind": "failed", "sender": "runtime", "recipient": "worker",
+                                     "timestamp": time.time(), "payload": {"error": "boom\x1b]0;owned\x07\x1b[31mred"}}) + "\n")
+            stream.write('{"partial": ')  # a partially written line is ignored
+        listing = self.agentrun_reviews()
+        self.assertRegex(listing, r"\n +1  codex +終了 +1  approve .*gpt-test \(agent\)")
+        self.assertIn("進行中 0", listing)
+        dialogue = self.agentrun_reviews("1")
+        self.assertIn("=== codex#1 ラウンド 1 — gpt-test (agent) ===", dialogue)
+        self.assertIn("Q q1: Why this split?", dialogue)
+        self.assertIn("A q1: subject-wise split", dialogue)
+        self.assertIn("判定: approve", dialogue)
+        self.assertIn("エラー: boom]0;owned[31mred", dialogue)
+        self.assertNotIn("\x1b", dialogue)
+        self.assertEqual(self.agentrun_reviews("--reviewer", "codex"), dialogue)
+        self.assertEqual(self.agentrun_reviews(ident[:15]), dialogue)  # an ID prefix also works
+        # Following a finished thread prints it and returns immediately.
+        self.assertIn("<<< codex#1 が終了しました: approve", self.agentrun_reviews("1", "--follow"))
+        self.assertIn("該当する監査がありません", self.agentrun_reviews("9", expected=2))
+
+    def test_agentrun_reviews_defaults_to_latest_run_and_number(self):
+        ident = self.start("approve", one_shot=True)
+        self.wait(ident, review.TERMINAL)
+        runs = self.root / ".agent-runs"
+        runs.mkdir()
+        (runs / "latest").symlink_to(self.run)
+        result = subprocess.run([str(RUNTIME / "agentrun"), "reviews", "1"],
+                                capture_output=True, text=True, timeout=20, cwd=self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("=== codex#1 ラウンド 1 — CLI既定 (cli_default) ===", result.stdout)
+
+    def test_agentrun_reviews_follow_shows_only_live_threads(self):
+        done = self.start("approve", one_shot=True)
+        self.wait(done, review.TERMINAL)
+        self.brief.write_text("question")
+        live = self.reviews.call("run", dict(request_id="follow-live", brief=str(self.brief)))["review_id"]
+        self.reviews.tick()
+        self.assertEqual(self.wait(live)["status"], "waiting_reply")
+        self.assertIn("進行中 1", self.agentrun_reviews())
+        process = subprocess.Popen([str(RUNTIME / "agentrun"), "reviews", str(self.run), "--follow"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=self.root,
+                                   start_new_session=True)
+        try:
+            time.sleep(2)
+            self.answer(live)  # the continuation is appended while following
+            self.wait(live, review.TERMINAL)
+            time.sleep(2.5)
+        finally:
+            os.killpg(process.pid, signal.SIGINT)  # like Ctrl+C in a terminal
+            stdout, stderr = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 130, stderr)
+        self.assertNotIn("codex#1", stdout)  # threads that ended before following are not shown
+        self.assertIn(">>> codex#2 を追跡します", stdout)
+        self.assertIn("codex#2 reviewer → worker: question", stdout)
+        self.assertIn("codex#2 worker → reviewer: answer", stdout)
+        self.assertIn("<<< codex#2 が終了しました: approve", stdout)
+        self.assertIn("進行中の監査はありません。新しい監査の開始を待っています", stdout)
+        stamps = re.findall(r"^\[(\d\d-\d\d \d\d:\d\d:\d\d)\] codex#", stdout, re.MULTILINE)
+        self.assertEqual(stamps, sorted(stamps))
 
     def test_both_directions_continue_one_session_and_archive_native_logs(self):
         for worker in ("claude", "codex"):

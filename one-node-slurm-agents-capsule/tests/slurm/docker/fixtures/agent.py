@@ -149,6 +149,21 @@ if ARGS and ARGS[0] == "sandbox":
     print("CAPSULE_REVIEW_SANDBOX_READ_ONLY_OK")
     raise SystemExit(0)
 
+if os.environ.get("AGENTRUN_ROLE") == "reviewer" and (
+        ARGS[:2] == ["debug", "models"] or (AGENT == "claude" and "--input-format" in ARGS)):
+    # Reproduce each CLI's model list format without calling a model service.
+    if AGENT == "codex":
+        print(json.dumps({"models": [{"slug": "fixture-review-model", "display_name": "Fixture", "visibility": "list",
+                                      "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]}]}))
+    else:
+        request = json.loads(sys.stdin.readline())
+        assert request["request"]["subtype"] == "initialize"
+        print(json.dumps({"type": "control_response", "response": {
+            "subtype": "success", "request_id": request["request_id"],
+            "response": {"models": [{"value": "fixture-review-model", "displayName": "Fixture",
+                                     "supportedEffortLevels": ["low", "high"]}]}}}))
+    raise SystemExit(0)
+
 if os.environ.get("AGENTRUN_ROLE") == "reviewer":
     assert "AGENT_REVIEW_SOCKET" not in os.environ
     assert not any("bypass" in value for value in ARGS)

@@ -4,18 +4,34 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
 
 from review_snapshot import atomic_json
 
+# Antigravity is only a reviewer; workers remain Codex or Claude Code.
+PROVIDERS = ("codex", "claude", "antigravity")
+DEFAULT_REVIEWER = {"codex": "claude", "claude": "codex"}
+CREDENTIALS = {
+    "codex": (".codex/auth.json",),
+    "claude": (".claude/.credentials.json",),
+    "antigravity": (".gemini/antigravity-cli/antigravity-oauth-token",
+                    ".gemini/antigravity-cli/installation_id"),
+}
+REVIEW_HOOK = Path(__file__).resolve().with_name("review_hook.py")
 IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+# Model names change with CLI updates, so only check that they are safe arguments.
+MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,127}$")
+EFFORT_NAME = re.compile(r"^[a-z]{1,16}$")
+MODEL_LIST_TIMEOUT = 90
 BASE_ENV = {
     "PATH",
     "LANG",
@@ -54,7 +70,18 @@ def failure_kind(text):
         return "rate_limit"
     if any(
         p in text
-        for p in ("unauthorized", "authentication", "invalid api key", "login required")
+        for p in ("invalid model selection", "not recognized as a known model", "issue with the selected model",
+                  "model_not_found", "model not found", "unknown model", "invalid model",
+                  "model is not supported", "does not support the model")
+    ):
+        return "invalid_model"
+    if any(
+        p in text
+        for p in ("unauthorized", "authentication", "invalid api key", "login required",
+                  "not logged in", "please log in", "please run /login", "invalid_grant",
+                  "refresh_token_reused", "refresh_token_expired", "token_expired",
+                  "token has expired", "refresh token has already been used",
+                  "refresh token was already used", "refresh token has expired")
     ):
         return "authentication"
     if any(p in text for p in ("refusal", "refused")):
@@ -133,10 +160,10 @@ def environment(home, runtime, provider):
     env = {k: v for k, v in os.environ.items() if k in BASE_ENV}
     for key in tuple(env):
         if (
-            provider == "codex"
+            provider != "claude"
             and (key.startswith("ANTHROPIC_") or key == "CLAUDE_CODE_OAUTH_TOKEN")
         ) or (
-            provider == "claude"
+            provider != "codex"
             and (key.startswith("OPENAI_") or key == "CODEX_API_KEY")
         ):
             del env[key]
@@ -147,6 +174,7 @@ def environment(home, runtime, provider):
         XDG_CACHE_HOME=str(home / ".cache"),
         XDG_DATA_HOME=str(home / ".local/share"),
         AGENTRUN_ROLE="reviewer",
+        AGENTRUN_AGENT=provider,
         AGENTRUN_DIR=str(runtime),
         CLAUDE_CODE_TMPDIR=str(runtime / "scratch"),
         CLAUDE_CODE_DISABLE_AUTO_MEMORY="1",
@@ -169,6 +197,7 @@ def prepare_home(home, persisted, provider, worker_home):
             ".claude/tasks",
             ".claude/plans",
         ),
+        "antigravity": (".gemini/antigravity-cli/cache", ".gemini/antigravity-cli/brain"),
     }
     for relative in mounts[provider]:
         link = home / relative
@@ -177,18 +206,20 @@ def prepare_home(home, persisted, provider, worker_home):
         link.parent.mkdir(parents=True, exist_ok=True)
         if not link.exists():
             link.symlink_to(target, target_is_directory=True)
-    relative = (
-        ".codex/auth.json" if provider == "codex" else ".claude/.credentials.json"
-    )
-    source, target = worker_home / relative, home / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # Do not overwrite refreshed credentials in the dedicated reviewer HOME.
-    if source.is_file() and not target.exists():
-        shutil.copyfile(source, target)
-        target.chmod(0o600)
+    for relative in CREDENTIALS[provider]:
+        source, target = worker_home / relative, home / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Do not overwrite refreshed credentials in the dedicated reviewer HOME.
+        if source.is_file() and not source.is_symlink() and not target.exists():
+            shutil.copyfile(source, target)
+            target.chmod(0o600)
     if provider == "claude":
         atomic_json(home / ".claude.json", {"hasCompletedOnboarding": True})
-    return target.is_file() or bool(
+    if (home / CREDENTIALS[provider][0]).is_file():
+        return True
+    if provider == "antigravity":
+        return False
+    return bool(
         os.environ.get("OPENAI_API_KEY" if provider == "codex" else "ANTHROPIC_API_KEY")
         or (provider == "codex" and os.environ.get("CODEX_API_KEY"))
         or (
@@ -199,6 +230,60 @@ def prepare_home(home, persisted, provider, worker_home):
             )
         )
     )
+
+
+def parse_models(provider, output):
+    """Normalize each CLI's model list; account details and other fields are dropped."""
+    models = []
+    if provider == "codex":
+        for item in json.loads(output)["models"]:
+            if item.get("visibility") != "list":
+                continue
+            levels = [level["effort"] for level in item.get("supported_reasoning_levels") or []]
+            models.append({"id": item["slug"], "name": item.get("display_name") or item["slug"],
+                           "description": item.get("description") or "", "efforts": levels,
+                           "default_effort": item.get("default_reasoning_level")})
+    elif provider == "claude":
+        for line in output.splitlines():
+            record = json.loads(line) if line.strip().startswith("{") else None
+            response = (record or {}).get("response") or {}
+            if (record or {}).get("type") != "control_response" or response.get("request_id") != "agentrun-models":
+                continue
+            if response.get("subtype") != "success":
+                raise ValueError(str(response.get("error") or "initialize failed"))
+            for item in response["response"]["models"]:
+                models.append({"id": item["value"], "name": item.get("displayName") or item["value"],
+                               "description": item.get("description") or "",
+                               "resolved": item.get("resolvedModel"),
+                               "efforts": list(item.get("supportedEffortLevels") or []),
+                               "default_effort": None})
+            break
+        else:
+            raise ValueError("initialize response was not returned")
+    else:
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            ident, separator, name = line.partition("\t")
+            if not separator:
+                raise ValueError("expected ID<TAB>name lines")
+            models.append({"id": ident.strip(), "name": name.strip(), "description": "",
+                           "efforts": [], "default_effort": None})
+    for item in models:
+        if not MODEL_NAME.fullmatch(item["id"]) or any(not EFFORT_NAME.fullmatch(e) for e in item["efforts"]):
+            raise ValueError("unsafe model or effort name")
+    return models
+
+
+def antigravity_answer(text):
+    """agy 1.4 may put the schema-checked result first in `response`; ignore the text after it."""
+    if not isinstance(text, str):
+        return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(text.lstrip())
+    except ValueError:
+        return None
+    return value
 
 
 class Reviewer:
@@ -226,12 +311,15 @@ class Reviewer:
         self.binary, self.installer, self.cache = binary, installer, cache
         self.model, self.effort = model, effort
         self.worker_home = Path(worker_home)
-        relative = ".codex/auth.json" if provider == "codex" else ".claude/.credentials.json"
-        credential = self.home / relative
-        self.credential_baseline = credential.read_bytes() if credential.is_file() else None
+        self.credential_baseline = {
+            relative: (self.home / relative).read_bytes() if (self.home / relative).is_file() else None
+            for relative in CREDENTIALS[provider]
+        }
         self.process = None
         self.temporary = None
         self.checked = False
+        # Model listing and reviews must not install or probe the CLI concurrently.
+        self.setup_lock = threading.Lock()
         self.last_metadata = {}
         self.last_session_id = None
         self.last_exit_code = None
@@ -262,23 +350,29 @@ class Reviewer:
     def sync_credentials(self):
         # Publish only refreshed credentials through the existing run-HOME sync.
         # Authentication never belongs in persisted transcript directories.
-        relative = ".codex/auth.json" if self.provider == "codex" else ".claude/.credentials.json"
-        credential = self.home / relative
-        if credential.is_file() and not credential.is_symlink():
+        for relative in CREDENTIALS[self.provider]:
+            credential = self.home / relative
+            if not credential.is_file() or credential.is_symlink():
+                continue
             try:
                 raw = credential.read_bytes()
-                value = json.loads(raw)
-                if raw != self.credential_baseline and isinstance(value, dict) and value:
-                    target = self.worker_home / relative
-                    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
-                        temporary = Path(stream.name)
-                        try:
-                            stream.write(raw)
-                            stream.flush()
-                            os.replace(temporary, target)
-                            self.credential_baseline = raw
-                        finally:
-                            temporary.unlink(missing_ok=True)
+                if raw == self.credential_baseline[relative] or not raw.strip():
+                    continue
+                if credential.suffix == ".json":
+                    value = json.loads(raw)
+                    if not isinstance(value, dict) or not value:
+                        continue  # a partially written JSON file is checked again later
+                target = self.worker_home / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+                    temporary = Path(stream.name)
+                    try:
+                        stream.write(raw)
+                        stream.flush()
+                        os.replace(temporary, target)
+                        self.credential_baseline[relative] = raw
+                    finally:
+                        temporary.unlink(missing_ok=True)
             except (OSError, ValueError) as error:
                 print("Reviewer credential synchronization failed: " + str(error), file=sys.stderr)
 
@@ -353,6 +447,18 @@ class Reviewer:
                     diagnostic = (turn / "stderr.log").read_text(errors="replace")[
                         -65536:
                     ]
+                    # Antigravity reports authentication and model errors on stdout.
+                    for line in (turn / "stdout.jsonl").read_text(errors="replace").splitlines()[-200:]:
+                        try:
+                            record = json.loads(line)
+                        except ValueError:
+                            continue
+                        nested = record.get("result") if isinstance(record, dict) else None
+                        if isinstance(record, dict) and (
+                                record.get("type") in ("error", "turn.failed") or record.get("is_error")
+                                or record.get("status") == "ERROR"
+                                or isinstance(nested, dict) and nested.get("status") == "ERROR"):
+                            diagnostic += "\n" + json.dumps(record)
                     raise ProviderError(
                         failure_kind(diagnostic),
                         f"Reviewer process failed (exit {code}); see {turn.name}/stderr.log",
@@ -375,6 +481,10 @@ class Reviewer:
         return time.monotonic() - started
 
     def ensure(self, cancelled):
+        with self.setup_lock:
+            self._ensure(cancelled)
+
+    def _ensure(self, cancelled):
         if not self.binary:
             location = self.runtime / "installation"
             metadata = location / "artifacts/agent-cli.json"
@@ -408,6 +518,9 @@ class Reviewer:
             flags = (
                 ("--json", "--output-schema", "--ignore-user-config", "--ignore-rules")
                 if self.provider == "codex"
+                else ("--output-format", "--json-schema", "--conversation", "--settings",
+                      "--disable-slash-commands", "--print-timeout", "--input-format")
+                if self.provider == "antigravity"
                 else (
                     "--restricted",
                     "--safe-mode",
@@ -428,7 +541,8 @@ class Reviewer:
             for number, arguments in enumerate(probes):
                 probe = self.runtime / f"probe-help-{number}"
                 self.execute(arguments, self.home, probe, "", 15, cancelled)
-                help_text = (probe / "stdout.jsonl").read_text()
+                # agy prints its usage to stderr.
+                help_text = (probe / "stdout.jsonl").read_text() + (probe / "stderr.log").read_text(errors="replace")
                 if any(flag not in help_text for flag in flags):
                     raise ProviderError(
                         "unsupported_cli",
@@ -449,6 +563,48 @@ class Reviewer:
                 },
             )
             self.checked = True
+
+    def list_models(self, cancelled):
+        """Return the models the installed CLI offers now; reject unexpected formats."""
+        self.ensure(cancelled)
+        stdin = None
+        if self.provider == "codex":
+            command = [self.binary, "debug", "models"]
+        elif self.provider == "antigravity":
+            command = [self.binary, "models"]
+        else:
+            # Send only the SDK initialize request; without user input no model call is made.
+            command = [self.binary, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+                       "--verbose", "--setting-sources", "", "--settings", str(self.home / ".claude/settings.json"),
+                       "--strict-mcp-config", "--mcp-config", str(self.runtime / "empty-mcp.json"),
+                       "--disable-slash-commands"]
+            stdin = json.dumps({"type": "control_request", "request_id": "agentrun-models",
+                                "request": {"subtype": "initialize"}}) + "\n"
+        scratch = self.runtime / "scratch" / "models"
+        scratch.mkdir(parents=True, exist_ok=True)
+        process = subprocess.Popen(command, cwd=scratch, env=dict(self.env, CLAUDE_CODE_TMPDIR=str(scratch)),
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, start_new_session=True)
+        try:
+            stdout, stderr = process.communicate(stdin, timeout=MODEL_LIST_TIMEOUT)
+        except subprocess.TimeoutExpired as error:
+            raise ProviderError("model_list_unavailable", "Model listing timed out") from error
+        finally:
+            stop(process)
+            self.sync_credentials()
+        if cancelled.is_set():
+            raise InterruptedError("Model listing cancelled")
+        if process.returncode:
+            kind = failure_kind(stderr[-65536:] + stdout[-65536:])
+            raise ProviderError(kind if kind != "provider_failed" else "model_list_unavailable",
+                                f"Model listing failed (exit {process.returncode})")
+        try:
+            models = parse_models(self.provider, stdout)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ProviderError("model_list_unavailable", "Unexpected model list format: " + str(error)) from error
+        if not models:
+            raise ProviderError("model_list_unavailable", "The CLI returned no models")
+        return models
 
     def prepare_input_transport(self, directory, cancelled):
         if self.provider != "codex":
@@ -551,7 +707,7 @@ class Reviewer:
             "sandbox_diagnostic": str(probe),
         }
 
-    def turn(self, directory, prompt, schema, turn, session_id, timeout, cancelled):
+    def turn(self, directory, prompt, schema, turn, session_id, timeout, cancelled, model=None, effort=None):
         self.last_session_id = session_id
         self.last_exit_code = None
         self.ensure(cancelled)
@@ -597,11 +753,39 @@ class Reviewer:
                 "-o",
                 str(turn / "answer.json"),
             ]
-            if self.model:
-                command += ["--model", self.model]
-            if self.effort:
-                command += ["-c", "model_reasoning_effort=" + json.dumps(self.effort)]
+            if model:
+                command += ["--model", model]
+            if effort:
+                command += ["-c", "model_reasoning_effort=" + json.dumps(effort)]
             command += ["-"]
+        elif self.provider == "antigravity":
+            # Read only this round's input; commands, writes, URLs and MCP are denied,
+            # and the PreToolUse hook rejects anything else that slips through.
+            settings = {
+                "toolPermission": "request-review",
+                "allowNonWorkspaceAccess": False,
+                "enableTerminalSandbox": True,
+                "permissions": {
+                    "allow": ["read_file(" + str(directory.resolve()) + ")"],
+                    "deny": ["command(*)", "write_file(*)", "read_url(*)", "execute_url(*)", "mcp(*)"],
+                    "ask": [],
+                },
+            }
+            settings_path = self.home / ".gemini/antigravity-cli/settings.json"
+            atomic_json(settings_path, settings)
+            hook = " ".join(shlex.quote(part) for part in
+                            ("/usr/bin/python3", "-Es", str(REVIEW_HOOK), str(directory.resolve())))
+            atomic_json(self.home / ".gemini/config/hooks.json", {"agentrun-review": {"PreToolUse": [
+                {"matcher": ".*", "hooks": [{"type": "command", "command": hook, "timeout": 30}]}]}})
+            command = [self.binary, "--input-format", "stream-json", "--output-format", "stream-json",
+                       "--json-schema", str(schema_path), "--settings", str(settings_path),
+                       "--disable-slash-commands", "--print-timeout", "0"]
+            if session_id:
+                command += ["--conversation", session_id]
+            if model:
+                command += ["--model", model]
+            if effort:
+                command += ["--effort", effort]
         else:
             command = [
                 self.binary,
@@ -631,11 +815,13 @@ class Reviewer:
             ]
             if session_id:
                 command += ["--resume", session_id]
-            if self.model:
-                command += ["--model", self.model]
-            if self.effort:
-                command += ["--effort", self.effort]
-        elapsed = self.execute(command, directory, turn, prompt, timeout, cancelled)
+            if model:
+                command += ["--model", model]
+            if effort:
+                command += ["--effort", effort]
+        cli_prompt = (json.dumps({"event": "user", "message": {"content": prompt}}) + "\n"
+                      if self.provider == "antigravity" else prompt)
+        elapsed = self.execute(command, directory, turn, cli_prompt, timeout, cancelled)
         raw = (turn / "stdout.jsonl").read_text()
         if self.provider == "codex":
             records = [json.loads(line) for line in raw.splitlines() if line.strip()]
@@ -673,6 +859,25 @@ class Reviewer:
                     None,
                 ),
             }
+        elif self.provider == "antigravity":
+            records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+            results = [r["result"] for r in records if r.get("event") == "result" and isinstance(r.get("result"), dict)]
+            if len(results) != 1:
+                raise ProviderError("invalid_output_or_input", "Antigravity returned no unique final result")
+            envelope = results[0]
+            native = envelope.get("conversation_id")
+            if isinstance(native, str) and IDENT.fullmatch(native):
+                self.last_session_id = native
+            if envelope.get("status") != "SUCCESS":
+                raise ProviderError(failure_kind(str(envelope.get("error", ""))),
+                                    "Antigravity did not complete its turn")
+            ident = native
+            result = envelope.get("structured_output")
+            if result is None:
+                result = antigravity_answer(envelope.get("response"))
+            if not isinstance(result, dict):
+                raise ProviderError("invalid_output_or_input", "Antigravity returned no structured result")
+            metadata = {key: envelope.get(key) for key in ("model", "usage", "duration_seconds", "num_turns")}
         else:
             envelope = json.loads(raw)
             if isinstance(envelope.get("session_id"), str) and IDENT.fullmatch(
@@ -687,7 +892,8 @@ class Reviewer:
             ident = envelope.get("session_id")
             result = envelope.get("structured_output")
             metadata = {
-                "model": envelope.get("model"),
+                # The final envelope names the resolved model only through modelUsage.
+                "model": envelope.get("model") or next(iter(envelope.get("modelUsage") or {}), None),
                 "usage": envelope.get("usage"),
                 "model_usage": envelope.get("modelUsage"),
                 "estimated_cost_usd": envelope.get("total_cost_usd"),

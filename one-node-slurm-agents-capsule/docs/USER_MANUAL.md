@@ -779,7 +779,11 @@ agentrun assist --agent codex --partition <partition> --repo /path/to/my-project
 claude      $HOME/.agentrun/auth/claude/.claude/.credentials.json
             $HOME/.agentrun/auth/claude/.claude.json
 codex       $HOME/.agentrun/auth/codex/.codex/auth.json
+antigravity $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity-oauth-token
+            $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
 ```
+
+Antigravity は相互監査の監査担当としてだけ使い、作業エージェントには指定できません。`auth login --all` は作業エージェント（Codex・Claude Code）だけを対象にし、`auth import --all` と `auth status` は Antigravity も含みます。
 
 各エージェント CLI は、更新用トークン（`refresh_token`）が利用できれば、ジョブ実行中に期限切れになったアクセストークンを自動更新します。更新できない場合や認証が失われた場合は、再ログインして認証ストアを更新します。
 
@@ -926,15 +930,17 @@ with sqlite3.connect(root / "index.sqlite3") as db:
 
 ## 対話による相互監査
 
-Claude Code の作業を Codex に、Codex の作業を Claude Code に監査させられます。共通スキルの `cross-review` が、監査依頼、質問への回答、修正・反論後の再監査を案内します。監査は作業中の Slurm ジョブに割り当てられた資源で実行し、追加のジョブは投入しません。
+Claude Code の作業を Codex に、Codex の作業を Claude Code に監査させられます。Antigravity（`agy`）も監査担当として依頼できます。Antigravity は作業エージェントとしては起動できず、監査の依頼先としてだけ使います。依頼ごとに監査担当を選べ、2 つの監査担当へ同時に依頼することもできます。共通スキルの `cross-review` が、監査依頼、質問への回答、修正・反論後の再監査を案内します。監査は作業中の Slurm ジョブに割り当てられた資源で実行し、追加のジョブは投入しません。
 
-両方の認証情報を投入元ホストで準備してください。既にログイン済みなら `agentrun auth import --all` で登録できます。相手側の認証がなくても通常の作業は開始できますが、監査の依頼は認証不足として失敗します。
+監査担当の認証情報を投入元ホストで準備してください。既にログイン済みなら `agentrun auth import --all` で登録できます。Antigravity を使う場合は、ホストの `agy` でログインしてから `agentrun auth import --agent antigravity` を実行します（`agentrun auth login --agent antigravity` は `agy` を起動します。ログイン後に `/exit` で終了してください）。保存するのは `~/.gemini/antigravity-cli/` の `antigravity-oauth-token` と `installation_id` だけです。監査担当の認証がなくても通常の作業は開始できますが、その監査担当への依頼は認証不足（`missing_authentication`）として失敗します。認証は起動時に run の HOME へ配置するため、実行中にホストで再ログインしても、その run には反映されません。ログインと `auth import` の後に resume してください。
 
 作業エージェントには `cross-review` の MCP サーバーを自動登録します。MCP は、エージェントから監査用のツールを呼び出すための接続方式です。監査用 CLI は最初の依頼時に導入し、その実行中は再利用します。監査側で更新された認証情報は、変更があった場合だけ既存の認証保存経路へ戻します。会話履歴の保存領域には認証情報を含めません。
 
 ### 監査の依頼と質疑応答
 
 コンテナ内の作業エージェントに、例えば「cross-review を使って、この変更と研究上の主張を監査して」と依頼します。監査エージェントから質問が届くと、作業エージェントが理由と証拠を回答し、同じ監査会話を続けます。
+
+監査担当を省略すると、Claude Code の作業は Codex、Codex の作業は Claude Code が監査します。MCP の `reviewers`、CLI の `--reviewers codex,antigravity` で依頼先を指定できます。複数を指定した場合は監査担当ごとに別の `review_id` と `review_thread_id` が返り、それぞれ独立に回答・再監査します。同じ監査担当で同時に進められる会話は 1 つです。一方の認証切れや中止は、もう一方を止めません。
 
 質疑応答の途中では対象ファイルを変更せず、判定が返ってから修正や反論を行います。ラウンド数・質疑応答数に上限はありません。現在の変更について合意するか、ユーザーが中止するまで質問・回答・修正・再監査を続けられます。承認後にさらに変更した場合は、その変更も再監査してください。
 
@@ -972,6 +978,49 @@ agent-review status REVIEW_ID
   "include": []
 }
 ```
+
+### 監査担当のモデル
+
+利用できるモデルは CLI の更新で変わるため、作業エージェントは依頼の前に `review_models`（CLI では `agent-review models --reviewers codex`）で現在の一覧を取得します。各監査担当 CLI から、モデルの `id`・説明・対応する effort と、起動時に設定された値（`configured`）が返ります。初回は監査担当 CLI の導入を伴うため数分かかる場合があります。一覧は 10 分間キャッシュします。一覧の取得はモデルを呼び出しません。
+
+| 監査担当 | 一覧の取得元 | effort |
+| --- | --- | --- |
+| Codex | `codex debug models`（一覧表示用のモデルだけ） | モデルごとの対応値から選ぶ |
+| Claude Code | SDK の初期化応答 | モデルごとの対応値から選ぶ。`opus` などの別名と正式名のどちらも指定できる |
+| Antigravity | `agy models` | モデル ID に effort が含まれるため指定しない |
+
+モデルと effort は、次の優先順位で決まります。
+
+1. ユーザーが会話で指定した値（作業エージェントは `model_source: "user"` を付ける）
+2. 起動時の環境変数 `AGENT_REVIEW_<監査担当>_MODEL` / `_EFFORT`
+3. 作業エージェントが一覧の説明から選んだ値
+4. 各 CLI の既定値
+
+環境変数を設定した項目を、作業エージェントの判断で上書きすることはできません。MCP では `review_start(..., reviewers=["codex"], models={"codex": "<id>"}, efforts={"codex": "<effort>"})`、CLI では `agent-review run ... --reviewers codex --model codex=<id> --effort codex=<effort>` のように監査担当ごとに指定します。再監査（`recheck`）は前ラウンドの選択を引き継ぎ、変える場合だけ `model` / `effort` を渡します。
+
+一覧にないモデルや対応していない effort は、監査担当 CLI を起動する前に `error_kind: invalid_model` で失敗します。`recovery.available_models` から選び直し、`review_retry` / `agent-review retry REVIEW_ID --request-id ID --model MODEL` で同じラウンドを再試行できます。取得済みのスナップショットと未送信の回答は保持します。一覧を取得できない場合はモデルの存在判定を CLI に任せ、CLI が拒否した場合も同じく `invalid_model` になります。
+
+選択値とその出典は `model_selection`、実際に使われたモデルは `model_used` に記録し、`report.md` にも出力します。
+
+### ホストから対話を確認する
+
+監査担当と作業エージェントのやり取りは、ホストの別ターミナルで読めます。読み取り専用の表示で、実行中の監査には影響しません。
+
+```bash
+agentrun reviews                       # latest run の監査一覧（番号付き）
+agentrun reviews 1                     # 1 番のスレッドの対話全体
+agentrun reviews --follow              # 進行中のスレッドだけを追跡
+agentrun reviews --follow --reviewer antigravity
+agentrun reviews RUN_ID 2              # run を指定する場合
+```
+
+```text
+run-20261031-201955 の相互監査（1スレッド、進行中 0）
+ No  reviewer     state              rounds  latest                   started         model
+  1  antigravity  終了                    1  approve                  10-31 20:20:09  gemini-3.8-flash-low (agent)
+```
+
+`--follow` は、開始時に進行中のスレッドと、その後に始まった監査を追跡します。2 つの監査担当へ同時に依頼した場合は、各行に `codex#2` のような監査担当と番号を付け、時刻順に表示します。各スレッドの終了時には判定を表示します。Ctrl+C で終了します。番号の代わりに `thread-` / `review-` で始まる ID の先頭も指定できます。表示前に端末制御文字を取り除きます。
 
 ### 修正・反論後の再監査
 
@@ -1024,8 +1073,8 @@ Git で追跡しているソースコードと、作業開始時のコミット�
 
 | 変数 | 内容・既定値 |
 | --- | --- |
-| `AGENT_REVIEW_CODEX_MODEL` / `AGENT_REVIEW_CLAUDE_MODEL` | 監査に使うモデル。未指定なら各 CLI の既定値 |
-| `AGENT_REVIEW_CODEX_EFFORT` / `AGENT_REVIEW_CLAUDE_EFFORT` | 監査時の推論強度。導入された CLI が対応する値を指定 |
+| `AGENT_REVIEW_CODEX_MODEL` / `AGENT_REVIEW_CLAUDE_MODEL` / `AGENT_REVIEW_ANTIGRAVITY_MODEL` | 監査担当ごとのモデル。設定するとユーザーの指定として扱い、作業エージェントは上書きできない。未指定なら作業エージェントの選択、それもなければ各 CLI の既定値 |
+| `AGENT_REVIEW_CODEX_EFFORT` / `AGENT_REVIEW_CLAUDE_EFFORT` / `AGENT_REVIEW_ANTIGRAVITY_EFFORT` | 監査時の推論強度。導入された CLI が対応する値を指定。Antigravity はモデル ID に effort が含まれるため通常は不要 |
 | `AGENT_REVIEW_ACTIVE_TIMEOUT` | CLI を 1 回呼び出す際の任意の時間制限（秒）。既定は `0`（無制限）。累計時間には適用しない |
 
 `AGENT_REVIEW_MAX_EXCHANGES` / `AGENT_REVIEW_REPLY_TIMEOUT` / `AGENT_REVIEW_THREAD_TIMEOUT` は廃止しました。以前の `launch.json` に残っていても、resume 時に無視します。有効なモデル・effort・単発 CLI の時間制限は保存済み設定から復元するため、コンテナの `--cleanenv` で失われません。
@@ -1042,13 +1091,15 @@ Git で追跡しているソースコードと、作業開始時のコミット�
 
 各ラウンドの記録は `/runs/reviews/REVIEW_ID/` に保存します。`conversation.md`、`events.jsonl`、`review_findings.json`、`report.md`、`response.json` と、発言ごとのログが含まれます。
 
-CLI が保存する元の履歴は、既存のセッション保存領域の `reviewers/PROVIDER/` に分け、作業セッションの再開対象には含めません。終了後は、ホスト側の履歴保存処理で両エージェントの会話と監査対話を `~/.agentrun/history/` の Markdown・SQLite に集約します。
+CLI が保存する元の履歴は、既存のセッション保存領域の `reviewers/PROVIDER/` に分け、作業セッションの再開対象には含めません。終了後は、ホスト側の履歴保存処理で両エージェントの会話と監査対話を `~/.agentrun/history/` の Markdown・SQLite に集約します。Antigravity の元の履歴は形式が異なるため集約しません。Antigravity との対話も `/runs/reviews/REVIEW_ID/conversation.md` と `events.jsonl` には記録されます。
 
 MCP に必要なパッケージは、`mcp==1.26.0` を指定した uv 環境に取得し、`/cache/uv` を使います。初回は配布先への接続が必要です。イメージの再ビルドは不要です。詳細は[相互監査の設計書](CROSS_AGENT_REVIEW_DESIGN.md)を参照してください。
 
 Codex のレビュワーには、スナップショット内だけを対象にした `capsule-input` MCP を渡します。利用できる操作はファイル一覧、UTF-8 テキストの行指定読み取り、文字列検索です。元の作業領域へのアクセス、範囲外のパス、シンボリックリンク、書き込みは受け付けません。`sandbox_mode="read-only"` は維持するため、内側の `bwrap` が起動できない環境でも、この読み取り経路を使って監査できます。
 
 モデルを呼ぶ前に読み取りMCPを検査し、失敗時は `input_reader_unavailable` として停止します。モデルによる判定は開始しません。シェルの sandbox の検査結果は `input_access`、詳細は `/runs/reviews/runtime/codex/probe-inputs/` と `probe-sandbox/` に保存します。`bwrap` の起動失敗を検出した場合はシェルを使わずMCPで読み取り、無制限実行へ切り替えることはありません。sandbox が書き込みを許してしまうなど、制限を検証できない異常は停止します。
+
+Antigravity の監査担当は、スナップショットのディレクトリ内の読み取りだけを許可した設定で起動します。コマンド実行、書き込み、URL の読み取り、MCP は設定で拒否し、さらに PreToolUse hook（`runtime/agentrun/review_hook.py`）が読み取り系ツールと回答提出用の `finish` 以外を拒否します。読み取り系ツールでも、スナップショット外のパスは拒否します。hook が判定できない入力も拒否します。`agy` 自体は監査用の HOME に最新版を導入するため、イメージの再ビルドは不要です。
 
 新しいシステムイメージには Ubuntu の `bubblewrap` パッケージを追加し、起動時は `/dev/full` を明示的に渡します。これらはシェルの sandbox の互換性を改善する変更です。専用MCPによる読み取り経路は既存イメージでも利用でき、システム版 `bubblewrap` の追加にはイメージの再ビルドが必要です。
 
@@ -1061,7 +1112,7 @@ uv run --no-project --with mcp==1.26.0 python -m unittest discover -s tests -p '
 uv run --no-project python -m unittest discover -s tests -p test_review_launch.py -v
 ```
 
-実環境では、両方の認証を準備し、`agentrun assist --agent claude` と `agentrun assist --agent codex` をそれぞれ起動します。小さな Git リポジトリの変更について `cross-review` を依頼し、両方向で質問への回答、修正・反論後の再監査まで進めてください。会話 ID、権限制限、作業エージェントの成果物、終了後の集約履歴を確認します。この試験では、実際のモデルの利用枠を消費します。
+実環境では、監査担当の認証を準備し、`agentrun assist --agent claude` と `agentrun assist --agent codex` をそれぞれ起動します。Antigravity は `reviewers` に加えて依頼します。小さな Git リポジトリの変更について `cross-review` を依頼し、両方向で質問への回答、修正・反論後の再監査まで進めてください。会話 ID、権限制限、作業エージェントの成果物、終了後の集約履歴を確認します。この試験では、実際のモデルの利用枠を消費します。
 
 <a id="rust--日本語-lualatex"></a>
 
@@ -1413,7 +1464,7 @@ URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれ
 | `research-latex` | 学術論文・技術報告書・モノグラフのテンプレートを使い、日英の研究文書を PDF にします。LuaLaTeX、Biber、構造検証、目視確認用のページ画像生成に対応します。付属の例は架空のデータです。 |
 | `yomiyasu` | 意味を保ちながら日本語を推敲します。文章の点検と修正前後の比較に使うツールを含みます。数値や研究上の主張の正しさは、別途検証します。名前を出して頼んだときだけ使います。 |
 | `natural-japanese` | 議事録・レポート・ガイド・PR の説明文などの仕事の日本語文書を、自然で読みやすく書く・直すためのスキルです。AI らしさの診断（書き換えなし）や文体の学習にも対応します。 |
-| `cross-review` | もう一方のエージェントに監査を依頼し、質問への回答、修正・反論の記録、再監査を進めます。 |
+| `cross-review` | もう一方のエージェントや Antigravity に監査を依頼し、監査担当のモデル選択、質問への回答、修正・反論の記録、再監査を進めます。 |
 
 標準搭載のスキルは、この 9 種類です。
 
@@ -1614,7 +1665,7 @@ agentrun validate
 - 実行状態・ログ・一覧・保存先・成果物の確認
 - 基本動作確認用のひな型
 - `resume` による会話の再開と、Markdown・SQLite への履歴保存
-- `cross-review` による対話式の相互監査
+- `cross-review` による対話式の相互監査（Antigravity を監査担当に含む複数同時依頼、モデル選択、`agentrun reviews` での確認）
 - 計算ノードの SSD 領域の条件付きマウント
 - `--overlap` による、実行中のジョブ内での別設定のエージェントコンテナの追加起動（対話式）
 
@@ -1716,7 +1767,7 @@ agentrun doctor --agent NAME
 agentrun auth login --agent NAME
 ```
 
-`auth login` はホスト CLI でのログイン（`claude auth login` / `codex login`）と認証ストアへのインポートを一括で実行します。
+`auth login` はホスト CLI でのログイン（`claude auth login` / `codex login` / Antigravity は `agy` を起動してログイン後に `/exit`）と認証ストアへのインポートを一括で実行します。
 
 <a id="capsule-の中で-apptainer-exec-が失敗するnested-apptainer--squashfuse_ll-エラー"></a>
 
@@ -1824,6 +1875,7 @@ agentrun list-runs
 agentrun open-run [RUN_DIR]
 agentrun verify-run [RUN_DIR|--run-id RUN_ID]
 agentrun history [RUN_ID|RUN_DIR] [--watch]
+agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]
 ```
 
 ### 主なオプション

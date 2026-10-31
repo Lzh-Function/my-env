@@ -17,7 +17,7 @@ tests/fixtures/           smoke-test goal ファイルおよびダミー reposit
 
 対応する agent は `codex` と `claude` です。省略時は `claude`（Claude Code）を使います。
 
-共通skill `cross-review`により、Claude Codeの作業をCodexに、その逆も同じallocation内で監査させられます。監査途中の質問・回答、指摘への返答、回数・全体時間の上限を設けない再監査をCLIとMCPの両方から扱います。両方の認証を準備してください。[利用手順](docs/USER_MANUAL.md#対話による相互監査)と[設計書](docs/CROSS_AGENT_REVIEW_DESIGN.md)を参照してください。
+共通skill `cross-review`により、Claude Codeの作業をCodexに、その逆も同じallocation内で監査させられます。Antigravityも監査の依頼先として使えます（作業エージェントとしては起動しません）。依頼ごとに監査担当と、各CLIが現在提供するモデルを選べ、2つの監査担当への同時依頼にも対応します。監査途中の質問・回答、指摘への返答、回数・全体時間の上限を設けない再監査をCLIとMCPの両方から扱い、対話はホストの別ターミナルで`agentrun reviews --follow`により確認できます。使う監査担当の認証を準備してください。[利用手順](docs/USER_MANUAL.md#対話による相互監査)と[設計書](docs/CROSS_AGENT_REVIEW_DESIGN.md)を参照してください。
 
 ## Quick Start
 

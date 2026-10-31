@@ -31,8 +31,16 @@ def review_start(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     one_shot: bool = False,
+    reviewers: Annotated[list[str] | None, Field(
+        description="Other providers to ask: codex, claude, antigravity. Omitted means the opposite of Codex/Claude.")] = None,
+    models: Annotated[dict[str, str] | None, Field(
+        description="Reviewer model per provider, e.g. {\"codex\": \"<id from review_models>\"}.")] = None,
+    efforts: Annotated[dict[str, str] | None, Field(
+        description="Reasoning effort per provider; must be listed for the chosen model. Omit for Antigravity.")] = None,
+    model_source: Annotated[str | None, Field(
+        description="'user' only when the user explicitly named the model/effort; otherwise 'agent'.")] = None,
 ) -> dict:
-    """Start the opposite-provider reviewer. brief is a FILE PATH; include names evidence paths, exclude names repository glob patterns. Poll review_events and answer questions."""
+    """Start reviews with other providers (codex, claude, antigravity). reviewers selects one or more; multiple targets return reviews[]. Call review_models first and choose models/efforts unless the user specified them or the response shows a configured value. brief is a FILE PATH; include names evidence paths, exclude names repository glob patterns. Poll and answer each review independently."""
     params = {
         "request_id": request_id,
         "brief": brief,
@@ -43,7 +51,20 @@ def review_start(
     }
     if base:
         params["base"] = base
+    for key, value in (("reviewers", reviewers), ("models", models), ("efforts", efforts),
+                       ("model_source", model_source)):
+        if value is not None:
+            params[key] = value
     return client.call("run", params)
+
+
+@mcp.tool()
+def review_models(reviewers: list[str] | None = None, refresh: bool = False) -> dict:
+    """List models each reviewer CLI currently offers (id, name, description, supported efforts) and any user-configured model. Lists change with CLI updates; never rely on memorized names. The first call may take minutes while the reviewer CLI is installed."""
+    params = {"refresh": refresh}
+    if reviewers is not None:
+        params["reviewers"] = reviewers
+    return client.call("models", params, timeout=900)
 
 
 @mcp.tool()
@@ -67,14 +88,28 @@ def review_recheck(
     response: dict,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    model_source: str | None = None,
 ) -> dict:
-    """Use round 2 after fixes/rebuttal. response: responses[{finding_id,action,reason,evidence}]."""
+    """Start the next round after fixes/rebuttal. response: responses[{finding_id,action,reason,evidence}]. model/effort default to the previous round's choice."""
     params = {"review_id": review_id, "request_id": request_id, "response": response}
-    if include is not None:
-        params["include"] = include
-    if exclude is not None:
-        params["exclude"] = exclude
+    for key, value in (("include", include), ("exclude", exclude), ("model", model), ("effort", effort),
+                       ("model_source", model_source)):
+        if value is not None:
+            params[key] = value
     return client.call("recheck", params)
+
+
+@mcp.tool()
+def review_retry(review_id: str, request_id: str, model: str | None = None, effort: str | None = None,
+                 model_source: str | None = None) -> dict:
+    """Retry the same round after an invalid_model failure with a model from review_models. Use a fresh request_id; the snapshot and pending reply are retained."""
+    params = {"review_id": review_id, "request_id": request_id}
+    for key, value in (("model", model), ("effort", effort), ("model_source", model_source)):
+        if value is not None:
+            params[key] = value
+    return client.call("retry", params)
 
 
 @mcp.tool()

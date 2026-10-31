@@ -9,6 +9,8 @@ cache_dir="${3:-/cache}"
 case "$agent" in
     claude) url=https://claude.ai/install.sh; cli=claude ;;
     codex) url=https://chatgpt.com/codex/install.sh; cli=codex ;;
+    # Antigravity is installed only for cross-review reviewers.
+    antigravity) url=https://antigravity.google/cli/install.sh; cli=agy ;;
     *) printf 'unknown agent: %s\n' "$agent" >&2; exit 2 ;;
 esac
 
@@ -56,7 +58,9 @@ case "$agent" in
             CODEX_INSTALL_DIR="$bin_dir" CODEX_RELEASE=latest CODEX_NON_INTERACTIVE=1 \
             CODEX_INSTALL_DAEMON_ONLY=0 CODEX_INSTALL_DEFER_SELECTION=0 \
             sh "$tool_root/install.sh" </dev/null >> "$log" 2>&1 ;;
-
+    antigravity)
+        timeout --kill-after=5s 600 env "${installer_env[@]}" bash "$tool_root/install.sh" --dir "$bin_dir" \
+            </dev/null >> "$log" 2>&1 ;;
 esac
 
 # PATH 上の image 内旧版ではなく、今回インストールした実体を検証する。

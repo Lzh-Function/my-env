@@ -9,12 +9,13 @@ import sys
 from pathlib import Path
 
 
-def call(action, params):
+def call(action, params, timeout=30):
     endpoint = os.environ.get("AGENT_REVIEW_SOCKET")
     if not endpoint:
         raise ValueError("agent-review is available inside an agentrun capsule")
     with socket.socket(socket.AF_UNIX) as client:
-        client.settimeout(30)
+        # The first model listing installs the reviewer CLI, so callers may wait longer.
+        client.settimeout(timeout)
         client.connect(endpoint)
         client.sendall(
             (json.dumps({"action": action, "params": params}) + "\n").encode()
@@ -29,16 +30,45 @@ def call(action, params):
         return result["result"]
 
 
+def provider_values(values):
+    """Turn --model codex=MODEL style options into a per-reviewer mapping."""
+    result = {}
+    for value in values or []:
+        provider, separator, choice = value.partition("=")
+        if not separator or not provider.strip() or not choice.strip():
+            raise ValueError("Use PROVIDER=VALUE, for example --model codex=MODEL")
+        if provider.strip() in result:
+            raise ValueError("Duplicate value for " + provider.strip())
+        result[provider.strip()] = choice.strip()
+    return result or None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("mcp", help="Expose the same review operations over stdio MCP")
-    for action in ("run", "reply", "recheck", "status", "events", "cancel", "extend"):
+    models = sub.add_parser("models", help="List models the reviewer CLI currently offers")
+    models.add_argument("--reviewers", "--reviewer", help="Reviewer names, comma-separated (default: all others)")
+    models.add_argument("--refresh", action="store_true", help="Ignore the 10-minute cache")
+    for action in ("run", "reply", "recheck", "retry", "status", "events", "cancel", "extend"):
         p = sub.add_parser(action)
         if action != "run":
             p.add_argument("review_id")
-        if action in ("run", "reply", "recheck", "cancel", "extend"):
+        if action in ("run", "reply", "recheck", "retry", "cancel", "extend"):
             p.add_argument("--request-id", required=True)
+        if action == "run":
+            p.add_argument("--reviewers", "--reviewer", help="Other providers, comma-separated: codex, claude, antigravity")
+            p.add_argument("--model", action="append", dest="models", metavar="PROVIDER=MODEL",
+                           help="Reviewer model, repeatable; see agent-review models")
+            p.add_argument("--effort", action="append", dest="efforts", metavar="PROVIDER=EFFORT")
+        if action in ("recheck", "retry"):
+            p.add_argument("--model", help="Reviewer model for this round; see agent-review models")
+            p.add_argument("--effort")
+        if action in ("run", "recheck", "retry"):
+            p.add_argument("--model-source", choices=("user", "agent"),
+                           help="user only when the user explicitly named the model or effort")
+        if action == "retry":
+            p.add_argument("--wait", action="store_true")
         if action in ("run", "recheck"):
             p.add_argument("--brief", help="Path to an existing UTF-8 brief file, not inline text")
             p.add_argument("--base")
@@ -78,20 +108,35 @@ def main():
             ],
         )
     wait = params.pop("wait", False)
+    if action in ("run", "models") and params.get("reviewers") is not None:
+        params["reviewers"] = [value.strip() for value in params["reviewers"].split(",")]
+    if action == "run":
+        params["models"], params["efforts"] = provider_values(params["models"]), provider_values(params["efforts"])
+    if action == "models":
+        print(json.dumps(call("models", params, timeout=900), ensure_ascii=False, indent=2))
+        return
     for flag, key in (("message_file", "message"), ("response", "response")):
         if flag in params:
             path = params.pop(flag)
             params[key] = json.loads(path.read_text())
     result = call(action, {k: v for k, v in params.items() if v is not None})
-    while wait and result["status"] in ("prepared", "running"):
-        result = call(
-            "events",
-            {
-                "review_id": result["review_id"],
-                "after": result["cursor"],
-                "wait_seconds": 20,
-            },
-        )
+
+    def await_result(state):
+        while wait and state["status"] in ("prepared", "running"):
+            state = call(
+                "events",
+                {
+                    "review_id": state["review_id"],
+                    "after": state["cursor"],
+                    "wait_seconds": 20,
+                },
+            )
+        return state
+
+    if "reviews" in result:
+        result = {"reviews": [await_result(item) for item in result["reviews"]]}
+    else:
+        result = await_result(result)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

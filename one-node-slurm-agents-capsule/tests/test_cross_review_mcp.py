@@ -84,6 +84,8 @@ class MCPReviewTests(unittest.TestCase):
                             "review_start",
                             "review_reply",
                             "review_recheck",
+                            "review_retry",
+                            "review_models",
                             "review_status",
                             "review_events",
                             "review_cancel",
@@ -161,8 +163,32 @@ class MCPReviewTests(unittest.TestCase):
                         brief=str(self.fixture.brief),
                     )
                     self.assertEqual(duplicate["review_id"], ident)
+                    # Each reviewer lists its own catalog; Antigravity joins Codex in one request.
+                    catalogs = await tool("review_models")
+                    self.assertEqual([entry["provider"] for entry in catalogs["reviewers"]], ["codex", "antigravity"])
+                    self.fixture.brief.write_text("approve")
+                    group = await tool("review_start", request_id="start-two", brief=str(self.fixture.brief),
+                                       one_shot=True, reviewers=["codex", "antigravity"],
+                                       models={"antigravity": "fake-flash-low"})
+                    for item in group["reviews"]:
+                        state = item
+                        for _ in range(15):
+                            state = await tool("review_events", review_id=item["review_id"], after=state["cursor"],
+                                               wait_seconds=1)
+                            if state["status"] in fixtures.review.TERMINAL:
+                                break
+                        self.assertEqual(state["verdict"], "approve", state)
 
         asyncio.run(scenario())
+        listing = self.cli("models", "--reviewers", "codex")
+        self.assertEqual([m["id"] for m in listing["reviewers"][0]["models"]], ["gpt-test"])
+        chosen = self.cli("run", "--request-id", "cli-model", "--brief", str(self.fixture.brief),
+                          "--reviewers", "codex,antigravity", "--model", "codex=gpt-test", "--effort", "codex=low",
+                          "--one-shot", "--wait")
+        states = {state["provider"]: state for state in chosen["reviews"]}
+        self.assertEqual(states["codex"]["model_used"], "gpt-test", chosen)
+        self.assertEqual(states["antigravity"]["verdict"], "approve", chosen)
+
 
 
 if __name__ == "__main__":

@@ -86,3 +86,33 @@ host collector. Existing archive/resume/default-agent tests remain in the suite.
 
 コンテナ内の回帰テストも217件すべて成功し、ホスト・コンテナともスキップはありません。
 共通skillの検証、変更した主要Python処理と新規端末ガードの静的検査、shell構文、差分の空白も確認しました。
+
+## 2026-10-31の相互監査の改良の取り込み
+
+`agent-capsule` の `d162b6d`〜`2b18c95` を確認し、相互監査の改良を取り込みました。
+あわせて、Antigravity を監査担当としてだけ再導入しました（`20871dd` の監査担当側の実装）。
+
+| 参照元 | 今回取り込んだ内容 |
+| --- | --- |
+| `c666541` | `review_models` / `agent-review models` で各監査担当 CLI の現在のモデル一覧を取得（10 分キャッシュ）。依頼・再監査・再試行ごとにモデルと effort を指定。優先順位はユーザーの明示、起動時の環境変数、エージェントの選択、CLI の既定値。一覧にない値は CLI 起動前に `invalid_model` とし、`review_retry` で同じラウンドを再試行。`model_selection` / `model_used` を記録 |
+| `c666541`, `6bfab0b`, `9f17fc1` | `agentrun reviews` で監査スレッドを番号付きで一覧・表示し、`--follow` で進行中のものだけを時刻順に追跡。`--reviewer` で絞り込み |
+| `2b18c95` | Docker 疑似クラスタの MCP 検査に `review_models` を追加 |
+| `20871dd`（一部） | Antigravity を監査担当に追加。複数の監査担当への同時依頼、監査担当ごとの設定（`AGENT_REVIEW_ANTIGRAVITY_*`）、`agentrun auth login/import/status --agent antigravity` |
+
+取り込まなかったもの:
+
+- `d162b6d` の wizard の「相互監査を有効にするか」の質問。この版では相互監査を常に有効にしており、切り替えの設定がないため対象外です。
+- `20871dd` の Antigravity を作業エージェントとして起動する機能、実行中の allocation 内での再ログイン（`agentrun auth login --run`）、認証失敗後の `review_retry`。`review_retry` は `invalid_model` の再試行だけに使います。
+- 管理 policy driver。Antigravity 監査担当の制限は、専用の `review_hook.py` と `agy` の permissions 設定で行います。
+
+実際の CLI での確認で見つかった問題には、upstream の `5f1bea2` と同じ修正を入れています。
+
+- `agy --help` は使い方を標準エラーに出力するため、CLI の機能確認では標準出力と標準エラーの両方を読みます。
+- `structured_output` がない場合は、`response` 文字列の先頭の JSON を結果として読みます。後続の文章は使いません。どちらもなければ失敗にします。
+- 監査担当が根拠を `path:12` や `path:3-8` の形で書いた場合は、取得済みのパス部分だけに直します。未知のパスは引き続き拒否し、プロンプトでも行番号は `line` 欄に書くよう指示します。
+
+この版では、さらに回答提出用の `finish` ツールを hook で許可しています。拒否すると `agy` は `structured_output` を返さず、`response` だけになります。
+
+実際の `agy` 1.4.12・`codex-cli` 0.162.1・Claude Code 2.1.316 で、モデル一覧の取得、モデルを指定した監査の承認までを確認しました。Antigravity では `--conversation` による同じ会話の継続も確認しました。
+
+SIF の再ビルドは不要です。更新後の新規起動または resume で反映されます。

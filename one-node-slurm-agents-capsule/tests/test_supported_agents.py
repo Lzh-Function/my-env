@@ -69,14 +69,18 @@ class SupportedAgentTests(unittest.TestCase):
             marker = self.home / ".agentrun/auth" / agent / "keep"
             marker.parent.mkdir(parents=True)
             marker.write_text("existing user state")
-            for prefix in (("dry-run", "assist"), ("experiment",), ("smoke-test",), ("doctor",),
-                           *(("auth", action) for action in ("login", "import", "status", "reset"))):
+            # Antigravity keeps reviewer credentials, so only the other names are rejected by auth.
+            auth = () if agent == "antigravity" else tuple(
+                ("auth", action) for action in ("login", "import", "status", "reset"))
+            for prefix in (("dry-run", "assist"), ("experiment",), ("smoke-test",), ("doctor",), *auth):
                 with self.subTest(agent=agent, command=prefix):
                     result = self.run_cli(*prefix, "--agent", agent)
                     self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                     self.assertIn("unknown agent:", result.stderr)
                     self.assertFalse((self.root / ".agent-runs").exists())
                     self.assertTrue(marker.exists())
+            if agent == "antigravity":
+                continue  # the installer also provisions the Antigravity reviewer CLI
             result = subprocess.run(["bash", str(ROOT / "runtime/agentrun/install-agent.sh"), agent,
                                      str(self.root / "run"), str(self.root / "cache")],
                                     env=self.env, text=True, capture_output=True, timeout=5)
@@ -95,18 +99,38 @@ class SupportedAgentTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_auth_all_and_doctor_all_visit_only_supported_agents(self):
-        for action, helper in (("login", "_auth_login_agent"), ("import", "_auth_import_agent")):
+        # Login --all opens only worker CLIs; import and status also cover the Antigravity reviewer.
+        for action, helper, expected in (("login", "_auth_login_agent", ["codex", "claude"]),
+                                         ("import", "_auth_import_agent", ["codex", "claude", "antigravity"])):
             result = self.source(f'{helper}() {{ printf "%s\\n" "$1"; }}; command_auth {action} --all')
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.splitlines(), ["codex", "claude"])
+            self.assertEqual(result.stdout.splitlines(), expected)
         result = self.run_cli("auth", "status")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([line for line in result.stdout.splitlines() if not line.startswith(" ")],
-                         ["codex:", "claude:"])
+                         ["codex:", "claude:", "antigravity:"])
         result = self.source('check_agent_auth() { printf "VISITED=%s\\n" "$1"; }; command_doctor --all')
         self.assertIn(result.returncode, (0, 1), result.stderr)
         self.assertEqual([line for line in result.stdout.splitlines() if line.startswith("VISITED=")],
                          ["VISITED=codex", "VISITED=claude"])
+
+    def test_antigravity_reviewer_credentials_are_imported_and_staged(self):
+        token = self.home / ".gemini/antigravity-cli/antigravity-oauth-token"
+        token.parent.mkdir(parents=True)
+        token.write_text("opaque-token")
+        (token.parent / "installation_id").write_text("install-id")
+        result = self.run_cli("auth", "import", "--agent", "antigravity")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        store = self.home / ".agentrun/auth/antigravity/.gemini/antigravity-cli"
+        self.assertEqual((store / "antigravity-oauth-token").read_text(), "opaque-token")
+        self.assertEqual((store / "installation_id").stat().st_mode & 0o777, 0o600)
+        self.assertIn("store:present", self.run_cli("auth", "status", "--agent", "antigravity").stdout)
+        token.write_text("host-token")  # the store takes precedence over the host copy
+        run = self.root / "run"
+        result = self.source('copy_auth_credentials "$1" claude', run)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((run / "home/.gemini/antigravity-cli/antigravity-oauth-token").read_text(), "opaque-token")
+        self.assertEqual((run / "home/.gemini/antigravity-cli/installation_id").read_text(), "install-id")
 
     @unittest.skipUnless(shutil.which("jq"), "jq is required for skill synchronization")
     def test_local_and_git_skill_install_sync_only_supported_agents(self):

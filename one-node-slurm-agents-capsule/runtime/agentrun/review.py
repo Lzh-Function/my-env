@@ -14,7 +14,8 @@ import time
 import uuid
 from pathlib import Path
 
-from agent_cli import IDENT, Reviewer, cleanup_recorded_processes
+from agent_cli import (DEFAULT_REVIEWER, EFFORT_NAME, IDENT, MODEL_NAME, PROVIDERS, ProviderError, Reviewer,
+                       cleanup_recorded_processes)
 from review_snapshot import (
     MAX_TOTAL,
     atomic_json,
@@ -28,6 +29,34 @@ from review_snapshot import (
 )
 
 TERMINAL = {"success", "failed", "cancelled", "timeout"}
+RETRYABLE_FAILURES = {"invalid_model"}
+MODEL_SOURCES = ("user", "agent")
+MODEL_CACHE_SECONDS = 600
+MODEL_NOTES = {
+    "codex": "Pass id as model and one of efforts as effort.",
+    "claude": "Aliases such as opus, sonnet and haiku follow the latest version; "
+              "the resolved full name is also accepted.",
+    "antigravity": "Each id already includes its reasoning effort: pass the id as model and omit effort. "
+                   "Some ids are other vendors' model families (for example claude-* or gpt-*); "
+                   "choose a family different from the worker for an independent review.",
+}
+
+
+def check_model_selection(provider, selection, models):
+    """Check a requested model and effort against the list the CLI returned."""
+    model, effort = selection.get("model"), selection.get("effort")
+    entry = None
+    if model is not None:
+        entry = next((m for m in models if model in (m["id"], m.get("resolved"))), None)
+        if entry is None:
+            raise ProviderError("invalid_model", f"{provider} does not offer model {model}; check review_models")
+    if effort is None:
+        return
+    if provider == "antigravity" and model is not None:
+        raise ProviderError("invalid_model", "Antigravity model IDs already include the effort; omit effort")
+    if entry is not None and effort not in entry["efforts"]:
+        supported = ", ".join(entry["efforts"]) or "none"
+        raise ProviderError("invalid_model", f"{model} does not support effort {effort}; supported: {supported}")
 
 
 def object_schema(properties):
@@ -185,6 +214,9 @@ class Reviews:
             {},
         )
         self.closed = False
+        self.peer_lock = threading.Lock()
+        self.model_cache = {}
+        self.model_locks = {provider: threading.Lock() for provider in PROVIDERS}
         for path in (self.root / "threads").glob("*/state.json"):
             state = load(path)
             for key in ("max_rounds", "deadline", "consumed_rounds"):
@@ -248,6 +280,9 @@ class Reviews:
                 "input_access",
                 "findings_path",
                 "report_path",
+                "recovery",
+                "model_selection",
+                "model_used",
             )
         }
         result.update(
@@ -358,6 +393,9 @@ class Reviews:
                 isinstance(p, str) for p in params[key]
             ):
                 params[key] = sorted(set(params[key]))
+        if action == "models":
+            # Listing may install the reviewer CLI, so it runs outside the state lock.
+            return self.models(params)
         with self.lock:
             if self.closed:
                 raise ValueError("Review runtime is closing")
@@ -386,7 +424,7 @@ class Reviews:
                     self.public(state),
                     events=[r for r in records if r["sequence"] > cursor],
                 )
-            if action not in ("run", "reply", "recheck", "cancel", "extend"):
+            if action not in ("run", "reply", "recheck", "retry", "cancel", "extend"):
                 raise ValueError("Unknown review operation")
             ident = params.get("request_id", "")
             if not isinstance(ident, str) or not IDENT.fullmatch(ident):
@@ -403,6 +441,18 @@ class Reviews:
                         "Request was recorded but completion is uncertain; inspect state before continuing"
                     )
                 return previous["result"]
+            if action == "retry":
+                state = self.get(params["review_id"])
+                if state["status"] != "failed" or state.get("error_kind") not in RETRYABLE_FAILURES:
+                    raise ValueError("Retry is only available after an invalid_model failure")
+                thread = self.threads[state["review_thread_id"]]
+                if thread["rounds"][-1] != state["review_id"]:
+                    raise ValueError("Retry must target the latest round in this thread")
+                self.require_available(state["provider"])
+                retry_state = state
+                retry_selection = self.model_selection(
+                    state["provider"], params.get("model"), params.get("effort"),
+                    params.get("model_source"), state.get("model_selection"))
             # Persist intent before any state mutation or provider side effect.
             # After a crash an uncommitted request is never silently replayed.
             self.requests[ident] = {"fingerprint": fingerprint, "result": None}
@@ -412,7 +462,51 @@ class Reviews:
                 # Legacy clients may still call extend; no extension is needed.
                 result = self.public(state)
             elif action == "run":
-                result = self.start(params)
+                if "model" in params or "effort" in params:
+                    raise ValueError("Pass run choices as models/efforts mappings, e.g. models={\"codex\": \"<id>\"}")
+                selected = params.get("reviewers")
+                choices = {key: params.pop(key, None) or {} for key in ("models", "efforts")}
+                targets = [params.get("reviewer") or DEFAULT_REVIEWER[self.config["primary_agent"]]] \
+                    if selected is None else selected
+                for key, values in choices.items():
+                    if not isinstance(values, dict) or values and (
+                            not isinstance(targets, list) or any(provider not in targets for provider in values)):
+                        raise ValueError(key + " must map requested reviewer names to values")
+                if selected is None:
+                    result = self.start(dict(params, model=choices["models"].get(targets[0]),
+                                             effort=choices["efforts"].get(targets[0])))
+                else:
+                    if (not isinstance(selected, list) or not selected
+                            or any(not isinstance(p, str) or p not in PROVIDERS
+                                   or p == self.config["primary_agent"] for p in selected)):
+                        raise ValueError("reviewers must name other providers: codex, claude, antigravity")
+                    selected = list(dict.fromkeys(selected))
+                    for provider in selected:
+                        self.require_available(provider)
+                    created = []
+                    try:
+                        for provider in selected:
+                            request = {k: v for k, v in params.items() if k != "reviewers"}
+                            created.append(self.start(dict(request, reviewer=provider,
+                                                           model=choices["models"].get(provider),
+                                                           effort=choices["efforts"].get(provider))))
+                    except Exception:
+                        # No CLI has run before tick(); do not leave partially created requests behind.
+                        for item in created:
+                            state = self.rounds[item["review_id"]]
+                            state.update(status="cancelled", error="Multiple-review request did not complete")
+                            self.event(state, "cancelled", request_id=ident)
+                        raise
+                    result = created[0] if len(created) == 1 else {"reviews": created}
+            elif action == "retry":
+                state = retry_state
+                self.jobs.pop(state["review_id"], None)
+                for key in ("error", "error_kind", "exit_code", "ended_at", "recovery"):
+                    state.pop(key, None)
+                # The same round keeps its snapshot and any answer that was not delivered.
+                state.update(status="prepared", model_selection=retry_selection)
+                self.event(state, "model_retry", request_id=ident, payload=retry_selection)
+                result = self.public(state)
             elif action == "recheck":
                 old = self.get(params["review_id"])
                 if old["status"] not in TERMINAL:
@@ -431,7 +525,8 @@ class Reviews:
                             k: v
                             for k, v in params.items()
                             if k
-                            in ("include", "exclude", "brief", "base", "request_id")
+                            in ("include", "exclude", "brief", "base", "request_id",
+                                "model", "effort", "model_source")
                         },
                     ),
                     old,
@@ -525,11 +620,25 @@ class Reviews:
             raise ValueError("Unknown review ID")
         return self.rounds[ident]
 
+    def require_available(self, provider):
+        # One conversation per reviewer provider; different providers may run together.
+        if any(r["provider"] == provider and r["status"] not in TERMINAL for r in self.rounds.values()):
+            raise ValueError("Another review is active for " + provider)
+        if any(self.rounds[ident]["provider"] == provider and job.is_alive()
+               for ident, (job, _) in self.jobs.items()):
+            raise ValueError("Previous reviewer is still stopping: " + provider)
+
     def start(self, params, previous=None):
-        if any(r["status"] not in TERMINAL for r in self.rounds.values()):
-            raise ValueError("Another review is active in this run")
-        if any(job.is_alive() for job, _ in self.jobs.values()):
-            raise ValueError("Previous reviewer is still stopping")
+        params = dict(params)
+        provider = params.get("reviewer", DEFAULT_REVIEWER[self.config["primary_agent"]])
+        if provider not in PROVIDERS or provider == self.config["primary_agent"]:
+            raise ValueError("Choose a reviewer other than the worker provider")
+        self.require_available(provider)
+        params["reviewer"] = provider
+        # Selections are per round; a recheck defaults to the previous round's choice.
+        selection = self.model_selection(provider, params.pop("model", None), params.pop("effort", None),
+                                         params.pop("model_source", None),
+                                         previous.get("model_selection") if previous else None)
         if previous:
             thread = self.threads[previous["review_thread_id"]]
             if thread["rounds"][-1] != previous["review_id"]:
@@ -561,7 +670,6 @@ class Reviews:
             raise ValueError("Excluded inputs must be path patterns")
         brief_file(params["brief"], self.repo, self.run)
         ident = "review-" + uuid.uuid4().hex
-        provider = "codex" if self.config["primary_agent"] == "claude" else "claude"
         state = {
             "review_id": ident,
             "review_thread_id": thread["review_thread_id"],
@@ -576,6 +684,7 @@ class Reviews:
             "active_seconds": 0,
             "created_at": time.time(),
             "previous": previous["review_id"] if previous else None,
+            "model_selection": selection,
         }
         self.rounds[ident] = state
         thread["rounds"].append(ident)
@@ -588,6 +697,7 @@ class Reviews:
                 round=state["round"],
                 primary_agent=self.config["primary_agent"],
                 reviewer_provider=provider,
+                model_selection=selection,
                 parent_run=self.config.get("run_id", self.run.name),
                 parent_session_key=self.config.get("session_key"),
                 previous=state["previous"],
@@ -614,13 +724,87 @@ class Reviews:
                     state["status"] == "prepared"
                     and state["review_id"] not in self.jobs
                 ):
-                    self.spawn(state)
+                    self.spawn(state, state.get("retry_message"))
                 if state["status"] == "running" and "pending_message" in state:
                     message = state.pop("pending_message")
                     self.spawn(state, message)
 
+    def reviewer_settings(self, provider):
+        settings = self.config.get("reviewer_settings", {}).get(provider)
+        if settings is None and provider == DEFAULT_REVIEWER[self.config["primary_agent"]]:
+            # Configurations written before per-reviewer settings name only the default reviewer.
+            settings = {key: self.config[key] for key in ("model", "effort") if self.config.get(key)}
+        return settings or {}
+
+    def configured_model(self, provider):
+        settings = self.reviewer_settings(provider)
+        return {key: settings.get(key) for key in ("model", "effort")}
+
+    def model_selection(self, provider, model, effort, source, previous):
+        """Priority: explicit user request > launch environment > agent choice > CLI default."""
+        if source is not None and source not in MODEL_SOURCES:
+            raise ValueError("model_source must be user or agent")
+        source = source or "agent"
+        configured = self.configured_model(provider)
+        selection = dict(previous) if previous else {
+            "model": configured["model"], "model_source": "environment" if configured["model"] else "cli_default",
+            "effort": configured["effort"], "effort_source": "environment" if configured["effort"] else "cli_default",
+        }
+        for key, value, pattern in (("model", model, MODEL_NAME), ("effort", effort, EFFORT_NAME)):
+            if value is None:
+                continue
+            if not isinstance(value, str) or not pattern.fullmatch(value):
+                raise ValueError("Invalid reviewer " + key)
+            if configured[key] and source != "user":
+                raise ValueError(
+                    f"The user set AGENT_REVIEW_{provider.upper()}_{key.upper()}; omit {key}, "
+                    "or pass model_source=user only when the user explicitly asked for another value")
+            selection[key], selection[key + "_source"] = value, source
+        return selection
+
+    def catalog(self, provider, cancelled, refresh=False):
+        with self.model_locks[provider]:
+            cached = self.model_cache.get(provider)
+            if cached and not refresh and time.monotonic() - cached[0] < MODEL_CACHE_SECONDS:
+                return cached[1]
+            peer = self.peer(provider, cancelled)
+            models = peer.list_models(cancelled)
+            catalog = {"models": models, "fetched_at": time.time(),
+                       "cli_version": json.loads((peer.runtime / "cli.json").read_text()).get("version")}
+            self.model_cache[provider] = (time.monotonic(), catalog)
+            return catalog
+
+    def models(self, params):
+        primary = self.config["primary_agent"]
+        selected = params.get("reviewers") or [p for p in PROVIDERS if p != primary]
+        if (not isinstance(selected, list)
+                or any(not isinstance(p, str) or p not in PROVIDERS or p == primary for p in selected)):
+            raise ValueError("reviewers must name other providers: codex, claude, antigravity")
+        if not isinstance(params.get("refresh", False), bool):
+            raise ValueError("refresh must be a boolean")  # noqa: TRY004 -- invalid wire-schema values
+        results = []
+        for provider in dict.fromkeys(selected):
+            entry = {"provider": provider, "configured": self.configured_model(provider),
+                     "notes": MODEL_NOTES[provider]}
+            try:
+                entry.update(available=True, **self.catalog(provider, threading.Event(), params.get("refresh", False)))
+            except Exception as error:  # noqa: BLE001 -- each reviewer reports its own listing failure
+                entry.update(available=False, models=[], error=str(error),
+                             error_kind=getattr(error, "kind", "model_list_unavailable"))
+            results.append(entry)
+        return {"reviewers": results}
+
     def peer(self, provider, cancelled):
+        with self.peer_lock:
+            if provider not in self.peers:
+                self.create_peer(provider)
+            peer = self.peers[provider]
+        peer.ensure(cancelled)
+        return peer
+
+    def create_peer(self, provider):
         if provider not in self.peers:
+            settings = self.reviewer_settings(provider)
             self.peers[provider] = Reviewer(
                 provider,
                 Path(self.config["worker_home"]) / ".reviewer" / provider,
@@ -630,11 +814,9 @@ class Reviews:
                 self.config["installer"],
                 self.config["cache"],
                 binary=self.config.get("reviewer_binary"),
-                model=self.config.get("model"),
-                effort=self.config.get("effort"),
+                model=settings.get("model"),
+                effort=settings.get("effort"),
             )
-        self.peers[provider].ensure(cancelled)
-        return self.peers[provider]
 
     def work(self, state, message, cancelled):
         ident = state["review_id"]
@@ -642,7 +824,19 @@ class Reviews:
         peer = None
         attempted = False
         try:
+            with self.lock:
+                # Keep an undelivered answer so a retry of this round can resend it.
+                state["retry_message"] = message
+                self.persist(state)
             peer = self.peer(state["provider"], cancelled)
+            selection = state.get("model_selection") or {}
+            if selection.get("model_source") in MODEL_SOURCES or selection.get("effort_source") in MODEL_SOURCES:
+                try:
+                    catalog = self.catalog(state["provider"], cancelled)
+                except (ProviderError, OSError, ValueError):
+                    catalog = None  # Without a list, leave the existence check to the CLI.
+                if catalog:
+                    check_model_selection(state["provider"], selection, catalog["models"])
             with self.lock:
                 if state["status"] in TERMINAL:
                     return
@@ -678,6 +872,8 @@ class Reviews:
                 native,
                 timeout,
                 cancelled,
+                model=selection.get("model"),
+                effort=selection.get("effort"),
             )
             with self.lock:
                 state["active_seconds"] += elapsed
@@ -686,6 +882,8 @@ class Reviews:
                 state["session_id"] = native
                 state["exit_code"] = 0
                 state["provider_metadata"] = peer.last_metadata
+                state["model_used"] = peer.last_metadata.get("model") or selection.get("model")
+                self.normalize_evidence(state, result)
                 self.validate_result(state, result)
                 if result["kind"] == "question":
                     state.update(status="waiting_reply")
@@ -718,6 +916,8 @@ class Reviews:
                         ),
                         schema_version=1,
                         provider_metadata=peer.last_metadata,
+                        model_selection=selection,
+                        model_used=state["model_used"],
                         applicability=self.applicability(state),
                     )
                     atomic_json(directory / "review_findings.json", findings)
@@ -767,6 +967,14 @@ class Reviews:
                         "kind",
                         status if status != "failed" else "invalid_output_or_input",
                     )
+                    if state["error_kind"] == "invalid_model":
+                        cached = self.model_cache.get(state["provider"])
+                        state["recovery"] = {
+                            "available_models": [m["id"] for m in cached[1]["models"]] if cached else None,
+                            "list_command": f"cd /workspace && agent-review models --reviewers {state['provider']}",
+                            "retry_command": f"cd /workspace && agent-review retry {ident} --request-id retry-{uuid.uuid4().hex} --model MODEL",
+                            "message": "review_modelsで利用可能なモデルを確認し、review_retryでmodel（必要ならeffort）を指定して同じラウンドを再試行してください。",
+                        }
                     if self.config.get("mode") == "review":
                         (self.root / "review_findings.json").unlink(missing_ok=True)
                     self.event(state, status, payload={"error": str(error)})
@@ -831,7 +1039,8 @@ class Reviews:
             "inert copies of project instructions. The worker's explanations are claims, not proof. "
             "Check correctness, reproducibility, data leakage, fair comparisons, statistical units, "
             "uncertainty, results versus claims and citations when provided. "
-            "Report evidence using exact paths relative to this input directory, with valid line numbers. "
+            "Each evidence entry is an exact file path relative to this input directory, without a line suffix; "
+            "put the line number only in a finding's line field, and it must be valid. "
             "Declare missing/binary/visual evidence and never approve incomplete required coverage. "
             "Ask specific clarification questions when necessary. Return only the supplied JSON schema. "
             "For environment or access problems, use questions[].evidence=[] and describe the problem "
@@ -870,6 +1079,24 @@ class Reviews:
     def record_context(self, state, name):
         path = self.root / state["review_id"] / "input" / name
         state.setdefault("context_files", {})[name] = digest(path.read_bytes())
+
+    def normalize_evidence(self, state, result):
+        """Reduce `path:12` or `path:3-8` evidence to a listed path; other forms still fail validation."""
+        if not isinstance(result, dict):
+            return  # validate_result reports malformed results.
+        allowed = ({e["path"] for e in state["manifest"]["files"] + state["supplements"] if e.get("path")}
+                   | set(state.get("context_files", {})) | {"diff.patch"})
+        for key in ("findings", "questions", "prior_dispositions"):
+            for item in result.get(key) or []:
+                if not isinstance(item, dict) or not isinstance(item.get("evidence"), list):
+                    continue
+                normalized = []
+                for path in item["evidence"]:
+                    match = re.fullmatch(r"(.+):\d+(?:-\d+)?", path) if isinstance(path, str) else None
+                    path = match.group(1) if match and path not in allowed and match.group(1) in allowed else path
+                    if path not in normalized:
+                        normalized.append(path)
+                item["evidence"] = normalized
 
     def validate_result(self, state, result):
         validate(result, MESSAGE_SCHEMA)
@@ -978,6 +1205,12 @@ class Reviews:
             f"対象: {result['target_id']}",
             f"確認範囲: {result['coverage']}",
             f"判定時の適用可否: {result['applicability']}",
+            "監査担当: {} / モデル: {} ({}) / effort: {} ({})".format(
+                result.get("provider"),
+                result.get("model_used") or "CLIの既定値",
+                (result.get("model_selection") or {}).get("model_source", "cli_default"),
+                (result.get("model_selection") or {}).get("effort") or "CLIの既定値",
+                (result.get("model_selection") or {}).get("effort_source", "cli_default")),
             f"現在の適用可否は agent-review status {result['review_id']} で確認する。",
         ]
         lines.extend(

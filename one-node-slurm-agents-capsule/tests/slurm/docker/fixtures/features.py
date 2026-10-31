@@ -107,7 +107,7 @@ def check_features(agent, options):
         os.environ["UV_OFFLINE"] = "1"
     if options.get("review"):
         sys.path.insert(0, "/opt/test-deps/lib/python3.12/site-packages")
-        asyncio.run(review_dialogue(options["review"]))
+        asyncio.run(review_dialogue(options["review"], agent))
     if options.get("review_negative"):
         brief = Path("/runs/artifacts/negative-brief.md")
         brief.write_text(options["review_negative"])
@@ -142,7 +142,7 @@ def check_features(agent, options):
     print("FEATURE_CHECKS_OK", flush=True)
 
 
-async def review_dialogue(transport):
+async def review_dialogue(transport, agent):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
@@ -166,11 +166,19 @@ async def review_dialogue(transport):
                 "review_start",
                 "review_reply",
                 "review_recheck",
+                "review_retry",
+                "review_models",
                 "review_events",
                 "review_status",
                 "review_cancel",
                 "review_extend",
             }
+            # The opposite reviewer CLI lists its models inside the real container.
+            peer = "codex" if agent == "claude" else "claude"
+            listing = await action("review_models", reviewers=[peer])
+            entry = listing["reviewers"][0]
+            assert entry["provider"] == peer and entry["available"], listing
+            assert [m["id"] for m in entry["models"]] == ["fixture-review-model"], entry
             state = await action("review_start", request_id="initial", brief=str(brief))
         else:
             state = cli("run", "--request-id", "initial", "--brief", str(brief))

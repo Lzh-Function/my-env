@@ -24,6 +24,7 @@ Usage:
   agentrun resume --list
   agentrun resume RUN_ID --preview
   agentrun history [RUN_ID|RUN_DIR] [--watch]  # export now, or recover a host-side batch collector
+  agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]  # read cross-review dialogues
   agentrun wizard [options] [PROMPT]         # guided/menu-driven alternative to assist|experiment|campaign|review|multi-review
   agentrun skill-install SOURCE_DIR|GIT_URL [SKILL_NAME...] [--force]
   agentrun smoke-test [--agent NAME]
@@ -34,7 +35,7 @@ Usage:
   agentrun list-runs
   agentrun open-run [RUN_DIR]
   agentrun verify-run [RUN_DIR|--run-id RUN_ID]
-  agentrun auth login --agent NAME|--all
+  agentrun auth login --agent NAME|--all     # NAME may also be antigravity (cross-review only)
   agentrun auth import --agent NAME|--all
   agentrun auth status [--agent NAME]
   agentrun auth reset --agent NAME
@@ -92,6 +93,16 @@ require_supported_agent() {
         printf 'unknown agent: %s (supported: codex, claude)\n' "$1" >&2
         return 2
     }
+}
+
+# Antigravity is never a worker; it only needs credentials as a cross-review reviewer.
+AUTH_AGENTS=(codex claude antigravity)
+
+require_auth_agent() {
+    case "$1" in
+        codex|claude|antigravity) return 0 ;;
+        *) printf 'unknown agent: %s (supported: codex, claude, antigravity)\n' "$1" >&2; return 2 ;;
+    esac
 }
 
 validate_agent_list() {
@@ -307,8 +318,10 @@ stage_auth_file() {
     local host_src="$HOME/$rel"
     local dst="$run_dir/home/$rel"
     if [ -f "$store_src" ]; then
+        mkdir -p "$(dirname "$dst")"
         cp "$store_src" "$dst"
     elif [ -f "$host_src" ]; then
+        mkdir -p "$(dirname "$dst")"
         cp "$host_src" "$dst"
     fi
 }
@@ -321,6 +334,8 @@ copy_auth_credentials() {
     stage_auth_file "$store_root" "claude" ".claude/.credentials.json" "$run_dir"
     stage_auth_file "$store_root" "claude" ".claude.json" "$run_dir"
     stage_auth_file "$store_root" "codex" ".codex/auth.json" "$run_dir"
+    stage_auth_file "$store_root" "antigravity" ".gemini/antigravity-cli/antigravity-oauth-token" "$run_dir"
+    stage_auth_file "$store_root" "antigravity" ".gemini/antigravity-cli/installation_id" "$run_dir"
 }
 
 generate_container_config() {
@@ -362,7 +377,7 @@ server = {"command": "/opt/agentrun/agent-review", "args": ["mcp"]}
 (directory / "review-mcp.json").write_text(json.dumps({"mcpServers": {"cross-review": server}}) + "\n")
 if agent == "codex":
     with (directory / "config.toml").open("a") as stream:
-        stream.write('\n[mcp_servers.cross-review]\ncommand = "/opt/agentrun/agent-review"\nargs = ["mcp"]\nstartup_timeout_sec = 120\ntool_timeout_sec = 30\n')
+        stream.write('\n[mcp_servers.cross-review]\ncommand = "/opt/agentrun/agent-review"\nargs = ["mcp"]\nstartup_timeout_sec = 120\ntool_timeout_sec = 900\n')
 PY
 }
 
@@ -715,6 +730,28 @@ command_history() {
     fi
 }
 
+command_reviews() {
+    local -a positional=() options=()
+    local run_dir
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --follow) options+=(--follow); shift ;;
+            --reviewer) options+=(--reviewer "${2:?--reviewer requires a name}"); shift 2 ;;
+            --*) printf 'unknown reviews option: %s\n' "$1" >&2; return 2 ;;
+            *) positional+=("$1"); shift ;;
+        esac
+    done
+    [ "${#positional[@]}" -le 2 ] || { printf 'usage: agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]\n' >&2; return 2; }
+    local target="${positional[0]:-$PWD/.agent-runs/latest}" review="${positional[1]:-}"
+    # A single argument that does not resolve to a run is a review number in the latest run.
+    if [ "${#positional[@]}" -eq 1 ] && ! session_tool resolve "$PWD/.agent-runs" "$target" >/dev/null 2>&1; then
+        review="$target"; target="$PWD/.agent-runs/latest"
+    fi
+    run_dir="$(session_tool resolve "$PWD/.agent-runs" "$target")" || return $?
+    # The viewer is the last step; exec so Ctrl+C and its exit code reach Python directly.
+    exec python3 "$ROOT_DIR/runtime/agentrun/review_view.py" "$run_dir" ${review:+"$review"} "${options[@]+"${options[@]}"}"
+}
+
 apptainer_command() {
     local mode="$1" agent="$2" run_dir="$3" gpus="$4" repo="${5:-$PWD}" launch="${6:-batch}"
     local nv="" image="$ROOT_DIR/runtime/apptainer/base-system.sif"
@@ -783,7 +820,7 @@ apptainer_command() {
     printf ' --bind %q:/opt/agentrun:ro' "$ROOT_DIR/runtime/agentrun"
     local review_key
     for review_key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT \
-        AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ACTIVE_TIMEOUT; do
+        AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ANTIGRAVITY_MODEL AGENT_REVIEW_ANTIGRAVITY_EFFORT AGENT_REVIEW_ACTIVE_TIMEOUT; do
         if [ -n "${!review_key:-}" ]; then
             printf ' --env %q' "$review_key=${!review_key}"
         fi
@@ -1004,6 +1041,12 @@ check_agent_auth() {
                 "$store_root/.codex/auth.json" \
                 "$HOME/.codex/auth.json" \
                 "codex:.codex/auth.json"
+            ;;
+        antigravity)
+            _check_auth_file \
+                "$store_root/.gemini/antigravity-cli/antigravity-oauth-token" \
+                "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" \
+                "antigravity:.gemini/antigravity-cli/antigravity-oauth-token"
             ;;
         *)
             printf '[FAIL] auth:%s - unknown agent\n' "$agent"
@@ -1449,6 +1492,8 @@ command_validate() {
         runtime/agentrun/review_inputs.py \
         runtime/agentrun/history.py \
         runtime/agentrun/history_export.py \
+        runtime/agentrun/review_view.py \
+        runtime/agentrun/review_hook.py \
         runtime/agentrun/overlap.py \
         runtime/agentrun/agent-review \
         runtime/agentrun/agent_cli.py \
@@ -2172,7 +2217,7 @@ command_list_runs() {
 
 remember_review_environment() {
     local key
-    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
+    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ANTIGRAVITY_MODEL AGENT_REVIEW_ANTIGRAVITY_EFFORT \
         AGENT_REVIEW_ACTIVE_TIMEOUT; do
         [ -z "${!key+x}" ] || RESUME_ENV_INPUT["$key"]="${!key}"
     done
@@ -2198,7 +2243,7 @@ load_resume_settings() {
         return 2
     fi
     local key value
-    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
+    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ANTIGRAVITY_MODEL AGENT_REVIEW_ANTIGRAVITY_EFFORT \
         AGENT_REVIEW_ACTIVE_TIMEOUT; do
         if [ -n "${RESUME_ENV_INPUT[$key]+x}" ]; then export "$key=${RESUME_ENV_INPUT[$key]}"
         else unset "$key"; fi
@@ -2225,7 +2270,7 @@ resume_summary() {
     printf '  goal: %q\n  reviewers: %q / agents: %q\n  target diff/report: %q / %q\n' "$GOAL" "$REVIEWERS" "$REQUESTED_AGENTS" "$TARGET_DIFF" "$TARGET_REPORT" >&2
     if [ "${RESUME_FRESH_CONFIG:-0}" -eq 1 ]; then printf '  エージェント設定: 現在のリポジトリから生成\n' >&2
     else settings_tool describe "$source" >&2 || return $?; fi
-    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
+    for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ANTIGRAVITY_MODEL AGENT_REVIEW_ANTIGRAVITY_EFFORT \
         AGENT_REVIEW_ACTIVE_TIMEOUT; do
         [ -z "${!key:-}" ] || printf '  %s=%q\n' "$key" "${!key}" >&2
     done
@@ -2434,6 +2479,11 @@ _auth_login_agent() {
         codex)
             cmd="codex login"
             ;;
+        antigravity)
+            # agy has no login subcommand: sign in from its first screen, then /exit.
+            printf 'Sign in when agy starts, then type /exit to return.\n'
+            cmd="agy"
+            ;;
         *)
             printf '[FAIL] unknown agent: %s\n' "$agent" >&2
             return 1
@@ -2463,6 +2513,12 @@ _auth_import_agent() {
         codex)
             _auth_import_file "$HOME/.codex/auth.json" "$store_root/.codex/auth.json"
             ;;
+        antigravity)
+            _auth_import_file "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" \
+                "$store_root/.gemini/antigravity-cli/antigravity-oauth-token"
+            _auth_import_file "$HOME/.gemini/antigravity-cli/installation_id" \
+                "$store_root/.gemini/antigravity-cli/installation_id"
+            ;;
         *)
             printf '[FAIL] unknown agent: %s\n' "$agent" >&2
             return 1
@@ -2491,6 +2547,9 @@ _auth_status_agent() {
         codex)
             _show_status ".codex/auth.json"
             ;;
+        antigravity)
+            _show_status ".gemini/antigravity-cli/antigravity-oauth-token"
+            ;;
     esac
     unset -f _show_status
 }
@@ -2504,7 +2563,7 @@ command_auth() {
             local agent_arg="" do_all=0
             while [ "$#" -gt 0 ]; do
                 case "$1" in
-                    --agent) require_supported_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
+                    --agent) require_auth_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     --all) do_all=1; shift ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
@@ -2521,13 +2580,13 @@ command_auth() {
             local agent_arg="" do_all=0
             while [ "$#" -gt 0 ]; do
                 case "$1" in
-                    --agent) require_supported_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
+                    --agent) require_auth_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     --all) do_all=1; shift ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ "$do_all" -eq 1 ]; then
-                for a in "${SUPPORTED_AGENTS[@]}"; do _auth_import_agent "$a"; done
+                for a in "${AUTH_AGENTS[@]}"; do _auth_import_agent "$a"; done
             elif [ -n "$agent_arg" ]; then
                 _auth_import_agent "$agent_arg"
             else
@@ -2538,21 +2597,21 @@ command_auth() {
             local agent_arg=""
             while [ "$#" -gt 0 ]; do
                 case "$1" in
-                    --agent) require_supported_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
+                    --agent) require_auth_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ -n "$agent_arg" ]; then
                 _auth_status_agent "$agent_arg"
             else
-                for a in "${SUPPORTED_AGENTS[@]}"; do _auth_status_agent "$a"; done
+                for a in "${AUTH_AGENTS[@]}"; do _auth_status_agent "$a"; done
             fi
             ;;
         reset)
             local agent_arg=""
             while [ "$#" -gt 0 ]; do
                 case "$1" in
-                    --agent) require_supported_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
+                    --agent) require_auth_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
@@ -2590,6 +2649,7 @@ main() {
         assist|experiment|campaign|review|multi-review) command_prepare "$command" "$@" ;;
         resume) command_resume "$@" ;;
         history) command_history "$@" ;;
+        reviews) command_reviews "$@" ;;
         wizard) command_wizard "$@" ;;
         skill-install) command_skill_install "$@" ;;
         smoke-test) command_smoke_test "$@" ;;
