@@ -102,7 +102,8 @@ class SupportedAgentTests(unittest.TestCase):
         # Login --all opens only worker CLIs; import and status also cover the Antigravity reviewer.
         for action, helper, expected in (("login", "_auth_login_agent", ["codex", "claude"]),
                                          ("import", "_auth_import_agent", ["codex", "claude", "antigravity"])):
-            result = self.source(f'{helper}() {{ printf "%s\\n" "$1"; }}; command_auth {action} --all')
+            result = self.source(f'{helper}() {{ printf "%s\\n" "$1"; }}; auth_sync_running() {{ :; }}; '
+                                 f'command_auth {action} --all')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.splitlines(), expected)
         result = self.run_cli("auth", "status")
@@ -131,6 +132,76 @@ class SupportedAgentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((run / "home/.gemini/antigravity-cli/antigravity-oauth-token").read_text(), "opaque-token")
         self.assertEqual((run / "home/.gemini/antigravity-cli/installation_id").read_text(), "install-id")
+
+    def fake_squeue(self, *jobs):
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        squeue = bin_dir / "squeue"
+        squeue.write_text("#!/bin/sh\nprintf '%s\\n' " + " ".join(shlex.quote(job) for job in jobs) + "\n")
+        squeue.chmod(0o755)
+        self.env["PATH"] = f"{bin_dir}:{self.env['PATH']}"
+
+    def make_run(self, parent, name, job, reviewer=False, finished=False):
+        run = parent / ".agent-runs" / name
+        (run / "live").mkdir(parents=True)
+        (run / "live/slurm_job_id.txt").write_text(job + "\n")
+        (run / "home/.codex").mkdir(parents=True)
+        (run / "home/.codex/auth.json").write_text('{"token":"expired"}')
+        if reviewer:
+            (run / "home/.reviewer/codex/.codex").mkdir(parents=True)
+            (run / "home/.reviewer/codex/.codex/auth.json").write_text('{"token":"expired"}')
+        if finished:
+            (run / "live/session_finished.txt").write_text("done\n")
+        return run
+
+    def test_login_and_import_update_running_sessions(self):
+        other = self.root / "other project"
+        registered = self.make_run(self.root / "elsewhere", "overlap-run", "77", reviewer=True)
+        found = self.make_run(other, "launched-before-update", "42", reviewer=True)
+        here = self.make_run(self.root, "current-dir", "42")
+        idle = self.make_run(self.root, "job-ended", "99")
+        finished = self.make_run(other, "finished", "42", finished=True)
+        self.fake_squeue(f"42|{other}", "77|/nonexistent")
+        result = self.source('copy_auth_credentials "$1" claude', registered)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.home / ".codex").mkdir()
+        (self.home / ".codex/auth.json").write_text('{"token":"fresh"}')
+        result = self.run_cli("auth", "import", "--agent", "codex")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for run in (registered, found, here):
+            self.assertEqual((run / "home/.codex/auth.json").read_text(), '{"token":"fresh"}', run)
+            self.assertEqual((run / "home/.codex/auth.json").stat().st_mode & 0o777, 0o600)
+        for run in (registered, found):
+            self.assertEqual((run / "home/.reviewer/codex/.codex/auth.json").read_text(), '{"token":"fresh"}')
+            self.assertIn(f"[SYNCED] codex -> {run.resolve()} (worker HOME, reviewer HOME)", result.stdout)
+        for run in (idle, finished):
+            self.assertEqual((run / "home/.codex/auth.json").read_text(), '{"token":"expired"}', run)
+        # Login reuses the same path after the CLI writes host credentials.
+        (self.home / ".codex/auth.json").write_text('{"token":"relogin"}')
+        result = self.source('codex() { :; }; command_auth login --agent codex')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((found / "home/.reviewer/codex/.codex/auth.json").read_text(), '{"token":"relogin"}')
+
+    def test_session_sync_without_slurm_needs_explicit_run_and_stays_in_home(self):
+        run = self.make_run(self.root, "explicit", "5")
+        outside = self.root / "outside"
+        outside.mkdir()
+        shutil.rmtree(run / "home/.codex")
+        (run / "home/.codex").symlink_to(outside)  # planted from inside the capsule
+        (self.home / ".codex").mkdir()
+        (self.home / ".codex/auth.json").write_text('{"token":"fresh"}')
+        self.env["PATH"] = "/usr/bin:/bin"
+        result = self.run_cli("auth", "import", "--agent", "codex")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no running sessions", result.stdout)
+        result = self.run_cli("auth", "import", "--agent", "codex", "--run", run)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("refusing a redirected credential path", result.stderr)
+        self.assertEqual(list(outside.iterdir()), [])
+        (run / "home/.codex").unlink()
+        result = self.run_cli("auth", "import", "--agent", "codex", "--run", run)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((run / "home/.codex/auth.json").read_text(), '{"token":"fresh"}')
 
     @unittest.skipUnless(shutil.which("jq"), "jq is required for skill synchronization")
     def test_local_and_git_skill_install_sync_only_supported_agents(self):

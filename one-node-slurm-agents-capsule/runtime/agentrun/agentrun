@@ -35,8 +35,8 @@ Usage:
   agentrun list-runs
   agentrun open-run [RUN_DIR]
   agentrun verify-run [RUN_DIR|--run-id RUN_ID]
-  agentrun auth login --agent NAME|--all     # NAME may also be antigravity (cross-review only)
-  agentrun auth import --agent NAME|--all
+  agentrun auth login --agent NAME|--all [--run RUN]   # NAME may also be antigravity (cross-review only)
+  agentrun auth import --agent NAME|--all [--run RUN]  # also updates running sessions
   agentrun auth status [--agent NAME]
   agentrun auth reset --agent NAME
 
@@ -336,6 +336,19 @@ copy_auth_credentials() {
     stage_auth_file "$store_root" "codex" ".codex/auth.json" "$run_dir"
     stage_auth_file "$store_root" "antigravity" ".gemini/antigravity-cli/antigravity-oauth-token" "$run_dir"
     stage_auth_file "$store_root" "antigravity" ".gemini/antigravity-cli/installation_id" "$run_dir"
+    # Later logins and imports update running sessions found through this registry.
+    python3 "$ROOT_DIR/runtime/agentrun/auth_sync.py" register --store "$store_root" "$run_dir" 2>/dev/null || \
+        printf 'could not register the run for credential updates: %s\n' "$run_dir" >&2
+}
+
+auth_sync_running() {
+    # Usage: auth_sync_running AGENT... ; AUTH_SYNC_RUNS adds explicit run directories.
+    local -a args=(sync --store "$(auth_store_root)" --scan "$PWD")
+    local agent run
+    for agent in "$@"; do args+=(--agent "$agent"); done
+    for run in "${AUTH_SYNC_RUNS[@]+"${AUTH_SYNC_RUNS[@]}"}"; do args+=(--run "$run"); done
+    printf '\n[auth sync] updating running sessions\n'
+    python3 "$ROOT_DIR/runtime/agentrun/auth_sync.py" "${args[@]}"
 }
 
 generate_container_config() {
@@ -1495,6 +1508,7 @@ command_validate() {
         runtime/agentrun/review_view.py \
         runtime/agentrun/review_hook.py \
         runtime/agentrun/overlap.py \
+        runtime/agentrun/auth_sync.py \
         runtime/agentrun/agent-review \
         runtime/agentrun/agent_cli.py \
         runtime/agentrun/review.py \
@@ -2477,7 +2491,8 @@ _auth_login_agent() {
             cmd="claude auth login"
             ;;
         codex)
-            cmd="codex login"
+            # The host is usually remote, so the browser callback on localhost is unreachable.
+            cmd="codex login --device-auth"
             ;;
         antigravity)
             # agy has no login subcommand: sign in from its first screen, then /exit.
@@ -2561,36 +2576,44 @@ command_auth() {
     case "$subcmd" in
         login)
             local agent_arg="" do_all=0
+            AUTH_SYNC_RUNS=()
             while [ "$#" -gt 0 ]; do
                 case "$1" in
                     --agent) require_auth_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     --all) do_all=1; shift ;;
+                    --run) [ -n "${2:-}" ] || { printf -- '--run requires a run directory\n' >&2; exit 2; }
+                        AUTH_SYNC_RUNS+=("$2"); shift 2 ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ "$do_all" -eq 1 ]; then
                 for a in "${SUPPORTED_AGENTS[@]}"; do _auth_login_agent "$a"; done
+                auth_sync_running "${SUPPORTED_AGENTS[@]}"
             elif [ -n "$agent_arg" ]; then
-                _auth_login_agent "$agent_arg"
+                _auth_login_agent "$agent_arg" && auth_sync_running "$agent_arg"
             else
-                printf 'usage: agentrun auth login --agent NAME|--all\n' >&2; exit 2
+                printf 'usage: agentrun auth login --agent NAME|--all [--run RUN]\n' >&2; exit 2
             fi
             ;;
         import)
             local agent_arg="" do_all=0
+            AUTH_SYNC_RUNS=()
             while [ "$#" -gt 0 ]; do
                 case "$1" in
                     --agent) require_auth_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
                     --all) do_all=1; shift ;;
+                    --run) [ -n "${2:-}" ] || { printf -- '--run requires a run directory\n' >&2; exit 2; }
+                        AUTH_SYNC_RUNS+=("$2"); shift 2 ;;
                     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ "$do_all" -eq 1 ]; then
                 for a in "${AUTH_AGENTS[@]}"; do _auth_import_agent "$a"; done
+                auth_sync_running "${AUTH_AGENTS[@]}"
             elif [ -n "$agent_arg" ]; then
-                _auth_import_agent "$agent_arg"
+                _auth_import_agent "$agent_arg" && auth_sync_running "$agent_arg"
             else
-                printf 'usage: agentrun auth import --agent NAME|--all\n' >&2; exit 2
+                printf 'usage: agentrun auth import --agent NAME|--all [--run RUN]\n' >&2; exit 2
             fi
             ;;
         status)

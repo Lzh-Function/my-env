@@ -160,6 +160,8 @@ codex       $HOME/.codex/auth.json
 
 以後のジョブは、認証ストアから認証情報を実行ごとの一時ホームへコピーします。認証ストアにない場合だけ、投入元ホストの元ファイルを参照します。
 
+実行中のセッションにも反映します。`auth login` と `auth import` は、保管場所を更新した後、Slurm ジョブが実行中の run を探し、その作業用 HOME と監査担当の HOME にある認証ファイル（Claude Code は `.claude/.credentials.json`、Codex は `.codex/auth.json`、Antigravity は `antigravity-oauth-token` と `installation_id`）を書き換えます。対象は、起動時に登録した run、実行中ジョブの作業ディレクトリとカレントディレクトリにある `.agent-runs/` の run です。見つからない run は `--run RUN_DIR` で指定してください（複数可）。`.claude.json` などの設定ファイルは書き換えません。監査担当は次の依頼のときに新しい認証を読み込むため、resume は不要です。
+
 認証ストアをリセットして再インポートする場合:
 
 ```bash
@@ -540,7 +542,7 @@ agentrun wizard
 | --- | --- |
 | `~/data:/data:ro` | /path/to/work:/extra:rw |
 
-`SRC` は投入元ホストに存在する必要があります。`DST` を省略すると `SRC` と同じパスを使います。指定する `DST` は絶対パスにします。権限は `ro` または `rw` を指定します。`none` を入力すると追加マウントをすべて解除します。コピーしたコマンドに含まれる `--bind` / `-B` は無視して値だけを読み取ります。
+`SRC` は投入元ホストに存在する必要があります。`DST` を省略すると `SRC` と同じパスを使います。指定する `DST` は絶対パスにします。権限は `ro` または `rw` を指定します。前回の実行から引き継いだ追加マウントがある場合は、「このまま次へ」「bind を追加する」「bind を1つ除く（一覧から選択）」「bind を全て除く」から選びます。コピーしたコマンドに含まれる `--bind` / `-B` は無視して値だけを読み取ります。
 
 一行入力した後、追加確認の "Add more?" で Yes を選ぶと続きの入力ができます。入力を分けたいときに使ってください。`gum` の入力欄には文字数制限を設けていません。
 
@@ -932,7 +934,7 @@ with sqlite3.connect(root / "index.sqlite3") as db:
 
 Claude Code の作業を Codex に、Codex の作業を Claude Code に監査させられます。Antigravity（`agy`）も監査担当として依頼できます。Antigravity は作業エージェントとしては起動できず、監査の依頼先としてだけ使います。依頼ごとに監査担当を選べ、2 つの監査担当へ同時に依頼することもできます。共通スキルの `cross-review` が、監査依頼、質問への回答、修正・反論後の再監査を案内します。監査は作業中の Slurm ジョブに割り当てられた資源で実行し、追加のジョブは投入しません。
 
-監査担当の認証情報を投入元ホストで準備してください。既にログイン済みなら `agentrun auth import --all` で登録できます。Antigravity を使う場合は、ホストの `agy` でログインしてから `agentrun auth import --agent antigravity` を実行します（`agentrun auth login --agent antigravity` は `agy` を起動します。ログイン後に `/exit` で終了してください）。保存するのは `~/.gemini/antigravity-cli/` の `antigravity-oauth-token` と `installation_id` だけです。監査担当の認証がなくても通常の作業は開始できますが、その監査担当への依頼は認証不足（`missing_authentication`）として失敗します。認証は起動時に run の HOME へ配置するため、実行中にホストで再ログインしても、その run には反映されません。ログインと `auth import` の後に resume してください。
+監査担当の認証情報を投入元ホストで準備してください。既にログイン済みなら `agentrun auth import --all` で登録できます。Antigravity を使う場合は、ホストの `agy` でログインしてから `agentrun auth import --agent antigravity` を実行します（`agentrun auth login --agent antigravity` は `agy` を起動します。ログイン後に `/exit` で終了してください）。保存するのは `~/.gemini/antigravity-cli/` の `antigravity-oauth-token` と `installation_id` だけです。監査担当の認証がなくても通常の作業は開始できますが、その監査担当への依頼は認証不足（`missing_authentication`）として失敗します。実行中にホストで `agentrun auth login` か `agentrun auth import` を実行すると、実行中の run にも反映され、次の監査依頼から新しい認証を使います（[認証情報の登録](#認証情報のセットアップ初回必須) を参照）。
 
 作業エージェントには `cross-review` の MCP サーバーを自動登録します。MCP は、エージェントから監査用のツールを呼び出すための接続方式です。監査用 CLI は最初の依頼時に導入し、その実行中は再利用します。監査側で更新された認証情報は、変更があった場合だけ既存の認証保存経路へ戻します。会話履歴の保存領域には認証情報を含めません。
 
@@ -1767,7 +1769,7 @@ agentrun doctor --agent NAME
 agentrun auth login --agent NAME
 ```
 
-`auth login` はホスト CLI でのログイン（`claude auth login` / `codex login` / Antigravity は `agy` を起動してログイン後に `/exit`）と認証ストアへのインポートを一括で実行します。
+`auth login` はホスト CLI でのログイン（`claude auth login` / `codex login --device-auth` / Antigravity は `agy` を起動してログイン後に `/exit`）と認証ストアへのインポートを一括で実行し、実行中のセッションの認証も更新します。見つからない run は `--run RUN_DIR` で指定します。
 
 <a id="capsule-の中で-apptainer-exec-が失敗するnested-apptainer--squashfuse_ll-エラー"></a>
 
@@ -1850,8 +1852,8 @@ Codex の実効フック経路は `/etc/codex/requirements.toml` です。Claude
 agentrun agents
 agentrun validate
 agentrun doctor [--agent NAME|--all]
-agentrun auth login --agent NAME|--all
-agentrun auth import --agent NAME|--all
+agentrun auth login --agent NAME|--all [--run RUN_DIR]
+agentrun auth import --agent NAME|--all [--run RUN_DIR]
 agentrun auth status [--agent NAME]
 agentrun auth reset --agent NAME
 agentrun dry-run MODE [options] PROMPT

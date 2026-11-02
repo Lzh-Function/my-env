@@ -262,18 +262,28 @@ wizard_overlap() {
 }
 
 wizard_bind_mounts() {
-    local stage=0 rc src='' dst=''
+    local stage=0 rc src='' dst='' choice bind
+    local keep='このまま次へ' add='bind を追加する' remove_one='bind を1つ除く（一覧から選択）' remove_all='bind を全て除く'
     while :; do
         rc=0
         case "$stage" in
             0)
-                if wizard_confirm "Bind mounts: ${EXTRA_BINDS[*]:-none}. Add a bind mount?" 0; then stage=1
-                else rc=$?; [ "$rc" -ne 1 ] || return 0; [ "$rc" -ne 10 ] || return 10; return "$rc"; fi ;;
+                if [ "${#EXTRA_BINDS[@]}" -eq 0 ]; then
+                    if wizard_confirm 'Bind mounts: none. Add a bind mount?' 0; then stage=1
+                    else rc=$?; [ "$rc" -ne 1 ] || return 0; return "$rc"; fi
+                    continue
+                fi
+                choice="$(wizard_select "Bind mounts: ${EXTRA_BINDS[*]}" "$keep" "$add" "$remove_one" "$remove_all")" || return $?
+                case "$choice" in
+                    "$keep") return 0 ;;
+                    "$add") stage=1 ;;
+                    "$remove_one") stage=3 ;;
+                    "$remove_all") EXTRA_BINDS=() ;;
+                esac ;;
             1)
-                src="$(wizard_path_input 'Bind mount source path on host (none clears all)' "$src")" || rc=$?
+                src="$(wizard_path_input 'Bind mount source path on host' "$src")" || rc=$?
                 [ "$rc" -ne 10 ] || { stage=0; continue; }
                 [ "$rc" -eq 0 ] || return "$rc"
-                [ "$src" != none ] || { EXTRA_BINDS=(); src=''; stage=0; continue; }
                 src="$(wizard_expand_tilde "$src")"
                 if [ -e "$src" ]; then src="$(readlink -f "$src")"; stage=2
                 else wizard_banner "bind source does not exist: $src" || return $?; fi ;;
@@ -283,6 +293,15 @@ wizard_bind_mounts() {
                 [ "$rc" -eq 0 ] || return "$rc"
                 if [[ "$dst" =~ ^/[^:,]+(:(ro|rw))?$ ]]; then EXTRA_BINDS+=("$src:$dst"); stage=0; src=''; dst=''
                 else wizard_banner 'destination must be an absolute path with optional :ro or :rw' || return $?; fi ;;
+            3)
+                choice="$(wizard_select 'Select a bind mount to remove' "${EXTRA_BINDS[@]}")" || rc=$?
+                [ "$rc" -ne 10 ] || { stage=0; continue; }
+                [ "$rc" -eq 0 ] || return "$rc"
+                local -a kept=()
+                for bind in "${EXTRA_BINDS[@]}"; do
+                    if [ -n "$choice" ] && [ "$bind" = "$choice" ]; then choice=''; else kept+=("$bind"); fi
+                done
+                EXTRA_BINDS=("${kept[@]+"${kept[@]}"}"); stage=0 ;;
         esac
     done
 }

@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -760,6 +761,28 @@ class CrossReviewTests(unittest.TestCase):
         peer.close()
         self.assertEqual(worker.read_text(), '{"other-run":"newest"}')
 
+
+    def test_peer_adopts_relogin_from_worker_home_but_keeps_own_refresh(self):
+        home = self.root / 'peer-home'
+        peer = Reviewer('codex', home, self.root / 'peer-state', self.root / 'peer-runtime',
+                        self.home, RUNTIME / 'install-agent.sh', self.root / 'peer-cache', binary=str(self.binary))
+        self.addCleanup(peer.close)
+        worker, own = self.home / '.codex/auth.json', home / '.codex/auth.json'
+        worker.write_text('{"login":"again"}')  # auth login/import after launch
+        peer.ensure(threading.Event())
+        self.assertEqual(own.read_text(), '{"login":"again"}')
+        self.assertEqual(own.stat().st_mode & 0o777, 0o600)
+        own.write_text('{"refresh":"by-reviewer"}')
+        worker.write_text('{"login":"stale"}')
+        peer.adopt_credentials()
+        self.assertEqual(own.read_text(), '{"refresh":"by-reviewer"}')
+        peer.sync_credentials()
+        self.assertEqual(worker.read_text(), '{"refresh":"by-reviewer"}')
+        worker.write_text('{"login":"third"}')
+        peer.adopt_credentials()
+        self.assertEqual(own.read_text(), '{"login":"third"}')
+        peer.sync_credentials()
+        self.assertEqual(worker.read_text(), '{"login":"third"}')
 
     def test_auth_failure_does_not_consume_round_and_never_uses_worker_provider(self):
         (self.home / ".codex/auth.json").unlink()

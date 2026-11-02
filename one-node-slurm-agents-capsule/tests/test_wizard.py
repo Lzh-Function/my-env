@@ -124,7 +124,7 @@ class WizardTests(unittest.TestCase):
         extra = self.root / "extra mount"
         extra.mkdir()
         # mode=resume, run=1, preview=yes, defaults, add a bind, launch=yes
-        answers = f"6\n1\ny\n\n\n\ny\n{extra}\n/extra:ro\nn\ny\n"
+        answers = f"6\n1\ny\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("wizard-run  codex", output)
@@ -142,12 +142,27 @@ class WizardTests(unittest.TestCase):
     def test_bind_source_tab_completion_keeps_spaces_in_path(self):
         extra = self.root / "extra mount"
         extra.mkdir()
-        answers = "6\n1\nn\n\n\n\ny\nextr\t\n/extra:ro\nn\ny\n"
+        answers = "6\n1\nn\n\n\n\ny\nextr\t\n/extra:ro\n1\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("Tab=パス補完", output)
         generated = (self.parent / "latest/apptainer_exec.sh").read_text()
         self.assertIn(f"{extra}:/extra:ro", shlex.split(generated.splitlines()[-1]))
+
+    def test_bind_menu_removes_one_or_all_mounts(self):
+        first, second = self.root / "first", self.root / "second"
+        first.mkdir()
+        second.mkdir()
+        # add first, add second, remove one (first), remove all, decline adding, launch
+        answers = f"6\n1\nn\n\n\n\ny\n{first}\n/first:ro\n2\n{second}\n/second:ro\n3\n1\n4\nn\ny\n"
+        rc, output = self.execute(self.args, answers)
+        self.assertEqual(rc, 0, output)
+        self.assertIn("bind を1つ除く（一覧から選択）", output)
+        self.assertIn(f"Bind mounts: {second}:/second:ro\x1b", output)
+        self.assertIn("Bind mounts: none. Add a bind mount?", output)
+        generated = (self.parent / "latest/apptainer_exec.sh").read_text()
+        self.assertNotIn("/first:ro", generated)
+        self.assertNotIn("/second:ro", generated)
 
     def test_path_input_completion_in_all_ui_backends(self):
         extra = self.root / "unique space [literal] $(touch injected)"
@@ -310,7 +325,7 @@ class WizardTests(unittest.TestCase):
     def test_previous_defaults_and_bind_paths_are_restored(self):
         extra = self.root / "extra mount"
         extra.mkdir()
-        answers = f"6\n1\nn\n\n\n\ny\n{extra}\n/extra:ro\nn\ny\n"
+        answers = f"6\n1\nn\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         state_file = Path(self.env["HOME"]) / ".agentrun/wizard-last"

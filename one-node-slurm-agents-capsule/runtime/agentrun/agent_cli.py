@@ -347,6 +347,39 @@ class Reviewer:
                 )
                 temporary.symlink_to(self.temporary)
 
+    def adopt_credentials(self):
+        # A login or import after launch updates the worker HOME; take it unless this
+        # reviewer refreshed its own copy since the last synchronization.
+        for relative in CREDENTIALS[self.provider]:
+            source, target = self.worker_home / relative, self.home / relative
+            if not source.is_file() or source.is_symlink() or target.is_symlink():
+                continue
+            try:
+                raw = source.read_bytes()
+                if raw == self.credential_baseline[relative] or not raw.strip():
+                    continue
+                if source.suffix == ".json":
+                    value = json.loads(raw)
+                    if not isinstance(value, dict) or not value:
+                        continue
+                current = target.read_bytes() if target.is_file() else None
+                if current not in (None, self.credential_baseline[relative], raw):
+                    continue  # the reviewer's own refresh is published by sync_credentials
+                if current != raw:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+                        temporary = Path(stream.name)
+                        try:
+                            os.chmod(temporary, 0o600)
+                            stream.write(raw)
+                            stream.flush()
+                            os.replace(temporary, target)
+                        finally:
+                            temporary.unlink(missing_ok=True)
+                self.credential_baseline[relative] = raw
+            except (OSError, ValueError) as error:
+                print("Reviewer credential update failed: " + str(error), file=sys.stderr)
+
     def sync_credentials(self):
         # Publish only refreshed credentials through the existing run-HOME sync.
         # Authentication never belongs in persisted transcript directories.
@@ -482,6 +515,7 @@ class Reviewer:
 
     def ensure(self, cancelled):
         with self.setup_lock:
+            self.adopt_credentials()
             self._ensure(cancelled)
 
     def _ensure(self, cancelled):

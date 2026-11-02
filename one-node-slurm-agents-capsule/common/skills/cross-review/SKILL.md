@@ -49,7 +49,7 @@ When `waiting_reply` arrives, call `review_reply` with its message ID and answer
 
 `evidence` references paths in the snapshot manifest; `include` explicitly names additional original files to capture. Explanations are claims; provide inspectable evidence. Keep the reviewed files unchanged during this dialogue. If the snapshot must change, cancel this round before modifying it and start a new round to review the changed snapshot.
 
-If a review fails with `error_kind` `authentication` or `missing_authentication`, stop and ask the user to log in on the host (`agentrun auth login --agent NAME`, for Antigravity sign in to `agy` then `/exit`) and to start a new run or resume afterwards. Never run login commands or read credential files inside the capsule.
+If a review fails with `error_kind` `authentication` or `missing_authentication`, stop and ask the user to log in on the host (`agentrun auth login --agent NAME`, for Antigravity sign in to `agy` then `/exit`); this also updates the running session, so send the review request again afterwards. Never run login commands or read credential files inside the capsule.
 
 For environment/access problems, use `evidence: []` and explain the limitation in text rather than inventing a file reference. Codex reviewers receive the snapshot-only `capsule-input` MCP reader; a failed inner shell sandbox does not prevent those file reads and never permits unrestricted commands. Report `input_reader_unavailable` separately from a review verdict.
 
