@@ -107,7 +107,7 @@ def call(*args):
 state=call('run','--request-id','start','--brief',{str(fixture.brief)!r})
 if {crash!r}:
     for _ in range(300):
-        records=list((Path({str(fixture.run)!r})/'reviews'/state['review_id']/'turns').glob('*/status.json'))
+        records=list((Path({str(fixture.run)!r})/'reviews'/state['review_thread_id']/state['review_id']/'turns').glob('*/status.json'))
         active=[json.loads(p.read_text()) for p in records if json.loads(p.read_text()).get('pid')]
         if active:
             commandline=Path(f'/proc/{{active[0]["pid"]}}/cmdline').read_bytes()
@@ -158,13 +158,13 @@ sys.exit(42)
         worker_state = json.loads((fixture.root / "worker-state.json").read_text())
         state = json.loads(
             (
-                fixture.run / "reviews" / worker_state["review_id"] / "state.json"
+                fixture.run / "reviews" / worker_state["review_thread_id"] / worker_state["review_id"] / "state.json"
             ).read_text()
         )
         self.assertEqual(state["status"], "failed" if crash else "cancelled")
         request = json.loads(
             (
-                fixture.run / "reviews" / worker_state["review_id"] / "request.json"
+                fixture.run / "reviews" / worker_state["review_thread_id"] / worker_state["review_id"] / "request.json"
             ).read_text()
         )
         self.assertEqual(request["parent_run"], "launcher-test")

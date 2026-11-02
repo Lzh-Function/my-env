@@ -86,16 +86,19 @@ def review_recheck(
     review_id: str,
     request_id: str,
     response: dict,
+    brief: Annotated[str | None, Field(
+        description="Optional new brief FILE PATH, e.g. for the next task reviewed in the same conversation.")] = None,
+    base: str | None = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     model: str | None = None,
     effort: str | None = None,
     model_source: str | None = None,
 ) -> dict:
-    """Start the next round after fixes/rebuttal. response: responses[{finding_id,action,reason,evidence}]. model/effort default to the previous round's choice."""
+    """Start the next round after fixes/rebuttal, or ask the same reviewer about new work with a new brief/include. response: responses[{finding_id,action,reason,evidence}] for every previous finding. model/effort default to the previous round's choice."""
     params = {"review_id": review_id, "request_id": request_id, "response": response}
-    for key, value in (("include", include), ("exclude", exclude), ("model", model), ("effort", effort),
-                       ("model_source", model_source)):
+    for key, value in (("brief", brief), ("base", base), ("include", include), ("exclude", exclude),
+                       ("model", model), ("effort", effort), ("model_source", model_source)):
         if value is not None:
             params[key] = value
     return client.call("recheck", params)
@@ -104,7 +107,7 @@ def review_recheck(
 @mcp.tool()
 def review_retry(review_id: str, request_id: str, model: str | None = None, effort: str | None = None,
                  model_source: str | None = None) -> dict:
-    """Retry the same round after an invalid_model failure with a model from review_models. Use a fresh request_id; the snapshot and pending reply are retained."""
+    """Retry the same round after a failure that names recovery (invalid_model, authentication, rate_limit, timeout, provider errors); pass a model from review_models after invalid_model. Use a fresh request_id; the snapshot and pending reply are retained, so no new review_start is needed."""
     params = {"review_id": review_id, "request_id": request_id}
     for key, value in (("model", model), ("effort", effort), ("model_source", model_source)):
         if value is not None:

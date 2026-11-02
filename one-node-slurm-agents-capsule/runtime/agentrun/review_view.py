@@ -11,8 +11,10 @@ import time
 import unicodedata
 
 TERMINAL = {"success", "failed", "cancelled", "timeout"}
-# モデル指定の失敗は、同じラウンドがreview_retryで再開されうる。
-RETRYABLE = {"invalid_model"}
+# 新しいラウンドは reviews/<thread>/<review> に置かれる。状態ファイルの値はこの形だけを信用する。
+DIRECTORY = re.compile(r"thread-[0-9a-f]+/review-[0-9a-f]+")
+# これらの失敗は、同じラウンドがreview_retryで再開されうる。
+RETRYABLE = {"invalid_model", "authentication", "rate_limit"}
 # 監査担当の出力は信頼できないため、端末を操作できる制御文字を表示前に除く。
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
@@ -35,7 +37,8 @@ def stamp(value):
 def load_threads(run):
     """スレッドを開始順に並べ、ユーザーが指定しやすい通し番号を付ける。"""
     rounds = []
-    for path in (run / "reviews").glob("review-*/state.json"):
+    reviews = run / "reviews"
+    for path in [*reviews.glob("review-*/state.json"), *reviews.glob("thread-*/review-*/state.json")]:
         try:
             state = json.loads(path.read_text())
         except (OSError, ValueError):
@@ -152,6 +155,8 @@ def render(event, prefix=""):
             lines.append(indent(f"- {item.get('finding_id')}: {item.get('action')} — {item.get('reason', '')}"))
     elif kind == "repair" and payload.get("error"):
         lines.append(indent("出力の修正を依頼: " + payload["error"]))
+    elif kind == "new_session" and payload.get("error"):
+        lines.append(indent("以前の会話を再開できないため新しい会話で実施: " + payload["error"]))
     elif kind in ("failed", "timeout", "cancelled") and payload.get("error"):
         lines.append(indent("エラー: " + payload["error"]))
     elif kind == "model_retry" and payload:
@@ -159,9 +164,12 @@ def render(event, prefix=""):
     return "\n".join(lines)
 
 
-def events(run, review_id):
+def events(run, state):
+    directory = state.get("directory")
+    if not (isinstance(directory, str) and DIRECTORY.fullmatch(directory)):
+        directory = state["review_id"]
     try:
-        lines = (run / "reviews" / review_id / "events.jsonl").read_text().splitlines()
+        lines = (run / "reviews" / directory / "events.jsonl").read_text().splitlines()
     except OSError:
         return []
     records = []
@@ -182,7 +190,7 @@ def emit(run, threads, printed, prefixed):
         for state in thread["rounds"]:
             seen = printed.get(state["review_id"], 0)
             pending += [(record.get("timestamp") or 0, thread["number"], index, thread, state, record)
-                        for index, record in enumerate(events(run, state["review_id"])[seen:], seen)]
+                        for index, record in enumerate(events(run, state)[seen:], seen)]
     for _, _, index, thread, state, record in sorted(pending, key=lambda item: item[:3]):
         prefix = label(thread) + " " if prefixed else ""
         if state["review_id"] not in printed:

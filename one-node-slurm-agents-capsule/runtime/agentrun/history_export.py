@@ -295,7 +295,8 @@ def export_run(run, data, store):
             transcript_metadata.append(metadata)
             parts.append(f"\n## Session: {path.stem} ({role}, {provider})\n\n{fence(json_text(metadata), 'json')}{body}")
         reviews = []
-        for directory in sorted((run / "reviews").glob("review-*")):
+        directories = [*(run / "reviews").glob("review-*"), *(run / "reviews").glob("thread-*/review-*")]
+        for directory in sorted(directories, key=lambda d: d.name):
             if not directory.is_dir() or not within(directory, run / "reviews"):
                 continue
             state_path = directory / "state.json"

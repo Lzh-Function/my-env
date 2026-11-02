@@ -124,6 +124,10 @@ if mode=='bad-evidence':
         'confidence':'high','basis':'observed','evidence_method':'static_source',
         'file':'../../secret','line':1,'message':'bad','suggestion':'bad','evidence':['../../secret']}])
 if mode=='exit':sys.exit(42)
+if mode=='lost-session' and any(a in args for a in ('resume','--resume','--conversation')):
+    print('No conversation found with session ID',file=sys.stderr);sys.exit(1)
+if mode=='auth-once' and not (home/'auth-failed').exists():
+    (home/'auth-failed').write_text('1');print('Error: not logged in',file=sys.stderr);sys.exit(1)
 if mode=='line-evidence':
     result.update(verdict='request_changes', findings=[{'finding_id':'f1','severity':'major',
         'confidence':'high','basis':'observed','evidence_method':'static_source',
@@ -225,6 +229,12 @@ class CrossReviewTests(unittest.TestCase):
         )
         self.reviews.tick()
         return result["review_id"]
+
+    def directory(self, ident):
+        return self.reviews.round_dir(self.reviews.rounds[ident])
+
+    def inputs(self, ident):
+        return self.reviews.input_dir(self.reviews.rounds[ident])
 
     def wait(self, ident, states=review.TERMINAL | {"waiting_reply"}):
         # The first Codex round starts the input MCP through uv, which can take several seconds.
@@ -361,7 +371,7 @@ class CrossReviewTests(unittest.TestCase):
         self.assertEqual(state["status"], "success", state)  # agy starts even though its usage is on stderr
         findings = json.loads(Path(state["findings_path"]).read_text())["findings"]
         self.assertEqual(findings[0]["evidence"], ["source/code.py", "diff.patch"])
-        prompt = next((self.run / "reviews" / ident / "turns").glob("*/prompt.txt")).read_text()
+        prompt = next((self.directory(ident) / "turns").glob("*/prompt.txt")).read_text()
         self.assertIn("without a line suffix", prompt)
         self.brief.write_text("unknown-line-evidence")
         result = self.reviews.call("run", dict(request_id="unknown", brief=str(self.brief), one_shot=True,
@@ -446,7 +456,7 @@ class CrossReviewTests(unittest.TestCase):
         self.assertEqual(state["model_used"], "gpt-test")
         events = self.reviews.call("events", {"review_id": ident})["events"]
         self.assertIn("model_retry", [event["kind"] for event in events])
-        with self.assertRaisesRegex(ValueError, "invalid_model"):
+        with self.assertRaisesRegex(ValueError, "cannot be retried"):
             self.reviews.call("retry", {"review_id": ident, "request_id": "retry-success"})
 
     def test_unsupported_effort_is_rejected_before_the_turn(self):
@@ -509,7 +519,7 @@ class CrossReviewTests(unittest.TestCase):
         ident = self.start("question", models={"codex": "gpt-test"})
         self.answer(ident)
         self.wait(ident, review.TERMINAL)
-        events = self.run / "reviews" / ident / "events.jsonl"
+        events = self.directory(ident) / "events.jsonl"
         with events.open("a") as stream:  # mix terminal controls into reviewer-derived text
             stream.write(json.dumps({"sequence": 99, "kind": "failed", "sender": "runtime", "recipient": "worker",
                                      "timestamp": time.time(), "payload": {"error": "boom\x1b]0;owned\x07\x1b[31mred"}}) + "\n")
@@ -601,6 +611,52 @@ class CrossReviewTests(unittest.TestCase):
                     )
                 )
 
+    def run_review(self, mode, request_id):
+        self.brief.write_text(mode)
+        ident = self.reviews.call("run", {"request_id": request_id, "brief": str(self.brief)})["review_id"]
+        self.reviews.tick()
+        return self.wait(ident, review.TERMINAL)
+
+    def test_new_threads_continue_the_reviewer_conversation_in_one_workspace(self):
+        first = self.run_review("approve", "first")
+        second = self.run_review("approve", "second")
+        self.assertNotEqual(first["review_thread_id"], second["review_thread_id"])
+        self.assertEqual(second["session_id"], first["session_id"])
+        workspace = self.run / "reviews/workspace/codex"
+        self.assertEqual(self.inputs(second["review_id"]), workspace)
+        # The earlier round keeps its own snapshot next to its conversation.
+        archived = self.inputs(first["review_id"])
+        self.assertEqual(archived, self.directory(first["review_id"]) / "input")
+        self.assertTrue((archived / "manifest.json").is_file())
+        self.assertEqual(self.reviews.call("status", {"review_id": first["review_id"]})["applicability"], "valid")
+        self.assertEqual(sorted(p.name for p in (self.run / "reviews").glob("review-*")), [])
+        prompt = sorted((self.directory(second["review_id"]) / "turns").glob("*/prompt.txt"))[-1].read_text()
+        self.assertIn("continues your earlier review work", prompt)
+        reopened = review.Reviews(self.config)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.rounds[first["review_id"]]["input_dir"],
+                         str(archived.relative_to(self.run / "reviews")))
+        self.assertEqual(set(reopened.threads), {first["review_thread_id"], second["review_thread_id"]})
+
+    def test_lost_reviewer_conversation_falls_back_to_a_new_one(self):
+        first = self.run_review("approve", "first")
+        second = self.run_review("lost-session", "second")
+        self.assertEqual(second["status"], "success", second)
+        self.assertNotEqual(second["session_id"], first["session_id"])
+        kinds = [e["kind"] for e in self.reviews.call("events", {"review_id": second["review_id"]})["events"]]
+        self.assertIn("new_session", kinds)
+
+    def test_authentication_failure_is_retried_in_the_same_round(self):
+        failed = self.run_review("auth-once", "start")
+        self.assertEqual(failed["error_kind"], "authentication", failed)
+        self.assertIn("review_retry", failed["recovery"]["message"])
+        retried = self.reviews.call("retry", {"review_id": failed["review_id"], "request_id": "retry"})
+        self.assertEqual(retried["review_id"], failed["review_id"])
+        self.reviews.tick()
+        state = self.wait(failed["review_id"], review.TERMINAL)
+        self.assertEqual(state["status"], "success", state)
+        self.assertEqual(len(self.reviews.threads), 1)
+
     def test_rechecks_continue_past_twenty_rounds_with_latest_files(self):
         ident = self.start("finding")
         previous = self.wait(ident)
@@ -628,8 +684,9 @@ class CrossReviewTests(unittest.TestCase):
             self.assertEqual(state["round"], number)
             self.assertIsNone(state["remaining_rounds"])
             self.assertEqual(state["applicability"], "valid")
-            self.assertNotEqual(state["session_id"], previous["session_id"])
-            snapshot = self.run / "reviews" / state["review_id"] / "input/source/code.py"
+            # Every round continues the same reviewer conversation.
+            self.assertEqual(state["session_id"], previous["session_id"])
+            snapshot = self.inputs(state["review_id"]) / "source/code.py"
             self.assertEqual(snapshot.read_text(), f"value = {number}\n")
             previous = state
 
@@ -672,7 +729,7 @@ class CrossReviewTests(unittest.TestCase):
         self.git("add", ".")
         ident = self.start("finding")
         self.wait(ident)
-        snapshot = self.run / "reviews" / ident / "input"
+        snapshot = self.inputs(ident)
         self.assertFalse((snapshot / "source/AGENTS.md").exists())
         self.assertNotIn(
             "SYNTHETIC_PRIVATE_VALUE", (snapshot / "diff.patch").read_text()
@@ -737,12 +794,12 @@ class CrossReviewTests(unittest.TestCase):
         self.assertEqual([call["repair"] for call in calls], [False, True])
         self.assertEqual(len({call["session"] for call in calls}), 1)  # resumed, not restarted
         events = [json.loads(line) for line in
-                  (self.run / "reviews" / ident / "events.jsonl").read_text().splitlines()]
+                  (self.directory(ident) / "events.jsonl").read_text().splitlines()]
         repair = next(event for event in events if event["kind"] == "repair")
         self.assertEqual(repair["recipient"], "reviewer")
         self.assertIn('expected exactly one for each of [], got ["ghost"]', repair["payload"]["error"])
         prompt = next(text for text in (path.read_text() for path in
-                      (self.run / "reviews" / ident / "turns").glob("*/prompt.txt")) if "prior_finding_ids" in text)
+                      (self.directory(ident) / "turns").glob("*/prompt.txt")) if "prior_finding_ids" in text)
         context = json.loads(prompt.split("\n", 1)[1])
         self.assertEqual((context["prior_finding_ids"], context["omitted"]), ([], []))
 
@@ -802,7 +859,7 @@ class CrossReviewTests(unittest.TestCase):
         self.assertEqual(self.wait(ident)["status"], "waiting_reply")
         self.reviews.call("cancel", {"review_id": ident, "request_id": "cancel"})
         self.assertEqual(self.wait(ident)["status"], "cancelled")
-        self.assertIn("question", (self.run / "reviews" / ident / "conversation.md").read_text())
+        self.assertIn("question", (self.directory(ident) / "conversation.md").read_text())
 
     def test_peer_auth_only_copies_changed_bytes_and_preserves_refresh(self):
         home = self.root / 'peer-home'
@@ -865,7 +922,7 @@ class CrossReviewTests(unittest.TestCase):
         self.assertIsNone(state["remaining_rounds"])
         self.assertIsNone(self.reviews.peers["codex"].process)
         self.assertTrue(
-            list((self.run / "reviews" / ident / "turns").glob("*/stderr.log"))
+            list((self.directory(ident) / "turns").glob("*/stderr.log"))
         )
 
     def test_one_shot_scope_exclusion_and_snapshot_tampering(self):
@@ -876,7 +933,7 @@ class CrossReviewTests(unittest.TestCase):
         state = self.wait(ident)
         self.assertEqual(state["verdict"], "approve", state)
         self.assertEqual(state["applicability"], "valid")
-        copied = self.run / "reviews" / ident / "input/source/code.py"
+        copied = self.inputs(ident) / "source/code.py"
         copied.chmod(0o644)
         copied.write_text("changed snapshot\n")
         self.assertEqual(

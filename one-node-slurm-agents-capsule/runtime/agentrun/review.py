@@ -34,7 +34,15 @@ from review_snapshot import (
 TERMINAL = {"success", "failed", "cancelled", "timeout"}
 # Rejected reviewer output is returned to the same conversation this many times before failing.
 REPAIR_TURNS = 2
-RETRYABLE_FAILURES = {"invalid_model"}
+# Failures the reviewer may recover from in the same round with review_retry, so a new round
+# (and its directory) is not needed after, for example, a login on the host.
+RETRYABLE_FAILURES = {"invalid_model", "authentication", "rate_limit", "provider_failed",
+                      "input_reader_unavailable", "timeout"}
+RECOVERY = {
+    "authentication": "ホストで agentrun auth login（または import）を実行して認証を更新した後、"
+                      "review_retryで同じラウンドを再試行してください。新しいreview_startは不要です。",
+    "rate_limit": "利用制限が解除されてから、review_retryで同じラウンドを再試行してください。",
+}
 MODEL_SOURCES = ("user", "agent")
 MODEL_CACHE_SECONDS = 600
 MODEL_NOTES = {
@@ -222,12 +230,13 @@ class Reviews:
         self.peer_lock = threading.Lock()
         self.model_cache = {}
         self.model_locks = {provider: threading.Lock() for provider in PROVIDERS}
-        for path in (self.root / "threads").glob("*/state.json"):
+        # Threads keep their rounds in reviews/<thread>/<round>; older runs used flat directories.
+        for path in [*(self.root / "threads").glob("*/state.json"), *self.root.glob("thread-*/thread.json")]:
             state = load(path)
             for key in ("max_rounds", "deadline", "consumed_rounds"):
                 state.pop(key, None)
             self.threads[state["review_thread_id"]] = state
-        for path in self.root.glob("review-*/state.json"):
+        for path in [*self.root.glob("review-*/state.json"), *self.root.glob("thread-*/review-*/state.json")]:
             state = load(path)
             state.pop("reply_deadline", None)
             state.pop("budget_consumed", None)
@@ -251,13 +260,31 @@ class Reviews:
                         if key in result:
                             result[key] = None
 
+    def round_dir(self, state):
+        return self.root / state.get("directory", state["review_id"])
+
+    def input_dir(self, state):
+        # The latest round of each reviewer reads the provider's fixed workspace (see workspace()).
+        return self.root / state.get("input_dir", state.get("directory", state["review_id"]) + "/input")
+
+    def workspace(self, provider):
+        """One input directory per reviewer, so its native conversation can be resumed across rounds.
+
+        Claude indexes sessions by working directory and Antigravity grants reads by path; a
+        fixed path lets every round continue the same conversation over a fresh snapshot.
+        """
+        return "workspace/" + provider
+
+    def thread_path(self, ident):
+        legacy = self.root / "threads" / ident / "state.json"
+        return legacy if legacy.exists() else self.root / ident / "thread.json"
+
     def persist(self, state):
-        atomic_json(self.root / state["review_id"] / "state.json", state)
+        directory = self.round_dir(state)
+        atomic_json(directory / "state.json", state)
+        atomic_json(directory / "live/status.json", self.public(state))
         atomic_json(
-            self.root / state["review_id"] / "live/status.json", self.public(state)
-        )
-        atomic_json(
-            self.root / "threads" / state["review_thread_id"] / "state.json",
+            self.thread_path(state["review_thread_id"]),
             self.threads[state["review_thread_id"]],
         )
         self.changed.notify_all()
@@ -310,7 +337,7 @@ class Reviews:
             {"files": state.get("supplements", [])}, roots
         ):
             return "stale"
-        directory = self.root / state["review_id"] / "input"
+        directory = self.input_dir(state)
         for entry in state["manifest"]["files"] + state.get("supplements", []):
             if entry.get("path"):
                 try:
@@ -365,7 +392,7 @@ class Reviews:
             "provider_session_id": state.get("session_id"),
             "payload": payload,
         }
-        directory = self.root / state["review_id"]
+        directory = self.round_dir(state)
         directory.mkdir(parents=True, exist_ok=True)
         with (directory / "events.jsonl").open("a") as stream:
             stream.write(json.dumps(value, ensure_ascii=False) + "\n")
@@ -419,7 +446,7 @@ class Reviews:
                     if remaining <= 0:
                         break
                     self.changed.wait(remaining)
-                path = self.root / state["review_id"] / "events.jsonl"
+                path = self.round_dir(state) / "events.jsonl"
                 records = (
                     [json.loads(line) for line in path.read_text().splitlines()]
                     if path.exists()
@@ -448,8 +475,10 @@ class Reviews:
                 return previous["result"]
             if action == "retry":
                 state = self.get(params["review_id"])
-                if state["status"] != "failed" or state.get("error_kind") not in RETRYABLE_FAILURES:
-                    raise ValueError("Retry is only available after an invalid_model failure")
+                kind = state.get("error_kind")
+                if state["status"] not in ("failed", "timeout") or kind not in RETRYABLE_FAILURES:
+                    raise ValueError("This round cannot be retried (" + str(kind or state["status"])
+                                     + "); fix the request and use review_recheck or review_start")
                 thread = self.threads[state["review_thread_id"]]
                 if thread["rounds"][-1] != state["review_id"]:
                     raise ValueError("Retry must target the latest round in this thread")
@@ -536,7 +565,7 @@ class Reviews:
                     ),
                     old,
                 )
-                atomic_json(self.root / old["review_id"] / "response.json", response)
+                atomic_json(self.round_dir(old) / "response.json", response)
                 state = self.rounds[result["review_id"]]
                 state["prior_response"] = response
                 self.persist(state)
@@ -569,7 +598,7 @@ class Reviews:
                     answer["include"],
                     self.repo,
                     self.run,
-                    self.root / state["review_id"] / "input",
+                    self.input_dir(state),
                 )
                 combined = state["supplements"] + additions
                 allowed = {
@@ -588,7 +617,7 @@ class Reviews:
                     raise ValueError("Total additional evidence exceeds size limit")
                 state["supplements"] = combined
                 atomic_json(
-                    self.root / state["review_id"] / "input/supplements/manifest.json",
+                    self.input_dir(state) / "supplements/manifest.json",
                     state["supplements"],
                 )
                 self.record_context(state, "supplements/manifest.json")
@@ -679,6 +708,12 @@ class Reviews:
         for name in params.get("include", []):
             check_include(name, self.repo, self.run)
         ident = "review-" + uuid.uuid4().hex
+        # Continue the reviewer's latest conversation, even from another thread, instead of
+        # opening a new native session for every round.
+        workspace = self.workspace(provider)
+        earlier = [r for r in self.rounds.values() if r["provider"] == provider and r["status"] == "success"
+                   and r.get("cwd") == workspace and r.get("session_id")]
+        earlier = max(earlier, key=lambda r: r["created_at"], default=None)
         state = {
             "review_id": ident,
             "review_thread_id": thread["review_thread_id"],
@@ -686,7 +721,10 @@ class Reviews:
             "status": "prepared",
             "request": params,
             "provider": provider,
-            "session_id": None,
+            "directory": thread["review_thread_id"] + "/" + ident,
+            "input_dir": workspace,
+            "session_id": earlier["session_id"] if earlier else None,
+            "continues": earlier["review_id"] if earlier else None,
             "sequence": 0,
             "exchanges": 0,
             "supplements": [],
@@ -698,7 +736,7 @@ class Reviews:
         self.rounds[ident] = state
         thread["rounds"].append(ident)
         atomic_json(
-            self.root / ident / "request.json",
+            self.round_dir(state) / "request.json",
             dict(
                 params,
                 review_id=ident,
@@ -829,7 +867,8 @@ class Reviews:
 
     def work(self, state, message, cancelled):
         ident = state["review_id"]
-        directory = self.root / ident
+        directory = self.round_dir(state)
+        inputs = self.input_dir(state)
         peer = None
         attempted = False
         try:
@@ -854,7 +893,7 @@ class Reviews:
                 if "manifest" not in state
                 else None
             )
-            peer.prepare_input_transport(directory / "input", cancelled)
+            peer.prepare_input_transport(inputs, cancelled)
             with self.lock:
                 if state["status"] in TERMINAL:
                     return
@@ -864,9 +903,11 @@ class Reviews:
                 state["status"] = "running"
                 if peer.input_access is not None:
                     state["input_access"] = peer.input_access
+                state["cwd"] = str(inputs.relative_to(self.root))
                 self.event(state, "running", recipient="reviewer")
                 prompt = self.prompt(state, message)
                 native = state["session_id"]
+                resumed = bool(native)
                 timeout = self.config["active_timeout"] or None
                 turn = directory / "turns" / ("turn-" + uuid.uuid4().hex)
                 if "started_at" not in state:
@@ -874,17 +915,38 @@ class Reviews:
                     self.persist(state)
             attempted = True
             for repair in range(REPAIR_TURNS + 1):
-                result, native, elapsed = peer.turn(
-                    directory / "input",
-                    prompt,
-                    MESSAGE_SCHEMA,
-                    turn,
-                    native,
-                    timeout,
-                    cancelled,
-                    model=selection.get("model"),
-                    effort=selection.get("effort"),
-                )
+                try:
+                    result, native, elapsed = peer.turn(
+                        inputs,
+                        prompt,
+                        MESSAGE_SCHEMA,
+                        turn,
+                        native,
+                        timeout,
+                        cancelled,
+                        model=selection.get("model"),
+                        effort=selection.get("effort"),
+                    )
+                except (ProviderError, ValueError, OSError) as error:
+                    # A conversation that can no longer be resumed (removed, too long, or from an
+                    # older layout) is replaced by a new one instead of failing the round.
+                    if not resumed or getattr(error, "kind", None) in ("authentication", "rate_limit",
+                                                                       "invalid_model"):
+                        raise
+                    resumed = False
+                    with self.lock:
+                        if state["status"] in TERMINAL:
+                            return
+                        self.event(state, "new_session", recipient="reviewer", payload={"error": str(error)})
+                        state.update(session_id=None, continues=None)
+                        prompt = self.prompt(state, message)
+                    native = None
+                    turn = directory / "turns" / ("turn-" + uuid.uuid4().hex)
+                    result, native, elapsed = peer.turn(
+                        inputs, prompt, MESSAGE_SCHEMA, turn, None, timeout, cancelled,
+                        model=selection.get("model"), effort=selection.get("effort"),
+                    )
+                resumed = False
                 with self.lock:
                     state["active_seconds"] += elapsed
                     if state["status"] in TERMINAL:
@@ -994,6 +1056,11 @@ class Reviews:
                         "kind",
                         status if status != "failed" else "invalid_output_or_input",
                     )
+                    if state["error_kind"] in RECOVERY:
+                        state["recovery"] = {
+                            "retry_command": f"cd /workspace && agent-review retry {ident} --request-id retry-{uuid.uuid4().hex}",
+                            "message": RECOVERY[state["error_kind"]],
+                        }
                     if state["error_kind"] == "invalid_model":
                         cached = self.model_cache.get(state["provider"])
                         state["recovery"] = {
@@ -1019,8 +1086,27 @@ class Reviews:
                 + (base or "HEAD has no commit yet; commit the work to review first")
             ) from None
 
+    def archive_workspace(self, state):
+        """Move the reviewer's previous round out of the shared workspace before a new capture."""
+        directory = self.input_dir(state)
+        name = str(directory.relative_to(self.root))
+        with self.lock:
+            for old in self.rounds.values():
+                if old is not state and old.get("input_dir") == name:
+                    target = self.round_dir(old) / "input"
+                    if directory.exists() and not target.exists():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(directory, target)
+                    old["input_dir"] = str(target.relative_to(self.root))
+                    self.persist(old)
+        # Anything left is this round's own interrupted capture.
+        if directory.exists():
+            shutil.rmtree(directory)
+
     def prepare_input(self, state, cancelled):
-        directory = self.root / state["review_id"] / "input"
+        directory = self.input_dir(state)
+        if state.get("input_dir"):
+            self.archive_workspace(state)
         request = state["request"]
         base = request.get("base") or self.config["baseline"]["head"]
         if not base:
@@ -1049,7 +1135,7 @@ class Reviews:
             }
             atomic_json(directory / "prior/review.json", prior)
             shutil.copyfile(
-                self.root / old["review_id"] / "conversation.md",
+                self.round_dir(old) / "conversation.md",
                 directory / "prior/conversation.md",
             )
             if old.get("manifest"):
@@ -1057,7 +1143,7 @@ class Reviews:
                 compare_snapshots(
                     old["manifest"],
                     manifest,
-                    self.root / old["review_id"] / "input",
+                    self.input_dir(old),
                     directory,
                 )
             for path in (directory / "prior").iterdir():
@@ -1115,11 +1201,19 @@ class Reviews:
         }
         if state["provider"] == "codex":
             policy += (
-                "Read input files using the capsule-input MCP tools list_files, read_file and search_text. "
-                "These read UTF-8 text only, so binary_files cannot be inspected by you. "
+                "Read input files using the capsule-input MCP tools list_files, read_file, search_text, view_image, "
+                "read_pdf_text and view_pdf_page. read_file and search_text read UTF-8 text; for binary_files, "
+                "view_image shows PNG, JPEG, GIF and WebP images, and read_pdf_text and view_pdf_page read one PDF "
+                "page at a time as text or as an image. Other binaries cannot be inspected by you. "
                 "They expose only this review's captured files and do not require shell execution. "
                 "Use relative paths such as manifest.json, diff.patch and source/code.py. "
                 "When shell_sandbox_available=false do not try shell commands; continue using these MCP tools. "
+            )
+        if state.get("session_id"):
+            policy += (
+                "This conversation continues your earlier review work. The input directory now holds a new "
+                "snapshot for this request, so re-read files instead of relying on earlier reads; earlier "
+                "findings that are not in prior_finding_ids need no disposition. "
             )
         if not context["dialogue"]:
             policy += " No more questions are permitted: produce a result with explicit limitations. "
@@ -1131,7 +1225,7 @@ class Reviews:
         return [f["finding_id"] for f in self.rounds[state["previous"]].get("result", {}).get("findings", [])]
 
     def record_context(self, state, name):
-        path = self.root / state["review_id"] / "input" / name
+        path = self.input_dir(state) / name
         state.setdefault("context_files", {})[name] = digest(path.read_bytes())
 
     def normalize_evidence(self, state, result):
@@ -1179,7 +1273,7 @@ class Reviews:
                 or not IDENT.fullmatch(finding["finding_id"])
             ):
                 raise ValueError("Invalid finding reference or ID")
-            content = (self.root / state["review_id"] / "input" / path).read_bytes()
+            content = (self.input_dir(state) / path).read_bytes()
             if finding["line"] > max(1, len(content.splitlines())):
                 raise ValueError("Finding line is outside the reviewed file")
         ids = [f["finding_id"] for f in result["findings"]]

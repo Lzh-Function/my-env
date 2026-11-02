@@ -122,6 +122,7 @@ def process_identity(pid):
 def cleanup_recorded_processes(root):
     """Recover our live process groups after a service crash without trusting PID alone."""
     paths = list(Path(root).glob("review-*/turns/*/status.json"))
+    paths += list(Path(root).glob("thread-*/review-*/turns/*/status.json"))
     paths += list(Path(root).glob("runtime/*/*/status.json"))
     groups = []
     for path in paths:

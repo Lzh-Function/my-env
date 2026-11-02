@@ -4,13 +4,22 @@
 import argparse
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 from mcp.types import ToolAnnotations
 from review_snapshot import MAX_FILES, safe_file
 from review_snapshot import read_file as read_snapshot_file
 
 MAX_OUTPUT = 128 * 1024
+# Image inputs larger than this are rejected by the model APIs anyway.
+MAX_IMAGE = 20 * 1024 * 1024
+# Poppler converts one page at a time; a page that takes longer is reported instead of waited for.
+PDF_TIMEOUT = 60
+PDF_DPI = 110
+IMAGE_FORMATS = {b"\x89PNG\r\n\x1a\n": "png", b"\xff\xd8\xff": "jpeg", b"GIF87a": "gif", b"GIF89a": "gif"}
 READ_ONLY = ToolAnnotations(
     readOnlyHint=True, destructiveHint=False, openWorldHint=False
 )
@@ -86,6 +95,73 @@ def server(directory):
             "total_lines": len(lines),
             "next_line": next_line if next_line <= len(lines) else None,
         }
+
+    @mcp.tool(annotations=READ_ONLY)
+    def view_image(path: str) -> Image:
+        """View a captured PNG, JPEG, GIF or WebP image (figures, plots) listed in binary_files."""
+        if Path(path).is_absolute() or ".." in Path(path).parts:
+            raise ValueError("Use a relative snapshot path, not an original workspace path")
+        content = read_snapshot_file(root / path, (root,))
+        if len(content) > MAX_IMAGE:
+            raise ValueError("Image is larger than 20 MiB; ask for a smaller export")
+        kind = next((name for magic, name in IMAGE_FORMATS.items() if content.startswith(magic)), None)
+        if kind is None and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+            kind = "webp"
+        if kind is None:
+            raise ValueError("Not a PNG, JPEG, GIF or WebP image; this reader cannot display it")
+        return Image(data=content, format=kind)
+
+    def pdf(path, page, tool, *args):
+        """Run a Poppler tool on a private copy of one captured PDF page."""
+        if Path(path).is_absolute() or ".." in Path(path).parts:
+            raise ValueError("Use a relative snapshot path, not an original workspace path")
+        if page < 1:
+            raise ValueError("page must be positive")
+        if any(shutil.which(name) is None for name in (tool, "pdfinfo")):
+            raise ValueError("poppler-utils is not installed; this PDF cannot be converted")
+        content = read_snapshot_file(root / path, (root,))
+        if not content.startswith(b"%PDF-"):
+            raise ValueError("Not a PDF file")
+        with tempfile.TemporaryDirectory() as scratch:
+            source = Path(scratch) / "input.pdf"
+            source.write_bytes(content)
+            try:
+                info = subprocess.run(["pdfinfo", str(source)], capture_output=True, text=True,
+                                      timeout=PDF_TIMEOUT, check=True).stdout
+                pages = int(next(line.split()[-1] for line in info.splitlines() if line.startswith("Pages:")))
+            except (subprocess.SubprocessError, OSError, StopIteration, ValueError) as error:
+                raise ValueError("Cannot read the PDF page count") from error
+            if page > pages:
+                raise ValueError(f"page must be at most {pages}")
+            try:
+                result = subprocess.run([tool, "-f", str(page), "-l", str(page), *args, str(source),
+                                         str(Path(scratch) / "out")],
+                                        capture_output=True, timeout=PDF_TIMEOUT, check=True)
+            except subprocess.TimeoutExpired as error:
+                raise ValueError("PDF conversion timed out for this page") from error
+            except (subprocess.SubprocessError, OSError) as error:
+                raise ValueError("PDF conversion failed for this page") from error
+            outputs = sorted(Path(scratch).glob("out*"))
+            return pages, (outputs[0].read_bytes() if outputs else result.stdout)
+
+    @mcp.tool(annotations=READ_ONLY)
+    def view_pdf_page(path: str, page: int = 1) -> Image:
+        """View one page of a captured PDF from binary_files as a PNG image (figures, layout, tables)."""
+        _, image = pdf(path, page, "pdftoppm", "-png", "-r", str(PDF_DPI), "-singlefile")
+        if len(image) > MAX_IMAGE:
+            raise ValueError("Rendered page is larger than 20 MiB")
+        return Image(data=image, format="png")
+
+    @mcp.tool(annotations=READ_ONLY)
+    def read_pdf_text(path: str, page: int = 1) -> dict:
+        """Read the text of one page of a captured PDF from binary_files, keeping its layout."""
+        pages, text = pdf(path, page, "pdftotext", "-layout", "-enc", "UTF-8")
+        text = text.decode("utf-8", errors="replace")
+        truncated = len(text.encode()) > MAX_OUTPUT
+        if truncated:
+            text = text.encode()[:MAX_OUTPUT].decode("utf-8", errors="ignore")
+        return {"path": path, "page": page, "pages": pages, "text": text, "truncated": truncated,
+                "next_page": page + 1 if page < pages else None}
 
     @mcp.tool(annotations=READ_ONLY)
     def search_text(text: str, prefix: str = "", max_matches: int = 100) -> dict:
