@@ -13,8 +13,8 @@ import tempfile
 import time
 from pathlib import Path
 
-MAX_FILE = 4 * 1024 * 1024
-MAX_TOTAL = 32 * 1024 * 1024
+MAX_FILE = 64 * 1024 * 1024
+MAX_TOTAL = 512 * 1024 * 1024
 MAX_FILES = 10000
 PRIVATE = {
     ".git",
@@ -42,6 +42,10 @@ class InputTooLarge(ValueError):
             f"Input exceeds the {MAX_FILE / 1024 / 1024:g} MiB file size limit "
             f"({size} bytes): {path}"
         )
+
+
+class SymlinkInput(ValueError):
+    pass
 
 
 def digest(value):
@@ -109,7 +113,7 @@ def safe_file(path, roots):
     for part in path.relative_to(root).parts:
         current = current / part
         if current.is_symlink():
-            raise ValueError("Symlink inputs are not supported: " + str(path))
+            raise SymlinkInput("Symlink inputs are not supported: " + str(path))
     return path
 
 
@@ -151,6 +155,22 @@ def read_file(path, roots):
         ) != (after.st_size, after.st_mtime_ns, after.st_ino):
             raise ValueError("Input changed while being read: " + str(path))
     return content
+
+
+def check_include(name, repo, run):
+    """Reject an explicit input before a reviewer starts; capture applies the same rules."""
+    repo, run = Path(repo).resolve(), Path(run).resolve()
+    path = Path(os.path.abspath(name if Path(name).is_absolute() else repo / name))
+    if path.is_relative_to(repo) and private(path.relative_to(repo)):
+        raise ValueError("Private/cache input cannot be included: " + str(path))
+    safe_file(path, (repo, run / "artifacts", run / "reviews"))
+    if not path.is_file():
+        raise ValueError("Included input is not an existing regular file: " + str(path))
+    if path.stat().st_size > MAX_FILE:
+        raise ValueError(
+            str(InputTooLarge(path, path.stat().st_size))
+            + "; include its source (for example LaTeX or CSV) or a smaller excerpt instead"
+        )
 
 
 def brief_file(value, repo, run):
@@ -256,6 +276,11 @@ def capture(
         .decode()
         .split("\0")
     ) - {""}
+    # New files the worker has not added yet are part of the work; .gitignore marks what is not.
+    changed.update(
+        set(git(repo, "ls-files", "-z", "--others", "--exclude-standard", binary=True).decode().split("\0"))
+        - {""}
+    )
     names.update(changed)
     entries, omitted, excluded, total = [], [], [], 0
     # Leave room for the manifest, patch, and subsequent round context.
@@ -287,6 +312,12 @@ def capture(
             return
         try:
             content = read_file(path, roots)
+        except SymlinkInput:
+            if explicit:
+                raise
+            # A tracked link is not followed; its target is reviewed only where it is tracked itself.
+            excluded.append({"path": str(path), "reason": "symlink (not followed)"})
+            return
         except InputTooLarge as error:
             if explicit:
                 raise
@@ -332,13 +363,8 @@ def capture(
             content.decode("utf-8")
             textual = True
         except UnicodeError:
+            # Captured binaries stay readable for image/PDF-capable reviewers, who judge coverage.
             textual = False
-            omitted.append(
-                {
-                    "path": str(path),
-                    "reason": "binary requires independent visual/content validation",
-                }
-            )
         entries.append(
             {
                 "original": str(path),

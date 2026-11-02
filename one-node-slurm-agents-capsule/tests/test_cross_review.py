@@ -79,7 +79,12 @@ else:
 prompt=sys.stdin.read()
 if provider=='antigravity':
     prompt=json.loads(prompt)['message']['content']
-context=json.loads(prompt.split('\n',1)[1])
+repair=prompt.startswith('Your previous reply was rejected')
+if repair:
+    context=json.loads((home/'last-context.json').read_text())
+else:
+    context=json.loads(prompt.split('\n',1)[1])
+    (home/'last-context.json').write_text(json.dumps(context))
 manifest=json.loads(Path('manifest.json').read_text())
 mode=next((p.read_text().strip() for p in Path('brief').glob('**/*') if p.is_file()),'question')
 if mode=='timeout':
@@ -112,6 +117,8 @@ if context['round']>=2:
 if mode=='bad-json':
     print('not JSON');sys.exit(0)
 if mode=='wrong-target':result['target_id']='wrong'
+if mode=='fixed-on-repair' and not repair:
+    result.update(prior_dispositions=[{'finding_id':'ghost','status':'resolved','reason':'x','evidence':[]}])
 if mode=='bad-evidence':
     result.update(verdict='request_changes',findings=[{'finding_id':'bad','severity':'major',
         'confidence':'high','basis':'observed','evidence_method':'static_source',
@@ -159,7 +166,7 @@ else:
 path.parent.mkdir(parents=True,exist_ok=True)
 with path.open('a') as stream:
     for r in records:stream.write(json.dumps(r)+'\n')
-with (home/'calls.jsonl').open('a') as stream:stream.write(json.dumps({'session':ident,'args':args,'target':context['target_id']})+'\n')
+with (home/'calls.jsonl').open('a') as stream:stream.write(json.dumps({'session':ident,'args':args,'target':context['target_id'],'repair':repair})+'\n')
 """
 
 
@@ -720,6 +727,60 @@ class CrossReviewTests(unittest.TestCase):
                 )
         self.assertEqual(self.reviews.rounds, {})
         self.assertEqual(self.reviews.peers, {})
+
+    def test_rejected_reviewer_output_is_repaired_in_the_same_conversation(self):
+        ident = self.start("fixed-on-repair", one_shot=True)
+        state = self.wait(ident)
+        self.assertEqual(state["status"], "success", state)
+        calls = [json.loads(line) for line in
+                 (self.reviews.peers["codex"].home / "calls.jsonl").read_text().splitlines()]
+        self.assertEqual([call["repair"] for call in calls], [False, True])
+        self.assertEqual(len({call["session"] for call in calls}), 1)  # resumed, not restarted
+        events = [json.loads(line) for line in
+                  (self.run / "reviews" / ident / "events.jsonl").read_text().splitlines()]
+        repair = next(event for event in events if event["kind"] == "repair")
+        self.assertEqual(repair["recipient"], "reviewer")
+        self.assertIn('expected exactly one for each of [], got ["ghost"]', repair["payload"]["error"])
+        prompt = next(text for text in (path.read_text() for path in
+                      (self.run / "reviews" / ident / "turns").glob("*/prompt.txt")) if "prior_finding_ids" in text)
+        context = json.loads(prompt.split("\n", 1)[1])
+        self.assertEqual((context["prior_finding_ids"], context["omitted"]), ([], []))
+
+    def test_input_mistakes_are_rejected_before_any_reviewer_starts(self):
+        with (self.repo / "paper.pdf").open("wb") as stream:
+            stream.truncate(review_snapshot.MAX_FILE + 1)
+        (self.repo / "link.csv").symlink_to(self.repo / "code.py")
+        self.brief.write_text("approve")
+        for include, message in ((["paper.pdf"], "include its source"),
+                                 (["link.csv"], "Symlink inputs are not supported"),
+                                 (["missing.tex"], "not an existing regular file")):
+            with self.subTest(include=include), self.assertRaisesRegex(ValueError, message):
+                self.reviews.call("run", dict(request_id="bad-" + include[0].replace(".", "-"), brief=str(self.brief),
+                                              include=include, reviewers=["codex", "antigravity"]))
+        with self.assertRaisesRegex(ValueError, "Review base is not a commit"):
+            self.reviews.call("run", dict(request_id="bad-base", brief=str(self.brief), base="nope"))
+        self.assertEqual(self.reviews.rounds, {})
+
+    def test_missing_worker_start_commit_falls_back_to_the_first_commit(self):
+        first = self.git("rev-parse", "HEAD").strip()
+        (self.repo / "code.py").write_text("value = 2\n")
+        self.git("commit", "-qam", "second")
+        self.config["baseline"] = {"head": None, "status": None}
+        self.reviews.config["baseline"] = self.config["baseline"]
+        ident = self.start("approve", one_shot=True)
+        state = self.wait(ident)
+        self.assertEqual(state["status"], "success", state)
+        self.assertEqual(self.reviews.rounds[ident]["manifest"]["base"], first)
+
+    def test_tracked_symlink_is_excluded_instead_of_failing_the_review(self):
+        (self.repo / "data").mkdir()
+        (self.repo / "data/results.csv").symlink_to("/nonexistent/results.csv")
+        self.git("add", ".")
+        ident = self.start("approve", one_shot=True)
+        state = self.wait(ident)
+        self.assertEqual(state["status"], "success", state)
+        self.assertIn({"path": str(self.repo.resolve() / "data/results.csv"), "reason": "symlink (not followed)"},
+                      self.reviews.rounds[ident]["manifest"]["excluded"])
 
     def test_omitted_large_file_cannot_be_approved(self):
         with (self.repo / "large.png").open("wb") as stream:

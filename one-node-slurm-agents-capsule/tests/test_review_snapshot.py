@@ -50,20 +50,33 @@ class SnapshotTests(unittest.TestCase):
     def test_22_large_tracked_images_are_omitted_without_aborting(self):
         for i in range(22):
             with (self.repo / f"figure-{i}.png").open("wb") as stream:
-                stream.truncate(5 * 1024 * 1024)
+                stream.truncate(snapshot.MAX_FILE + 1)
         self.git("add", ".")
         result = self.capture()
         self.assertEqual(len(result["omitted"]), 22)
-        self.assertTrue(all("4 MiB" in e["reason"] for e in result["omitted"]))
+        self.assertTrue(all("64 MiB" in e["reason"] for e in result["omitted"]))
         self.assertIn("source/code.py", [e["path"] for e in result["files"]])
         self.assertTrue(any(e["path"].startswith("brief/") for e in result["files"]))
         self.assertFalse(list((self.root / "input/source").glob("*.png")))
+
+    def test_untracked_files_follow_gitignore_and_binaries_are_not_omitted(self):
+        (self.repo / ".gitignore").write_text("outputs/\n")
+        (self.repo / "outputs").mkdir()
+        (self.repo / "outputs/run.log").write_text("ignored\n")
+        (self.repo / "new_module.py").write_text("print('new')\n")
+        (self.repo / "figure.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
+        result = self.capture()
+        files = {e["path"]: e for e in result["files"] if e.get("path")}
+        self.assertIn("source/new_module.py", files)
+        self.assertFalse(files["source/figure.png"]["text"])
+        self.assertNotIn("source/outputs/run.log", files)
+        self.assertEqual(result["omitted"], [])
 
     def test_explicit_large_input_reports_size_instead_of_silently_skipping(self):
         path = self.run / "artifacts/large.dat"
         with path.open("wb") as stream:
             stream.truncate(snapshot.MAX_FILE + 1)
-        with self.assertRaisesRegex(snapshot.InputTooLarge, "4 MiB file size limit"):
+        with self.assertRaisesRegex(snapshot.InputTooLarge, "64 MiB file size limit"):
             self.capture(includes=[str(path)])
 
     def test_changed_code_and_explicit_evidence_precede_unchanged_large_context(self):

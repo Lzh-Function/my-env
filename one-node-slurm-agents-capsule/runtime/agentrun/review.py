@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import socketserver
+import subprocess
 import threading
 import time
 import uuid
@@ -22,13 +23,17 @@ from review_snapshot import (
     brief_file,
     canonical,
     capture,
+    check_include,
     compare_snapshots,
     current,
     digest,
+    git,
     supplement,
 )
 
 TERMINAL = {"success", "failed", "cancelled", "timeout"}
+# Rejected reviewer output is returned to the same conversation this many times before failing.
+REPAIR_TURNS = 2
 RETRYABLE_FAILURES = {"invalid_model"}
 MODEL_SOURCES = ("user", "agent")
 MODEL_CACHE_SECONDS = 600
@@ -669,6 +674,10 @@ class Reviews:
         ):
             raise ValueError("Excluded inputs must be path patterns")
         brief_file(params["brief"], self.repo, self.run)
+        # Input mistakes are reported to the caller now instead of failing each reviewer later.
+        params["base"] = self.resolve_base(params.get("base"))
+        for name in params.get("include", []):
+            check_include(name, self.repo, self.run)
         ident = "review-" + uuid.uuid4().hex
         state = {
             "review_id": ident,
@@ -864,27 +873,45 @@ class Reviews:
                     state["started_at"] = time.time()
                     self.persist(state)
             attempted = True
-            result, native, elapsed = peer.turn(
-                directory / "input",
-                prompt,
-                MESSAGE_SCHEMA,
-                turn,
-                native,
-                timeout,
-                cancelled,
-                model=selection.get("model"),
-                effort=selection.get("effort"),
-            )
+            for repair in range(REPAIR_TURNS + 1):
+                result, native, elapsed = peer.turn(
+                    directory / "input",
+                    prompt,
+                    MESSAGE_SCHEMA,
+                    turn,
+                    native,
+                    timeout,
+                    cancelled,
+                    model=selection.get("model"),
+                    effort=selection.get("effort"),
+                )
+                with self.lock:
+                    state["active_seconds"] += elapsed
+                    if state["status"] in TERMINAL:
+                        return
+                    state["session_id"] = native
+                    state["exit_code"] = 0
+                    state["provider_metadata"] = peer.last_metadata
+                    state["model_used"] = peer.last_metadata.get("model") or selection.get("model")
+                    self.normalize_evidence(state, result)
+                    try:
+                        self.validate_result(state, result)
+                        break
+                    except ValueError as error:
+                        if repair == REPAIR_TURNS:
+                            raise
+                        # A malformed answer is the reviewer's to fix; the worker never sees it.
+                        self.event(state, "repair", recipient="reviewer", payload={"error": str(error)})
+                        correction = (
+                            "Your previous reply was rejected by the review runtime: " + str(error)
+                            + ". Fix only that problem and return the complete corrected JSON for the same "
+                            "review, following every rule given before."
+                        )
+                        prompt = correction if native else prompt + "\n" + correction
+                        turn = directory / "turns" / ("turn-" + uuid.uuid4().hex)
             with self.lock:
-                state["active_seconds"] += elapsed
                 if state["status"] in TERMINAL:
                     return
-                state["session_id"] = native
-                state["exit_code"] = 0
-                state["provider_metadata"] = peer.last_metadata
-                state["model_used"] = peer.last_metadata.get("model") or selection.get("model")
-                self.normalize_evidence(state, result)
-                self.validate_result(state, result)
                 if result["kind"] == "question":
                     state.update(status="waiting_reply")
                     event = self.event(state, "question", "reviewer", "worker", result)
@@ -979,6 +1006,19 @@ class Reviews:
                         (self.root / "review_findings.json").unlink(missing_ok=True)
                     self.event(state, status, payload={"error": str(error)})
 
+    def resolve_base(self, base):
+        base = base or self.config["baseline"]["head"]
+        try:
+            if not base:
+                # The repository had no commit at launch; compare with its first commit instead.
+                base = git(self.repo, "rev-list", "--max-parents=0", "HEAD").split()[-1]
+            return git(self.repo, "rev-parse", "--verify", base + "^{commit}")
+        except (subprocess.SubprocessError, OSError, IndexError):
+            raise ValueError(
+                "Review base is not a commit in this repository: "
+                + (base or "HEAD has no commit yet; commit the work to review first")
+            ) from None
+
     def prepare_input(self, state, cancelled):
         directory = self.root / state["review_id"] / "input"
         request = state["request"]
@@ -1047,6 +1087,11 @@ class Reviews:
             "in question text and limitations with coverage=incomplete; never put explanatory prose in evidence. "
             "For questions use verdict=none; for results questions=[] and a real verdict. "
             "Reassess every previous finding with a prior_dispositions entry; preserve finding IDs. "
+            "A review_result needs exactly one prior_dispositions entry per ID in prior_finding_ids. "
+            "When omitted is non-empty or coverage is incomplete, do not use verdict=approve; use "
+            "comment or request_changes and state the limitation. "
+            "binary_files are captured non-text files (figures, PDFs); inspect those your tools can open, and if a "
+            "binary needed to check a claim cannot be inspected, set coverage=incomplete and say which. "
         )
         context = {
             "target_id": state["target_id"],
@@ -1064,10 +1109,14 @@ class Reviews:
             if "prior/changes.patch" in state.get("context_files", {})
             else None,
             "input_access": state.get("input_access"),
+            "prior_finding_ids": self.prior_ids(state),
+            "omitted": [entry["path"] for entry in state["manifest"]["omitted"]],
+            "binary_files": [e["path"] for e in state["manifest"]["files"] if e.get("path") and not e.get("text")][:200],
         }
         if state["provider"] == "codex":
             policy += (
                 "Read input files using the capsule-input MCP tools list_files, read_file and search_text. "
+                "These read UTF-8 text only, so binary_files cannot be inspected by you. "
                 "They expose only this review's captured files and do not require shell execution. "
                 "Use relative paths such as manifest.json, diff.patch and source/code.py. "
                 "When shell_sandbox_available=false do not try shell commands; continue using these MCP tools. "
@@ -1075,6 +1124,11 @@ class Reviews:
         if not context["dialogue"]:
             policy += " No more questions are permitted: produce a result with explicit limitations. "
         return policy + "\n" + json.dumps(context, ensure_ascii=False)
+
+    def prior_ids(self, state):
+        if not state["previous"]:
+            return []
+        return [f["finding_id"] for f in self.rounds[state["previous"]].get("result", {}).get("findings", [])]
 
     def record_context(self, state, name):
         path = self.root / state["review_id"] / "input" / name
@@ -1157,7 +1211,12 @@ class Reviews:
             if {f["finding_id"] for f in previous} != {
                 d["finding_id"] for d in dispositions
             } or len(dispositions) != len(previous):
-                raise ValueError("Missing/duplicate previous finding dispositions")
+                expected = [f["finding_id"] for f in previous]
+                given = [d["finding_id"] for d in dispositions]
+                raise ValueError(
+                    "Missing/duplicate previous finding dispositions: expected exactly one for each of "
+                    + json.dumps(expected) + ", got " + json.dumps(given)
+                )
             old_findings = {f["finding_id"]: f for f in previous}
             unresolved = any(
                 d["status"] == "insufficient_evidence"
@@ -1183,15 +1242,23 @@ class Reviews:
                 not text.strip() for text in result["checked_scope"]
             ):
                 raise ValueError("Review must declare its checked scope")
-            if result["verdict"] == "approve" and (
-                result["coverage"] != "complete"
-                or blocking
-                or unresolved
-                or state["manifest"]["omitted"]
-            ):
-                raise ValueError(
-                    "Approval contradicts findings, omissions or incomplete coverage"
-                )
+            if result["verdict"] == "approve":
+                reasons = [
+                    text
+                    for condition, text in (
+                        (result["coverage"] != "complete", "coverage is incomplete"),
+                        (blocking, "a critical or major finding is open"),
+                        (unresolved, "a prior finding is unresolved or lacks evidence"),
+                        (state["manifest"]["omitted"], "the snapshot omits "
+                         + ", ".join(e["path"] for e in state["manifest"]["omitted"][:5])),
+                    )
+                    if condition
+                ]
+                if reasons:
+                    raise ValueError(
+                        "Approval contradicts findings, omissions or incomplete coverage: "
+                        + "; ".join(reasons) + " (use comment or request_changes)"
+                    )
 
     @staticmethod
     def report(result):

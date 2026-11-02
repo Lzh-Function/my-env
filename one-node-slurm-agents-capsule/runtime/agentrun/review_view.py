@@ -150,6 +150,8 @@ def render(event, prefix=""):
     elif kind == "response":
         for item in payload.get("responses", []):
             lines.append(indent(f"- {item.get('finding_id')}: {item.get('action')} — {item.get('reason', '')}"))
+    elif kind == "repair" and payload.get("error"):
+        lines.append(indent("出力の修正を依頼: " + payload["error"]))
     elif kind in ("failed", "timeout", "cancelled") and payload.get("error"):
         lines.append(indent("エラー: " + payload["error"]))
     elif kind == "model_retry" and payload:
