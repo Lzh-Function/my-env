@@ -36,12 +36,17 @@ TERMINAL = {"success", "failed", "cancelled", "timeout"}
 REPAIR_TURNS = 2
 # Failures the reviewer may recover from in the same round with review_retry, so a new round
 # (and its directory) is not needed after, for example, a login on the host.
-RETRYABLE_FAILURES = {"invalid_model", "authentication", "rate_limit", "provider_failed",
-                      "input_reader_unavailable", "timeout"}
+RETRYABLE_FAILURES = {"invalid_model", "authentication", "missing_authentication", "rate_limit",
+                      "provider_failed", "input_reader_unavailable", "timeout"}
+LOGIN = ("ホストで agentrun auth login（または import）を実行して認証を更新した後、"
+         "review_retryで同じラウンドを再試行してください。新しいreview_startは不要です。")
 RECOVERY = {
-    "authentication": "ホストで agentrun auth login（または import）を実行して認証を更新した後、"
-                      "review_retryで同じラウンドを再試行してください。新しいreview_startは不要です。",
+    "authentication": LOGIN,
+    "missing_authentication": LOGIN,
     "rate_limit": "利用制限が解除されてから、review_retryで同じラウンドを再試行してください。",
+    "timeout": "review_retryで同じラウンドを再試行してください。繰り返す場合は対象を絞ってください。",
+    "provider_failed": "一時的な失敗の可能性があります。review_retryで同じラウンドを再試行してください。",
+    "input_reader_unavailable": "入力の読み取り準備に失敗しました。review_retryで同じラウンドを再試行してください。",
 }
 MODEL_SOURCES = ("user", "agent")
 MODEL_CACHE_SECONDS = 600

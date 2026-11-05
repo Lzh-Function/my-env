@@ -646,6 +646,15 @@ class CrossReviewTests(unittest.TestCase):
         kinds = [e["kind"] for e in self.reviews.call("events", {"review_id": second["review_id"]})["events"]]
         self.assertIn("new_session", kinds)
 
+    def test_missing_authentication_is_retryable_with_recovery(self):
+        state = self.run_review("approve", "start")
+        with self.reviews.lock:
+            # A reviewer without credentials fails before its first turn with this kind.
+            self.reviews.rounds[state["review_id"]].update(status="failed", error_kind="missing_authentication")
+        retried = self.reviews.call("retry", {"review_id": state["review_id"], "request_id": "retry"})
+        self.assertEqual(retried["status"], "prepared")
+        self.assertIn("missing_authentication", review.RECOVERY)
+
     def test_authentication_failure_is_retried_in_the_same_round(self):
         failed = self.run_review("auth-once", "start")
         self.assertEqual(failed["error_kind"], "authentication", failed)

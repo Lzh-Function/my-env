@@ -14,7 +14,7 @@ TERMINAL = {"success", "failed", "cancelled", "timeout"}
 # 新しいラウンドは reviews/<thread>/<review> に置かれる。状態ファイルの値はこの形だけを信用する。
 DIRECTORY = re.compile(r"thread-[0-9a-f]+/review-[0-9a-f]+")
 # これらの失敗は、同じラウンドがreview_retryで再開されうる。
-RETRYABLE = {"invalid_model", "authentication", "rate_limit"}
+RETRYABLE = {"invalid_model", "authentication", "missing_authentication", "rate_limit"}
 # 監査担当の出力は信頼できないため、端末を操作できる制御文字を表示前に除く。
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
