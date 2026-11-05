@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Run slides.py with pinned python-pptx and Pillow, without touching the workspace project.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec uv run --no-project --quiet --with python-pptx==1.0.2 --with pillow==11.3.0 \
+    python "$here/slides.py" "$@"

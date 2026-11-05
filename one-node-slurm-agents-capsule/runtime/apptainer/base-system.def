@@ -42,12 +42,14 @@ From: nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
     locale-gen en_US.UTF-8
 
     # --no-install-recommends のため、日本語フォントと biblatex も明示する。
+    # libreoffice-impress は personal-slides が .pptx をページ画像にして目視確認するために使う。
     # texlive-lang-japanese に LuaTeX-ja / ltjsarticle が含まれる。
     apt-get install -y --no-install-recommends \
         biber \
         fontconfig \
         fonts-ipaexfont \
         latexmk \
+        libreoffice-impress \
         poppler-utils \
         texlive-bibtex-extra \
         texlive-fonts-recommended \
