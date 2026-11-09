@@ -47,14 +47,14 @@ def main():
                 return
             path = self.path[len(nonce) :]
             try:
-                requested, path = request_target(path, self.command)
+                requested, _service, path = request_target(path, self.command)
                 if requested != repo:
                     self.send_error(403)
                     return
                 with closing(UnixConnection(endpoint)) as connection:
                     relay(self, connection, path)
             except (OSError, ValueError, http.client.HTTPException):
-                self.send_error(502, "GitHub push broker is unavailable")
+                self.send_error(502, "GitHub Git broker is unavailable")
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -93,5 +93,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, ValueError) as error:
-        print("git push (agentrun broker): " + str(error), file=sys.stderr)
+        print("git (agentrun broker): " + str(error), file=sys.stderr)
         raise SystemExit(1)

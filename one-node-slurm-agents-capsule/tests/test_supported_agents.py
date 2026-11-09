@@ -235,6 +235,12 @@ class SupportedAgentTests(unittest.TestCase):
                                     input=json.dumps({"tool_name": tool, "tool_input": {"command": "git push origin main"}}),
                                     capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for command in ("git push --force-with-lease origin main", "git push -f origin main", "git fetch origin",
+                            "git pull origin main", "git merge feature"):
+                result = subprocess.run(["python3", str(ROOT / "common/hooks/git_branch_guard.py")],
+                                        input=json.dumps({"tool_name": tool, "tool_input": {"command": command}}),
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, command + result.stdout + result.stderr)
 
     def test_shared_hooks_still_block_commands_and_secret_files(self):
         for tool in ("Bash", "exec_command"):
@@ -243,7 +249,7 @@ class SupportedAgentTests(unittest.TestCase):
                 ("check_pip_forbidden", "pip install example", "1"),
                 ("check_sbatch_forbidden", "sbatch train.sbatch", "1"),
                 ("check_login_node", "python train.py", ""),
-                ("git_branch_guard", "git merge feature", "1"),
+                ("git_branch_guard", "git rebase main", "1"),
             ):
                 with self.subTest(tool=tool, hook=hook):
                     for value, expected in ((command, 2), ("git status", 0)):

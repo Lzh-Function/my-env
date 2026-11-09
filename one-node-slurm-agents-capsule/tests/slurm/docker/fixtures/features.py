@@ -58,7 +58,7 @@ def check_features(agent, options):
         for script, command in (
             ("check_pip_forbidden.py", "pip install x"),
             ("check_sbatch_forbidden.py", "sbatch x.sh"),
-            ("git_branch_guard.py", "git merge feature"),
+            ("git_branch_guard.py", "git rebase main"),
             ("block_dangerous_command.py", "cat ~/.ssh/id_rsa"),
         ):
             payload = json.dumps(
@@ -76,14 +76,14 @@ def check_features(agent, options):
     if options.get("gh"):
         assert os.access("/usr/local/bin/git-remote-agentrun", os.X_OK)
         assert Path("/opt/gh-broker/git.sock").is_socket()
-        # Fixture repositories have no origin; inspect the generated push-only mapping.
+        # Fixture repositories have no origin; inspect the generated push/fetch mapping.
         mapping = execute(
             [
                 "git",
                 "config",
                 "--global",
                 "--get-all",
-                "url.agentrun://github.com/.pushInsteadOf",
+                "url.agentrun://github.com/.insteadOf",
             ]
         )
         assert "https://github.com/" in mapping.stdout

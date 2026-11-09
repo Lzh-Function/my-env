@@ -56,7 +56,7 @@ REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 NUMBER_RE = re.compile(r"^#?[0-9]+$")
 # git branch names, without leading "-" and without ":" (so no URLs or OWNER:BRANCH)
 BRANCH_RE = re.compile(r"^(?!-)[A-Za-z0-9._/+@-]+$")
-BOOLEAN_FLAGS = {"--draft"}
+BOOLEAN_FLAGS = {"--draft", "--delete-branch"}
 # Logged as <n chars> instead of the value.
 UNLOGGED_FLAGS = {"--comment", "--title"}
 

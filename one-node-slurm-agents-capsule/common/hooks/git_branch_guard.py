@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Block dangerous git ops: checkout/switch to main, merge, rebase, direct .git access."""
+"""Block dangerous git ops: rebase and direct .git access. Merge, pull and force-push are allowed."""
 
 from __future__ import annotations
 
@@ -24,9 +24,6 @@ def main() -> int:
     cmd = cmd.strip()
     if not cmd:
         return 0
-
-    if re.search(r"git\s+merge\b", cmd) and not re.search(r"git\s+merge\s+--(abort|continue|quit)\b", cmd):
-        return block("git merge は禁止されています。ユーザーに委ねてください。")
 
     if re.search(r"git\s+rebase\b", cmd) and not re.search(r"git\s+rebase\s+--(abort|continue|quit|skip)\b", cmd):
         return block("git rebase は禁止されています。ユーザーに委ねてください。")

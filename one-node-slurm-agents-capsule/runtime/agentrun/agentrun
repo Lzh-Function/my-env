@@ -889,9 +889,9 @@ write_plan() {
     if gh_broker_enabled; then
         cat > "$run_dir/home/.gitconfig" <<'GITCONFIG'
 [url "agentrun://github.com/"]
-    pushInsteadOf = https://github.com/
-    pushInsteadOf = git@github.com:
-    pushInsteadOf = ssh://git@github.com/
+    insteadOf = https://github.com/
+    insteadOf = git@github.com:
+    insteadOf = ssh://git@github.com/
 GITCONFIG
         chmod 600 "$run_dir/home/.gitconfig"
     fi

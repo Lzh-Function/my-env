@@ -101,6 +101,12 @@ class BrokerTests(unittest.TestCase):
                 self.assertEqual(code, expected)
                 self.assertEqual(b'command timed out' in err, expected == 137)
 
+    def test_pr_close_with_comment_and_branch_deletion_is_allowed(self):
+        code, out, err = self.request(["pr", "close", "7", "--comment", "superseded", "--delete-branch", "--repo", "owner/repo"])
+        self.assertEqual(code, 0, err)
+        code, out, err = self.request(["pr", "close", "7", "--delete-branch=true", "--repo", "owner/repo"])
+        self.assertEqual(code, 1)
+
     def test_sensitive_subcommands_flags_and_paths_are_rejected(self):
         attempts = [
             ["auth", "token"], ["auth", "status", "--show-token"], ["api", "repos/owner/repo"],

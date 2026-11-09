@@ -1,4 +1,4 @@
-"""Streaming Smart HTTP push bridge; GitHub credentials stay in the broker."""
+"""Streaming Smart HTTP push/fetch bridge; GitHub credentials stay in the broker."""
 
 import base64
 import http.client
@@ -20,7 +20,7 @@ def repo_name(value):
     if not REPO.fullmatch(value) or any(
         part in (".", "..") for part in value.split("/")
     ):
-        raise ValueError("Git push target must be a GitHub OWNER/REPO")
+        raise ValueError("Git target must be a GitHub OWNER/REPO")
     return value
 
 
@@ -28,16 +28,22 @@ def request_target(path, method):
     parsed = urlsplit(path)
     if parsed.scheme or parsed.netloc or parsed.fragment:
         raise ValueError("Only relative Smart HTTP paths are accepted")
-    match = re.fullmatch(r"/([^/]+/[^/]+)/(info/refs|git-receive-pack)", parsed.path)
+    match = re.fullmatch(
+        r"/([^/]+/[^/]+)/(info/refs|git-receive-pack|git-upload-pack)", parsed.path
+    )
     if not match:
-        raise ValueError("Only Git receive-pack endpoints are allowed")
+        raise ValueError("Only Git receive-pack and upload-pack endpoints are allowed")
     repo = repo_name(match[1])
-    if (method, match[2], parsed.query) not in (
-        ("GET", "info/refs", "service=git-receive-pack"),
-        ("POST", "git-receive-pack", ""),
-    ):
-        raise ValueError("Only Git push is supported by this transport")
-    return repo, f"/{repo}.git/{match[2]}" + (
+    services = {
+        ("GET", "info/refs", "service=git-receive-pack"): "git-receive-pack",
+        ("POST", "git-receive-pack", ""): "git-receive-pack",
+        ("GET", "info/refs", "service=git-upload-pack"): "git-upload-pack",
+        ("POST", "git-upload-pack", ""): "git-upload-pack",
+    }
+    service = services.get((method, match[2], parsed.query))
+    if not service:
+        raise ValueError("Only Git push and fetch are supported by this transport")
+    return repo, service, f"/{repo}.git/{match[2]}" + (
         "?" + parsed.query if parsed.query else ""
     )
 
@@ -91,7 +97,13 @@ def relay(handler, connection, path, authorization=None):
     """Forward only Git protocol headers, never client credentials or redirects."""
     handler.connection.settimeout(TIMEOUT)
     connection.putrequest(handler.command, path)
-    for name in ("Content-Type", "Content-Length", "Transfer-Encoding", "Git-Protocol"):
+    for name in (
+        "Content-Type",
+        "Content-Length",
+        "Content-Encoding",
+        "Transfer-Encoding",
+        "Git-Protocol",
+    ):
         if handler.headers.get(name) is not None:
             connection.putheader(name, handler.headers[name])
     connection.putheader("User-Agent", "agentrun-git")
@@ -135,31 +147,40 @@ class GitHandler(BaseHTTPRequestHandler):
 
     def forward(self):
         try:
-            repo, path = request_target(self.path, self.command)
+            repo, service, path = request_target(self.path, self.command)
         except ValueError as error:
             self.send_error(400, str(error))
             return
+        action = "push" if service == "git-receive-pack" else "fetch"
         try:
             reason = self.server.check_repo(repo)
-            if reason:
+            if reason and action == "push":
                 self.server.log(f"denied git push to {repo}")
                 self.send_error(403, reason.replace(self.server.token(), "***"))
                 return
             if (
                 self.command == "POST"
                 and self.headers.get("Content-Type")
-                != "application/x-git-receive-pack-request"
+                != f"application/x-{service}-request"
             ):
-                raise ValueError("Invalid Git receive-pack content type")
-            encoded = base64.b64encode(
-                ("x-access-token:" + self.server.token()).encode()
-            ).decode()
+                raise ValueError(f"Invalid Git {service} content type")
+            authorization = None
+            if not reason:
+                encoded = base64.b64encode(
+                    ("x-access-token:" + self.server.token()).encode()
+                ).decode()
+                authorization = "Basic " + encoded
+            # Fetches from repositories outside GH_BROKER_REPOS go out without the
+            # token, so public dependencies still clone and private ones stay closed.
             with closing(self.server.upstream()) as connection:
-                status = relay(self, connection, path, "Basic " + encoded)
-            self.server.log(f"git push HTTP {self.command} {path} -> {status}")
+                status = relay(self, connection, path, authorization)
+            anonymous = "" if authorization else " (anonymous)"
+            self.server.log(
+                f"git {action}{anonymous} HTTP {self.command} {path} -> {status}"
+            )
         except (OSError, ValueError, http.client.HTTPException):
-            self.server.log("git push HTTP transport failed")
-            self.send_error(502, "Git push transport failed; see the broker log")
+            self.server.log(f"git {action} HTTP transport failed")
+            self.send_error(502, f"Git {action} transport failed; see the broker log")
 
 
 class GitServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):

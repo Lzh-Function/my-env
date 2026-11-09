@@ -20,7 +20,7 @@
 # --show-token, extension, alias, config, secret, variable, ssh-key, gpg-key,
 # or flags that read/upload local files (--attach, --recover, --template file).
 #
-# The default below is the complete set of gh calls research-harness (RDH) makes.
+# The default below is the set of gh calls research-harness (RDH) makes, plus pr close.
 
 --version
 auth status
@@ -37,3 +37,4 @@ pr create: --title --body-file --head --base --draft --repo
 pr view <number|branch>: --json --repo
 pr list: --head --state --limit --json --repo
 pr edit <number|branch>: --body-file --repo
+pr close <number|branch>: --comment --delete-branch --repo

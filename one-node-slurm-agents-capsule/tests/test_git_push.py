@@ -1,4 +1,4 @@
-"""Real Git pushes through the broker to a local Smart HTTP backend; no GitHub calls."""
+"""Real Git pushes and fetches through the broker to a local Smart HTTP backend; no GitHub calls."""
 
 import base64
 import http.client
@@ -45,7 +45,7 @@ class GitPushTests(unittest.TestCase):
             AGENTRUN_GIT_BROKER_SOCKET=str(self.socket),
         )
         (self.home / ".gitconfig").write_text(
-            '[url "agentrun://github.com/"]\n pushInsteadOf = https://github.com/\n pushInsteadOf = git@github.com:\n pushInsteadOf = ssh://git@github.com/\n'
+            '[url "agentrun://github.com/"]\n insteadOf = https://github.com/\n insteadOf = git@github.com:\n insteadOf = ssh://git@github.com/\n'
         )
         self.bare = self.root / "upstream/owner/repo.git"
         self.bare.parent.mkdir(parents=True)
@@ -197,7 +197,7 @@ class GitPushTests(unittest.TestCase):
             self.assertEqual(local, remote)
             self.assertEqual(
                 self.git(
-                    "-C", str(self.repo), "remote", "get-url", "origin"
+                    "-C", str(self.repo), "config", "remote.origin.url"
                 ).stdout.strip(),
                 url,
             )
@@ -249,10 +249,48 @@ class GitPushTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.requests, [])
 
-    def test_arbitrary_api_urls_and_non_push_services_never_reach_upstream(self):
+    def test_force_push_fetch_and_pull_work_through_the_broker(self):
+        self.git("-C", str(self.repo), "push", "origin", "HEAD:refs/heads/main")
+        clone = self.root / "clone"
+        self.git("clone", "-b", "main", "https://github.com/owner/repo.git", str(clone))
+        self.git("-C", str(clone), "config", "user.name", "Fixture")
+        self.git("-C", str(clone), "config", "user.email", "fixture@example.invalid")
+        (clone / "upstream.txt").write_text("from another clone\n")
+        self.git("-C", str(clone), "add", ".")
+        self.git("-C", str(clone), "commit", "-m", "upstream change")
+        self.git("-C", str(clone), "push", "origin", "HEAD:main")
+        self.git("-C", str(self.repo), "pull", "--no-rebase", "origin", "main")
+        self.assertTrue((self.repo / "upstream.txt").is_file())
+        self.git("-C", str(self.repo), "reset", "--hard", "HEAD~1")
+        self.git("-C", str(self.repo), "fetch", "origin")
+        self.git(
+            "-C", str(self.repo), "push", "--force-with-lease", "origin", "HEAD:main"
+        )
+        self.assertEqual(
+            self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout,
+            self.git("-C", str(self.bare), "rev-parse", "main").stdout,
+        )
+        expected = (
+            "Basic " + base64.b64encode(("x-access-token:" + TOKEN).encode()).decode()
+        )
+        self.git("-C", str(self.repo), "push", "origin", "HEAD:refs/heads/topic")
+        self.git("-C", str(self.repo), "push", "--delete", "origin", "topic")
+        self.git("-C", str(self.bare), "rev-parse", "--verify", "refs/heads/topic", expected=128)
+        self.assertTrue(any("git-upload-pack" in request[1] for request in self.requests))
+        self.assertTrue(all(request[2] == expected for request in self.requests))
+
+    def test_fetch_outside_the_allowed_repositories_goes_out_without_the_token(self):
+        other = self.root / "upstream/owner/other.git"
+        self.git("clone", "--bare", str(self.repo), str(other))
+        self.git("clone", "-b", "main", "https://github.com/owner/other.git", str(self.root / "public"))
+        self.assertTrue(self.requests)
+        self.assertTrue(all(request[2] is None for request in self.requests))
+        self.assertTrue(any("(anonymous)" in line for line in self.log))
+
+    def test_arbitrary_api_urls_and_non_git_services_never_reach_upstream(self):
         for path in (
             "/api/user",
-            "/owner/repo.git/info/refs?service=git-upload-pack",
+            "/owner/repo.git/info/refs?service=git-upload-archive",
             "/owner/../info/refs?service=git-receive-pack",
             "https://other.example/owner/repo.git/info/refs?service=git-receive-pack",
         ):
