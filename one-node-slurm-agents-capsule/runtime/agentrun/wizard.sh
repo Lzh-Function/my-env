@@ -4,6 +4,9 @@ WIZARD_BACK='← 戻る'
 WIZARD_CANCEL='キャンセル'
 WIZARD_LAST_FILE="$HOME/.agentrun/wizard-last"
 WIZARD_NO_OVERLAP='新しい Slurm ジョブを起動する（overlap しない）'
+WIZARD_NO_TEMPLATE='テンプレートを使わない'
+WIZARD_MANAGE_TEMPLATES='テンプレートを管理する（run から登録・削除・一覧）'
+WIZARD_TEMPLATE_KEEP=0 WIZARD_NAME='' WIZARD_FORCE=() WIZARD_TEMPLATE_CACHE=''
 declare -A WIZARD_LAST=() WIZARD_EXPLICIT=()
 WIZARD_LAST_BINDS=() WIZARD_OVERLAP_JOBS=()
 WIZARD_OVERLAP_LOADED=0 WIZARD_OVERLAP_INFO=''
@@ -261,6 +264,124 @@ wizard_overlap() {
     done
 }
 
+# Decided once per mode, so saving a template mid-way never shifts the step list.
+wizard_templates_available() {
+    if [ "${WIZARD_TEMPLATE_CACHE%%=*}" != "$mode" ]; then
+        WIZARD_TEMPLATE_CACHE="$mode=0"
+        [ -z "$(template_tool list --mode "$mode" 2>/dev/null)" ] || WIZARD_TEMPLATE_CACHE="$mode=1"
+    fi
+    [ "${WIZARD_TEMPLATE_CACHE#*=}" = 1 ]
+}
+
+# Ask for a template name; sets WIZARD_NAME and WIZARD_FORCE (overwrite confirmed).
+wizard_template_name() {
+    local default="$1" rc
+    while :; do
+        WIZARD_NAME="$(wizard_input 'テンプレート名（英数字と . _ -、64文字まで）' "$default")" || return $?
+        rc=0
+        template_tool exists "$WIZARD_NAME" 2>/dev/null || rc=$?
+        case "$rc" in
+            1) WIZARD_FORCE=(); return 0 ;;
+            0)
+                if wizard_confirm "テンプレート「$WIZARD_NAME」は既にあります。上書きしますか？" 0; then WIZARD_FORCE=(--force); return 0
+                else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; fi ;;
+            *) wizard_banner "テンプレート名には英数字と . _ - だけを使えます（先頭は英数字）: $WIZARD_NAME" || return $? ;;
+        esac
+        default="$WIZARD_NAME"
+    done
+}
+
+wizard_template_manage() {
+    local add='実行中・過去の run から登録する' remove='テンプレートを削除する' show='テンプレートの一覧と中身を見る'
+    local choice row out rc
+    local -a rows
+    while :; do
+        choice="$(wizard_select 'テンプレートの管理' "$add" "$remove" "$show")" || return $?
+        rc=0
+        case "$choice" in
+            "$add")
+                mapfile -t rows < <(template_tool runs "$PWD/.agent-runs" 2>/dev/null)
+                if [ "${#rows[@]}" -eq 0 ]; then wizard_banner 'テンプレートにできる run がありません（このディレクトリの .agent-runs）' || return $?; continue; fi
+                row="$(wizard_select 'テンプレートにする run（実行中のものが先頭）' "${rows[@]}")" || rc=$?
+                [ "$rc" -ne 10 ] || continue
+                [ "$rc" -eq 0 ] || return "$rc"
+                wizard_template_name '' || rc=$?
+                [ "$rc" -ne 10 ] || continue
+                [ "$rc" -eq 0 ] || return "$rc"
+                out="$(template_tool from-run "$WIZARD_NAME" --run "$PWD/.agent-runs" "${WIZARD_FORCE[@]+"${WIZARD_FORCE[@]}"}" -- "${row%% *}" 2>&1)" || true
+                wizard_banner "$out" || return $? ;;
+            "$remove"|"$show")
+                mapfile -t rows < <(template_tool list 2>/dev/null)
+                if [ "${#rows[@]}" -eq 0 ]; then wizard_banner 'テンプレートはまだありません' || return $?; continue; fi
+                row="$(wizard_select "$([ "$choice" = "$remove" ] && printf '削除するテンプレート' || printf '中身を見るテンプレート')" "${rows[@]}")" || rc=$?
+                [ "$rc" -ne 10 ] || continue
+                [ "$rc" -eq 0 ] || return "$rc"
+                out="$(template_tool show "${row%% *}" 2>&1)" || true
+                if [ "$choice" = "$show" ]; then wizard_banner "$out" || return $?; continue; fi
+                if wizard_confirm "${out}"$'\n\n'"このテンプレートを削除しますか？" 0; then
+                    out="$(template_tool delete "${row%% *}" 2>&1)" || true
+                    wizard_banner "$out" || return $?
+                else rc=$?; [ "$rc" -eq 1 ] || [ "$rc" -eq 10 ] || return "$rc"; fi ;;
+        esac
+    done
+}
+
+# Offer the templates saved for this mode; a chosen template replaces the current values.
+wizard_template() {
+    local -a rows options=()
+    local row choice name detail prompt="$PROMPT" rc
+    mapfile -t rows < <(template_tool list --mode "$mode" 2>/dev/null)
+    for row in "${rows[@]+"${rows[@]}"}"; do [ "${row%% *}" != "$TEMPLATE_NAME" ] || options+=("$row"); done
+    options+=("$WIZARD_NO_TEMPLATE")
+    for row in "${rows[@]+"${rows[@]}"}"; do [ "${row%% *}" = "$TEMPLATE_NAME" ] || options+=("$row"); done
+    while :; do
+        choice="$(wizard_select 'テンプレートから始めますか？' "${options[@]}")" || return $?
+        if [ "$choice" = "$WIZARD_NO_TEMPLATE" ]; then
+            TEMPLATE_NAME='' WIZARD_TEMPLATE_KEEP=0
+            return 0
+        fi
+        name="${choice%% *}"
+        # Check in a subshell first: parse_run_args exits on an unusable value.
+        if ! detail="$( (parse_run_args --template "$name") 2>&1 >/dev/null)"; then
+            wizard_banner "テンプレート「$name」は使えません: $detail" || return $?
+            continue
+        fi
+        parse_run_args --template "$name"
+        PROMPT="$prompt"
+        detail="$(template_tool show "$name")"
+        rc=0
+        if wizard_confirm "${detail}"$'\n\n'"このテンプレートの設定を変更しますか？" 0; then WIZARD_TEMPLATE_KEEP=0
+        else
+            rc=$?
+            [ "$rc" -ne 10 ] || continue
+            [ "$rc" -eq 1 ] || return "$rc"
+            WIZARD_TEMPLATE_KEEP=1
+        fi
+        return 0
+    done
+}
+
+wizard_template_save() {
+    local skip='保存しない' new='新しい名前で保存する' choice rc=0 out
+    if [ -n "$TEMPLATE_NAME" ]; then
+        choice="$(wizard_select 'この設定をテンプレートとして保存しますか？（overlap 先と prompt は保存しません）' \
+            "$skip" "テンプレート「$TEMPLATE_NAME」を上書きする" "$new")" || return $?
+        case "$choice" in
+            "$skip") return 0 ;;
+            "$new") wizard_template_name '' || return $? ;;
+            *) WIZARD_NAME="$TEMPLATE_NAME" WIZARD_FORCE=(--force) ;;
+        esac
+    else
+        if wizard_confirm 'この設定をテンプレートとして保存しますか？（overlap 先と prompt は保存しません）' 0; then :
+        else rc=$?; [ "$rc" -eq 1 ] && return 0; return "$rc"; fi
+        wizard_template_name '' || return $?
+    fi
+    template_state_args || return $?
+    out="$(template_tool save "$WIZARD_NAME" --mode "$mode" --agent "$AGENT" --submit "$SUBMIT" --source wizard \
+        "${WIZARD_FORCE[@]+"${WIZARD_FORCE[@]}"}" -- "${TEMPLATE_STATE[@]}" 2>&1)" || true
+    wizard_banner "$out"
+}
+
 wizard_bind_mounts() {
     local stage=0 rc src='' dst='' choice bind
     local keep='このまま次へ' add='bind を追加する' remove_one='bind を1つ除く（一覧から選択）' remove_all='bind を全て除く'
@@ -311,11 +432,21 @@ wizard_step() {
     case "$step" in
         mode)
             local -a modes=()
-            default="${mode:-${WIZARD_LAST[mode]:-assist}}"
+            default="${mode:-${TEMPLATE_MODE:-${WIZARD_LAST[mode]:-assist}}}"
             if is_profile "$default" || [ "$default" = resume ]; then modes+=("$default"); fi
             for choice in assist experiment campaign review multi-review resume; do [ "$choice" = "$default" ] || modes+=("$choice"); done
-            choice="$(wizard_select 'Select run mode' "${modes[@]}")" || return $?
-            if [ "$mode" != "$choice" ]; then MEM="$cli_mem"; CPUS="$cli_cpus"; TIME_LIMIT="$cli_time"; loaded_source=''; fi
+            choice="$(wizard_select 'Select run mode' "${modes[@]}" "$WIZARD_MANAGE_TEMPLATES")" || return $?
+            if [ "$choice" = "$WIZARD_MANAGE_TEMPLATES" ]; then
+                wizard_template_manage || rc=$?
+                WIZARD_TEMPLATE_CACHE=''
+                [ "$rc" -eq 0 ] || [ "$rc" -eq 10 ] || return "$rc"
+                return 11
+            fi
+            if [ "$mode" != "$choice" ]; then
+                MEM="$cli_mem"; CPUS="$cli_cpus"; TIME_LIMIT="$cli_time"; loaded_source=''
+                [ "$choice" = "${TEMPLATE_MODE:-}" ] || TEMPLATE_NAME=''
+                WIZARD_TEMPLATE_KEEP=0
+            fi
             mode="$choice"
             ;;
         agent)
@@ -387,6 +518,8 @@ wizard_step() {
             if wizard_confirm "Pass secrets from $secrets_candidate into the capsule?" "$(secrets_enabled && printf 1 || printf 0)"; then SECRETS_FILE="$secrets_candidate"
             else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; SECRETS_FILE=''; fi ;;
         binds) wizard_bind_mounts ;;
+        template) wizard_template ;;
+        save) wizard_template_save ;;
         overlap) wizard_overlap ;;
         broker)
             if wizard_confirm 'Start the GitHub CLI broker? (token stays outside the agent capsule)' "$((1 - GH_BROKER_DISABLED))"; then GH_BROKER_DISABLED=0
@@ -406,6 +539,10 @@ wizard_step() {
 
 wizard_finish() {
     local -a args
+    if [ -n "$OVERLAP_JOB" ] && [ "$mode" != resume ] && repo_lock_busy "$(readlink -f "$REPO")"; then
+        wizard_banner "agentrun is already active on $REPO; with overlap, choose another repository or a git worktree" || return $?
+        return 10
+    fi
     if [ "$mode" = resume ]; then args=("$source" --no-binds)
     else args=(--agent "$AGENT" --repo "$REPO"); fi
     # An overlapping step uses the running job's resources.
@@ -433,6 +570,7 @@ wizard_finish() {
     [ -z "$prefix" ] || command_line="env $prefix$command_line"
     for arg in "${args[@]}"; do command_line+=" $(wizard_shell_quote "$arg")"; done
     summary="mode: $mode / agent: $AGENT / profile: $profile"$'\n'"repo: $REPO"$'\n'
+    [ -z "$TEMPLATE_NAME" ] || [ "$mode" = resume ] || summary+="template: $TEMPLATE_NAME$([ "$WIZARD_TEMPLATE_KEEP" -eq 1 ] && printf '（変更なし）' || printf '（変更あり）')"$'\n'
     if [ -n "$OVERLAP_JOB" ]; then
         summary+="overlap: ${WIZARD_OVERLAP_INFO:-job $OVERLAP_JOB}"$'\n'
         summary+="  CPU・メモリ・GPU・制限時間は元のジョブと共有し、元のジョブが終わるとこのコンテナも終了します"$'\n'
@@ -528,10 +666,20 @@ command_wizard() {
     local -a steps
     while [ "$finished" -eq 0 ]; do
         if [ "$mode" = resume ]; then steps=(mode session preview)
-        else profile="$mode"; steps=(mode agent launch); fi
+        else
+            profile="$mode" steps=(mode)
+            if [ -n "$mode" ] && wizard_templates_available; then steps+=(template)
+            else WIZARD_TEMPLATE_KEEP=0; fi
+            # An unchanged template skips straight to the overlap choice and confirmation.
+            [ "$WIZARD_TEMPLATE_KEEP" -eq 1 ] || steps+=(agent launch)
+        fi
         # Offer to join a running job only when one exists; resources then come from it.
         if wizard_overlap_available; then steps+=(overlap)
         elif [ -n "$mode" ]; then OVERLAP_JOB='' WIZARD_OVERLAP_INFO=''; fi
+        if [ "$WIZARD_TEMPLATE_KEEP" -eq 1 ]; then
+            if [ "$mode" != assist ] || [ "$SUBMIT" -eq 1 ]; then steps+=(prompt); else PROMPT=''; fi
+            steps+=(confirm)
+        else
         [ "$mode" = resume ] || steps+=(repo)
         if [ -z "$OVERLAP_JOB" ]; then
             [ "$mode" = resume ] || steps+=(partition gpus)
@@ -545,12 +693,15 @@ command_wizard() {
             steps+=(goal)
             if [ "$mode" != assist ] || [ "$SUBMIT" -eq 1 ]; then steps+=(prompt); else PROMPT=''; fi
             case "$mode" in review) steps+=(reviewers target_diff target_report) ;; multi-review) steps+=(agents) ;; esac
+            steps+=(save)
         fi
         steps+=(confirm)
+        fi
         rc=0
         wizard_step "${steps[step]}" || rc=$?
         case "$rc" in
             0) step=$((step + 1)) ;;
+            11) ;;
             10) [ "$step" -eq 0 ] || step=$((step - 1)) ;;
             130) wizard_abort ;;
             *) trap - INT TERM; return "$rc" ;;

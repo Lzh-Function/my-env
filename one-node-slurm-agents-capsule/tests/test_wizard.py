@@ -237,7 +237,7 @@ class WizardTests(unittest.TestCase):
     def test_new_assist_flow_still_dispatches_normally(self):
         # 最後の起動処理だけを stub にして既存の新規 run 導線を検証する。
         script = 'source "$1"; command_prepare() { printf "PREPARE_MODE=%s\\n" "$1"; }; command_wizard'
-        rc, output = self.execute([], "1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\ny\n",
+        rc, output = self.execute([], "1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n",
                                   command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("PREPARE_MODE=assist", output)
@@ -268,7 +268,7 @@ class WizardTests(unittest.TestCase):
 
     def test_back_from_agent_keeps_selected_default(self):
         script = 'source "$1"; command_prepare() { printf "PREPARE_AGENT=%s\\n" "$AGENT"; }; command_wizard --agent codex'
-        answers = "1\n:back\n1\n\n1\n\n\n\n\n\n\nn\nn\nn\n\ny\n"
+        answers = "1\n:back\n1\n\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n"
         rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("PREPARE_AGENT=codex", output)
@@ -279,7 +279,7 @@ class WizardTests(unittest.TestCase):
         state_file.write_text(json.dumps({"cwd": str(self.root), "agent": "unsupported",
                                           "agents": "claude,unsupported", "reviewers": "unsupported"}))
         script = 'source "$1"; command_prepare() { printf "SELECTED=%s AGENTS=%s REVIEWERS=%s\\n" "$AGENT" "$REQUESTED_AGENTS" "$REVIEWERS"; }; command_wizard'
-        answers = "1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\ny\n"
+        answers = "1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n"
         rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("SELECTED=claude AGENTS= REVIEWERS=", output)
@@ -365,7 +365,7 @@ PY
 command_wizard "$@"
 '''
         prompt = "--literal 'quotes' $(touch injected) `touch injected`"
-        answers = f"2\n1\nn\n\n\n\n\n\n\nn\nn\nn\n\n{prompt}\ny\n"
+        answers = f"2\n1\nn\n\n\n\n\n\n\nn\nn\nn\n\n{prompt}\n\ny\n"
         rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER), "--agent", "codex"])
         self.assertEqual(rc, 0, output)
         expected = json.loads(capture.read_text())
@@ -378,6 +378,47 @@ command_wizard "$@"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(capture.read_text()), expected)
         self.assertFalse((self.root / "injected").exists())
+
+    def test_template_saved_in_wizard_is_reused_without_changes(self):
+        bind = self.root / "template data"
+        bind.mkdir()
+        script = 'source "$1"; shift; command_prepare() { printf "PREPARE %s\\n" "$*"; }; command_wizard "$@"'
+        answers = "1\n1\n1\n\n\n\n\n\n\n1\nn\nn\n\ny\ngpu-a\ny\n"
+        rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER),
+                                                        "--agent", "codex", "--bind", f"{bind}:/data:ro"])
+        self.assertEqual(rc, 0, output)
+        saved = json.loads((Path(self.env["HOME"]) / ".agentrun/templates/gpu-a.json").read_text())
+        self.assertEqual((saved["mode"], saved["agent"]), ("assist", "codex"))
+        self.assertIn(f"{bind}:/data:ro", saved["args"])
+        (Path(self.env["HOME"]) / ".agentrun/wizard-last").unlink()
+        # Mode → template (2 = gpu-a after "do not use") → keep it unchanged → launch.
+        rc, output = self.execute([], "1\n2\n\ny\n", command=["bash", "-c", script, "bash", str(LAUNCHER)])
+        self.assertEqual(rc, 0, output)
+        self.assertIn("を変更しますか？", output)
+        self.assertIn("template: gpu-a（変更なし）", output)
+        launched = next(line for line in output.splitlines() if line.startswith("PREPARE "))
+        self.assertIn("--agent codex", launched)
+        self.assertIn(f"{bind}:/data:ro", launched)
+        self.assertNotIn("Select agent", output)
+
+    def test_template_management_registers_a_run_and_deletes_it(self):
+        bind = self.root / "run data"
+        bind.mkdir()
+        subprocess.run(["python3", str(LAUNCHER.parent / "run_settings.py"), "save", str(self.original),
+                        f"--repo={self.root}", "--mem=4G", "--cpus=3", f"--bind={bind}:/data:ro"],
+                       cwd=self.root, env=self.env, check=True, capture_output=True)
+        template = Path(self.env["HOME"]) / ".agentrun/templates/from-run.json"
+        rc, output = self.execute(self.args, "7\n1\n1\nfrom-run\n:back\n:cancel\n")
+        self.assertEqual(rc, 130, output)
+        self.assertIn("wizard-run_title", output)
+        saved = json.loads(template.read_text())
+        self.assertEqual((saved["mode"], saved["agent"]), ("assist", "codex"))
+        self.assertIn(f"{bind}:/data:ro", saved["args"])
+        self.assertIn("3", saved["args"])
+        rc, output = self.execute(self.args, "7\n2\n1\ny\n:back\n:cancel\n")
+        self.assertEqual(rc, 130, output)
+        self.assertFalse(template.exists())
+        self.assertFalse(any(self.parent.glob("*_assist_*")))
 
 
 if __name__ == "__main__":

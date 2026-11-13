@@ -26,6 +26,9 @@ Usage:
   agentrun history [RUN_ID|RUN_DIR] [--watch]  # export now, or recover a host-side batch collector
   agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]  # read cross-review dialogues
   agentrun wizard [options] [PROMPT]         # guided/menu-driven alternative to assist|experiment|campaign|review|multi-review
+  agentrun template list|show NAME|delete NAME [--yes]
+  agentrun template save NAME [--mode MODE] [--force] [run options]   # save run options under a name
+  agentrun template save NAME --from RUN_ID|RUN_DIR [--force]        # copy a running or finished run's settings
   agentrun skill-install SOURCE_DIR|GIT_URL [SKILL_NAME...] [--force]
   agentrun smoke-test [--agent NAME]
   agentrun init-goal
@@ -49,6 +52,8 @@ Options:
   --cpus N            CPU core count, default comes from the selected profile
   --time HH:MM:SS     walltime, default comes from the selected profile
   --partition NAME    Slurm partition, default: AGENTRUN_SLURM_PARTITION or cluster default
+  --template NAME     start from a saved template (agent, repo, binds, resources, ...);
+                      options given after it override the template
   --overlap JOBID     start this capsule as an extra step of your running Slurm job
                       (srun --jobid --overlap); shares its CPUs, memory, GPUs and time
                       limit, while repo, binds and other settings stay separate.
@@ -675,6 +680,97 @@ history_tool() {
 
 overlap_tool() {
     python3 "$ROOT_DIR/runtime/agentrun/overlap.py" "$@"
+}
+
+template_tool() {
+    python3 "$ROOT_DIR/runtime/agentrun/templates.py" "$@"
+}
+
+# Turn a saved template into run options; parse_run_args splices them in place.
+template_expand() {
+    local name="$1" temporary status=0 count i
+    local -a fields=()
+    temporary="$(mktemp)" || return $?
+    template_tool load "$name" > "$temporary" || status=$?
+    [ "$status" -ne 0 ] || mapfile -d '' -t fields < "$temporary"
+    rm -f "$temporary"
+    [ "$status" -eq 0 ] || return "$status"
+    TEMPLATE_NAME="$name" TEMPLATE_MODE="${fields[0]}" count="${fields[3]}"
+    TEMPLATE_EXPANDED=(--agent "${fields[1]}")
+    [ "${fields[2]}" != 1 ] || TEMPLATE_EXPANDED+=(--submit)
+    TEMPLATE_EXPANDED+=("${fields[@]:4:count}")
+    # Saved reviewer models apply unless the environment already sets them.
+    for ((i = 4 + count; i + 1 < ${#fields[@]}; i += 2)); do
+        [ -n "${!fields[i]:-}" ] || export "${fields[i]}=${fields[i + 1]}"
+    done
+}
+
+# The current run options as template arguments (no overlap job, submit or prompt).
+template_state_args() {
+    local bind repo
+    repo="$(cd "$REPO" && pwd)" || return $?
+    TEMPLATE_STATE=(--repo "$repo")
+    [ -z "$MEM" ] || TEMPLATE_STATE+=(--mem "$MEM")
+    [ -z "$CPUS" ] || TEMPLATE_STATE+=(--cpus "$CPUS")
+    [ -z "$TIME_LIMIT" ] || TEMPLATE_STATE+=(--time "$TIME_LIMIT")
+    [ -z "$PARTITION" ] || TEMPLATE_STATE+=(--partition "$PARTITION")
+    TEMPLATE_STATE+=(--gpus "$GPUS")
+    for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do TEMPLATE_STATE+=(--bind "$bind"); done
+    if fuse_enabled; then TEMPLATE_STATE+=(--allow-fuse); else TEMPLATE_STATE+=(--no-allow-fuse); fi
+    if secrets_enabled; then TEMPLATE_STATE+=(--secrets-file "$SECRETS_FILE"); else TEMPLATE_STATE+=(--no-secrets); fi
+    if [ "$GH_BROKER_DISABLED" -eq 1 ]; then TEMPLATE_STATE+=(--no-gh-broker); else TEMPLATE_STATE+=(--gh-broker); fi
+    [ -z "$GOAL" ] || TEMPLATE_STATE+=(--goal "$(readlink -f "$GOAL")")
+    [ -z "$REVIEWERS" ] || TEMPLATE_STATE+=(--reviewers "$REVIEWERS")
+    [ -z "$TARGET_DIFF" ] || TEMPLATE_STATE+=(--target-diff "$(readlink -f "$TARGET_DIFF")")
+    [ -z "$TARGET_REPORT" ] || TEMPLATE_STATE+=(--target-report "$(readlink -f "$TARGET_REPORT")")
+    [ -z "$REQUESTED_AGENTS" ] || TEMPLATE_STATE+=(--agents "$REQUESTED_AGENTS")
+}
+
+command_template() {
+    local action="${1:-list}"
+    shift || true
+    case "$action" in
+        list) template_tool list ;;
+        show) [ "$#" -eq 1 ] || { usage; exit 2; }; template_tool show "$1" ;;
+        delete)
+            local name="${1:-}" yes=0 answer
+            [ "${2:-}" != --yes ] || yes=1
+            [ -n "$name" ] && [ "$#" -le 1 -o "$yes" -eq 1 ] || { usage; exit 2; }
+            template_tool show "$name" || return $?
+            if [ "$yes" -eq 0 ]; then
+                [ -t 0 ] || { printf '確認できる端末がありません。--yes を付けてください\n' >&2; return 2; }
+                read -r -p "テンプレート「$name」を削除しますか？ [y/N] " answer || return 1
+                case "$answer" in y|Y|yes|Yes|YES) ;; *) printf '削除しませんでした\n'; return 0 ;; esac
+            fi
+            template_tool delete "$name" ;;
+        save)
+            local name="${1:-}" from='' mode=''
+            local -a force=() rest=()
+            [ -n "$name" ] || { usage; exit 2; }
+            shift
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                    --from) from="$2"; shift 2 ;;
+                    --force) force=(--force); shift ;;
+                    --mode) is_profile "$2" || { printf 'unknown mode: %s\n' "$2" >&2; exit 2; }; mode="$2"; shift 2 ;;
+                    *) rest+=("$1"); shift ;;
+                esac
+            done
+            if [ -n "$from" ]; then
+                [ "${#rest[@]}" -eq 0 ] || { printf -- '--from と起動オプションは同時に指定できません\n' >&2; exit 2; }
+                template_tool from-run "$name" --run "$PWD/.agent-runs" "${force[@]+"${force[@]}"}" -- "$from"
+                return $?
+            fi
+            ensure_default_secrets_file
+            ensure_default_gh_env_file
+            parse_run_args "${rest[@]+"${rest[@]}"}"
+            [ -z "$OVERLAP_JOB" ] || printf 'note: --overlap はテンプレートに保存しません（起動時に選びます）\n' >&2
+            [ -z "$PROMPT" ] || printf 'note: prompt はテンプレートに保存しません\n' >&2
+            template_state_args || return $?
+            template_tool save "$name" --mode "${mode:-${TEMPLATE_MODE:-assist}}" --agent "$AGENT" --submit "$SUBMIT" \
+                "${force[@]+"${force[@]}"}" -- "${TEMPLATE_STATE[@]}" ;;
+        *) usage; exit 2 ;;
+    esac
 }
 
 # A step started with `srun --jobid --overlap` lives inside the running job's
@@ -1518,6 +1614,7 @@ command_validate() {
         common/skills/cross-review/SKILL.md \
         runtime/agentrun/wizard.sh \
         runtime/agentrun/wizard-state.py \
+        runtime/agentrun/templates.py \
         runtime/agentrun/path-input.py \
         runtime/agentrun/install-agent.sh \
         runtime/agentrun/interactive-runner.py \
@@ -1765,6 +1862,8 @@ parse_run_args() {
     PROMPT=""
     OVERLAP_JOB=""
     OVERLAP_SUMMARY=""
+    TEMPLATE_NAME=""
+    TEMPLATE_MODE=""
     EXTRA_BINDS=()
     SECRETS_FILE="${AGENTRUN_SECRETS_FILE:-}"
     GH_BROKER_DISABLED=0
@@ -1785,6 +1884,10 @@ parse_run_args() {
             --cpus) CPUS="$2"; shift 2 ;;
             --time) TIME_LIMIT="$2"; shift 2 ;;
             --partition) PARTITION="$2"; shift 2 ;;
+            --template)
+                template_expand "$2" || exit $?
+                set -- "${TEMPLATE_EXPANDED[@]}" "${@:3}"
+                continue ;;
             --overlap)
                 [[ "$2" =~ ^[0-9]+$ ]] || { printf -- '--overlap requires a numeric Slurm job ID: %s\n' "$2" >&2; exit 2; }
                 OVERLAP_JOB="$2"; shift 2 ;;
@@ -2096,6 +2199,9 @@ command_prepare() {
     ensure_default_secrets_file
     ensure_default_gh_env_file
     parse_run_args "$@"
+    if [ -n "$TEMPLATE_MODE" ] && [ "$TEMPLATE_MODE" != "$mode" ]; then
+        printf 'warning: template %s was saved for %s; launching it as %s\n' "$TEMPLATE_NAME" "$TEMPLATE_MODE" "$mode" >&2
+    fi
     require_overlap_launch "$mode" || return $?
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
@@ -2674,6 +2780,7 @@ main() {
         history) command_history "$@" ;;
         reviews) command_reviews "$@" ;;
         wizard) command_wizard "$@" ;;
+        template|templates) command_template "$@" ;;
         skill-install) command_skill_install "$@" ;;
         smoke-test) command_smoke_test "$@" ;;
         init-goal) command_init_goal "$@" ;;

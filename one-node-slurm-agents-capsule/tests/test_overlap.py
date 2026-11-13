@@ -282,8 +282,8 @@ class OverlapWizardTests(OverlapBase):
         return self.execute([], answers, command=["bash", "-c", self.STUB, "bash", str(LAUNCHER)])
 
     def test_assist_asks_to_overlap_and_skips_resource_questions(self):
-        # mode, agent, interactive, overlap=job, repo, binds, fuse, secrets, goal, launch
-        rc, output = self.wizard(["1", "1", "1", "2", str(self.second), "n", "n", "n", "", "y"])
+        # mode, agent, interactive, overlap=job, repo, binds, fuse, secrets, goal, save template, launch
+        rc, output = self.wizard(["1", "1", "1", "2", str(self.second), "n", "n", "n", "", "", "y"])
         self.assertEqual(rc, 0, output)
         self.assertIn("このジョブに overlap して、同じ割り当て内でエージェントコンテナをもう一つ起動しますか？", output)
         self.assertIn(f"overlap: job {JOB} (agentrun-assist-codex) / node: node01", output)
@@ -293,30 +293,44 @@ class OverlapWizardTests(OverlapBase):
         self.assertNotIn("Memory (e.g.", output)
 
     def test_declining_overlap_keeps_normal_resource_flow(self):
-        rc, output = self.wizard(["1", "1", "1", "1", "", "", "", "", "", "", "n", "n", "n", "", "y"])
+        rc, output = self.wizard(["1", "1", "1", "1", "", "", "", "", "", "", "n", "n", "n", "", "", "y"])
         self.assertEqual(rc, 0, output)
         line = next(l for l in output.replace("\r", "").splitlines() if l.startswith("PREPARE_ARGS="))
         self.assertNotIn("--overlap", line)
         self.assertIn("--mem", line)
 
     def test_batch_and_jobless_launches_do_not_ask(self):
-        rc, output = self.wizard(["1", "1", "2", "", "", "", "", "", "", "n", "n", "n", "", "task", "y"])
+        rc, output = self.wizard(["1", "1", "2", "", "", "", "", "", "", "n", "n", "n", "", "task", "", "y"])
         self.assertEqual(rc, 0, output)
         self.assertNotIn("overlap して", output)
         self.set_jobs({})
         (Path(self.env["HOME"]) / ".agentrun/wizard-last").unlink()
-        rc, output = self.wizard(["1", "1", "1", "", "", "", "", "", "", "n", "n", "n", "", "y"])
+        rc, output = self.wizard(["1", "1", "1", "", "", "", "", "", "", "n", "n", "n", "", "", "y"])
         self.assertEqual(rc, 0, output)
         self.assertNotIn("overlap して", output)
 
     def test_overlap_repo_in_use_is_rejected_in_wizard(self):
         with (self.second / ".agentrun.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            rc, output = self.wizard(["1", "1", "1", "2", str(self.second), str(self.root), "n", "n", "n", "", "y"])
+            rc, output = self.wizard(["1", "1", "1", "2", str(self.second), str(self.root), "n", "n", "n", "", "", "y"])
         self.assertEqual(rc, 0, output)
         self.assertIn("choose another repository or a git worktree", output)
         line = next(l for l in output.replace("\r", "").splitlines() if l.startswith("PREPARE_ARGS="))
         self.assertIn(f"--repo {self.root}", line)
+
+    def test_unchanged_template_only_asks_where_to_overlap(self):
+        subprocess.run([str(LAUNCHER), "template", "save", "side", "--agent", "codex", "--repo", str(self.second),
+                        "--bind", f"{self.root}:/data:ro", "--no-secrets"],
+                       cwd=self.root, env=self.env, check=True, capture_output=True)
+        # mode, template=side, keep unchanged, overlap=job, launch
+        rc, output = self.wizard(["1", "2", "", "2", "y"])
+        self.assertEqual(rc, 0, output)
+        line = next(l for l in output.replace("\r", "").splitlines() if l.startswith("PREPARE_ARGS="))
+        self.assertIn(f"--overlap {JOB}", line)
+        self.assertIn(f"--repo {self.second}", line)
+        self.assertIn(f"--bind {self.root}:/data:ro", line)
+        self.assertIn("--agent codex", line)
+        self.assertNotIn("Repository path", output)
 
 
 if __name__ == "__main__":
