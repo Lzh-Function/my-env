@@ -831,9 +831,11 @@ class ClusterTests(unittest.TestCase):
                         .splitlines()
                     ]
                     self.assertEqual(len(calls), 4)
-                    self.assertEqual(calls[0]["session"], calls[1]["session"])
-                    self.assertNotEqual(calls[1]["session"], calls[2]["session"])
-                    self.assertNotEqual(calls[2]["session"], calls[3]["session"])
+                    # One reviewer conversation continues across the question and all rounds.
+                    self.assertEqual({call["session"] for call in calls}, {calls[0]["session"]})
+                    self.assertTrue(
+                        all("resume" in call["args"] or "--resume" in call["args"] for call in calls[1:])
+                    )
                     _data, markdown = self.archived(run)
                     self.assertIn("Why this value?", markdown)
                     self.assertIn("A fixture defect", markdown)

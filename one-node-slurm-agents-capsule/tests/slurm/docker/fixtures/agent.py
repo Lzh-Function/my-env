@@ -117,7 +117,7 @@ def transcript(ident, prompt, answer):
     return path
 
 
-if ARGS == ["login"] or ARGS == ["auth", "login"]:
+if ARGS in (["login"], ["login", "--device-auth"], ["auth", "login"]):
     assert Path("/etc/capsule-test-cluster").exists()
     CREDENTIAL.parent.mkdir(parents=True, exist_ok=True)
     CREDENTIAL.write_text('{"synthetic":"offline-login"}')
