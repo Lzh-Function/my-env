@@ -75,6 +75,25 @@ class TemplateTests(unittest.TestCase):
         agent, _repo, cpus, mem, _name, *binds = self.expand("--template", "from-run")
         self.assertEqual((agent, cpus, mem, binds), ("claude", "6", "24G", [f"{self.data}:/data:rw"]))
 
+    def test_run_launched_elsewhere_is_found_through_the_launch_registry(self):
+        other = self.root / "other project/.agent-runs/20261113_130000_assist_codex"
+        other.mkdir(parents=True)
+        sessions.init(other, "codex", str(self.root), "assist")
+        subprocess.run(["python3", str(LAUNCHER.parent / "run_settings.py"), "save", str(other),
+                        f"--repo={self.root}", "--cpus=5", "--overlap-job=88"],
+                       cwd=self.root, env=self.env, check=True, capture_output=True)
+        self.agentrun("template", "save", "elsewhere", "--from", other.name, expected=2)
+        subprocess.run(["python3", str(LAUNCHER.parent / "auth_sync.py"), "register",
+                        "--store", str(Path(self.env["HOME"]) / ".agentrun/auth"), str(other)],
+                       cwd=self.root, env=self.env, check=True, capture_output=True)
+        self.agentrun("template", "save", "elsewhere", "--from", other.name)
+        saved = json.loads((self.store / "elsewhere.json").read_text())
+        self.assertEqual((saved["agent"], saved["source"]), ("codex", f"run {other.name}"))
+        self.assertIn("5", saved["args"])
+        rows = subprocess.run(["python3", str(LAUNCHER.parent / "templates.py"), "runs", str(self.root / ".agent-runs")],
+                              cwd=self.root, env=self.env, check=True, capture_output=True, text=True).stdout
+        self.assertIn(other.name, rows)
+
     def test_invalid_names_and_tampered_files_are_rejected(self):
         self.agentrun("template", "save", "../escape", "--repo", ".", expected=2)
         self.store.mkdir(parents=True)

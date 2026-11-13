@@ -139,11 +139,50 @@ def running_jobs():
     return {line.strip() for line in output.splitlines() if line.strip()}
 
 
+def registered_runs():
+    """起動時に登録簿（~/.agentrun/active-runs）へ記録された run。起動したディレクトリを問わない。"""
+    import auth_sync
+    directory = auth_sync.registry(Path.home() / ".agentrun/auth")
+    found = []
+    for link in sorted(directory.iterdir()) if directory.is_dir() else []:
+        run = Path(os.path.realpath(link))
+        if link.is_symlink() and run.is_dir():
+            found.append(run)
+    return found
+
+
+def all_runs(parent):
+    """今いるディレクトリの run と登録簿の run（重複は除く）。"""
+    unique = {}
+    for run in [*sessions.runs(parent), *registered_runs()]:
+        unique.setdefault(run.resolve(), None)
+    return list(unique)
+
+
+def resolve_run(parent, target):
+    """run ID か run ディレクトリ。今いるディレクトリになければ登録簿から探す。"""
+    try:
+        return sessions.resolve(parent, target)
+    except ValueError:
+        pass
+    matches = []
+    for run in registered_runs():
+        data = sessions.read_json(run / "session.json")
+        if run.name == target or (isinstance(data, dict) and data.get("run_id") == target):
+            matches.append(run)
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise ValueError("同じ run ID が複数あります。run ディレクトリで指定してください: "
+                         + ", ".join(str(run) for run in matches))
+    raise ValueError("run ID が見つかりません（このディレクトリの .agent-runs と起動中 run の登録簿を探しました）: " + target)
+
+
 def candidate_runs(parent):
     """テンプレートにできる run。実行中のものを先に並べる。"""
     running = running_jobs()
     rows = []
-    for run in sessions.runs(parent):
+    for run in all_runs(parent):
         try:
             manifest = sessions.manifest(run)
             if manifest["mode"] not in MODES:
@@ -203,7 +242,7 @@ def main():
         elif options.action == "from-run":
             if len(rest) != 1:
                 raise ValueError("run ID か run ディレクトリを1つ指定してください")
-            run = sessions.resolve(Path(options.run or "."), rest[0])
+            run = resolve_run(Path(options.run or "."), rest[0])
             save(options.target, from_run(run), options.force)
             print(f"テンプレートを保存しました: {options.target}（{run.name} から）")
         elif options.action == "delete":
