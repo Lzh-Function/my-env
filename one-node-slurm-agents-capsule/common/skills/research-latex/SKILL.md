@@ -26,11 +26,13 @@ Respect an explicit user preference, even if the default differs. For an existin
    `uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" init --template technical --output /runs/artifacts/experiment-YYYYMMDD`
 3. Replace ALL synthetic sample results, placeholder claims, demo figures, and sample metadata with actual user-provided or verified evidence. Keep `figures/`, `data/`, `references.bib`, and reusable plotting scripts separate. Do not cite the bundled SMILES paper unless actually relevant and consulted.
 4. Write and revise `main.tex` with rigorous section hierarchy. Reuse `preamble.tex`, customize styles deliberately. Maintain correct `\label` / `\ref` or `\cref`, figures with units/axes/captions and an auditable `.bib` file.
-5. Build: `uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" build --project /runs/artifacts/experiment-YYYYMMDD`.
-6. If build fails, inspect `build/build-command.log` and `build/main.log`, fix the **source** and rerun. Do not hide warnings with a forced LaTeX build.
-7. Render **every page**: `uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" render --project /runs/artifacts/experiment-YYYYMMDD --all --dpi 150`.
-8. **Use an image-capable agent or human to examine the rendered pages**: check text clipping, equation/table width, figure resolution, page breaks, empty/orphan pages, missing glyphs, unexpected floats, reference pages and visual hierarchy. The CLI structural validator cannot perform the visual check itself. Fix any defects and repeat build + render.
-9. Deliver at least `report.pdf` and editable `main.tex`; preferably share the whole reproducible project or a ZIP with the source data/scripts and `.bib` where permissions permit. Summarize any unsourced claims or remaining uncertainties.
+5. Build: `uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" build --project /runs/artifacts/experiment-YYYYMMDD`. Build one project at a time; a second concurrent build of the same project is refused (`build/.lock`), because two latexmk runs corrupt each other's intermediates. `build` ends by running `verify` (step 7) unless `--no-verify` is given; `verify` executes the project's `scripts/verify_claims.py`, so pass `--no-verify` for a project you did not write or inspect.
+6. If build fails, inspect `build/build-command.log` and `build/main.log`, fix the **source** and rerun. Warnings are reported with the file and line TeX was reading. Do not hide warnings with a forced LaTeX build.
+7. Classify every number in the prose as (A) recomputable from data you hold, (B) taken from a cited source, or (C) derived in the text. Register the type-A numbers in the project's `scripts/verify_claims.py` (created by `init`; copy it from `assets/common/verify_claims.py` for an existing project) and run `verify`; run `verify --all` once before delivery to include slow checks. Give the type-B numbers a citation that names the table, page or equation they came from (`\cite[Table 3]{key}`). Put type-C derivations in the text. Never copy a number from a design note, a docstring, a plotting-script constant or an earlier draft: go back to whichever of A, B or C it actually came from. `verify` also lists prose sentences with numbers but no `\cite`/`\ref`/`\label`; read that list for missing sources.
+8. After every round of corrections, run `crosscheck` so the summary still agrees with the body: `uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" crosscheck --project ...`. It lists summary numbers that appear nowhere else. The summary is the `abstract` environment, else the lines between `% research-latex: summary-begin` and `% research-latex: summary-end`, else `--summary-range FILE:A-B`. Add `--region FILE[:A-B]` for conclusions or limitations that restate body numbers. Trace every listed number; a rounding of a body value is reported with its source so you can confirm the rounding is intended.
+9. Render pages for inspection. After each fix, render only what changed: `render --project ... --changed --dpi 150` writes the pages that differ from the last render, plus one page on each side. On the first render and once before delivery, render **every page**: `render --project ... --all --dpi 150`.
+10. **Use an image-capable agent or human to examine the rendered pages**: check text clipping, equation/table width, figure resolution, page breaks, empty/orphan pages, missing glyphs, unexpected floats, reference pages and visual hierarchy. The CLI structural validator cannot perform the visual check itself. Fix any defects and repeat build + render. This review is for appearance; do not check numbers by adding reviewers who use the same method (see `references/scientific-writing.md`, "Independent checks").
+11. Deliver at least `report.pdf` and editable `main.tex`; preferably share the whole reproducible project or a ZIP with the source data/scripts (including `scripts/verify_claims.py`) and `.bib` where permissions permit. Summarize any unsourced claims or remaining uncertainties.
 
 ## Research-quality invariants
 
@@ -48,9 +50,10 @@ Respect an explicit user preference, even if the default differs. For an existin
 - `README.md`: high-level examples and folder layout.
 - `INSTALL.md`: Ubuntu/Dev Container prerequisites, installation and troubleshooting.
 - `references/typography.md`: layout, figure and table QA.
-- `references/scientific-writing.md`: research reporting checklist and truthfulness.
+- `references/scientific-writing.md`: research reporting checklist, number provenance and how quantitative claims go wrong.
 - `references/troubleshooting.md`: build errors and common PDF defects.
 - `assets/templates/*/main.tex`, `assets/common/preamble.tex`: working templates.
+- `assets/common/verify_claims.py`: skeleton for recomputing prose numbers from data (copied to `scripts/` by `init`).
 - `examples/previews/*.pdf`: actual compiled output generated from **synthetic** examples.
 
 ## Out of scope

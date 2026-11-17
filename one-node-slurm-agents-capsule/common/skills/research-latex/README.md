@@ -21,13 +21,14 @@ research-latex/
 ├── INSTALL.md                       # Linux/Dev Container 導入手順
 ├── assets/
 │   ├── common/preamble.tex          # 日本語/英語の共通組版設定
+│   ├── common/verify_claims.py      # 地の文の数値を一次データから再計算する検査の雛形
 │   ├── templates/
 │   │   ├── academic/main.tex        # 2段組
 │   │   ├── technical/main.tex       # 1段組
 │   │   └── monograph/main.tex       # 書籍型
 │   └── examples/                    # 架空のCSV, Bib, ベクター図
 ├── scripts/
-│   ├── research_latex.py            # doctor/init/build/validate/render
+│   ├── research_latex.py            # doctor/init/build/validate/render/verify/crosscheck
 │   ├── plot_example.py              # optional matplotlib 例示グラフ生成
 │   └── {doctor,build,validate,render}.sh
 ├── references/                      # 執筆・組版・QAガイドライン
@@ -47,6 +48,13 @@ uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" build \
     --project ./reports/my-experiment
 uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" render \
     --project ./reports/my-experiment --all --dpi 150
+# 修正のたび: 数値の検査、要旨と本文の突き合わせ、変わったページだけの画像化
+uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" verify \
+    --project ./reports/my-experiment
+uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" crosscheck \
+    --project ./reports/my-experiment
+uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" render \
+    --project ./reports/my-experiment --changed --dpi 150
 ```
 
 出力プロジェクト：
@@ -59,6 +67,7 @@ reports/my-experiment/
 ├── figures/example-curve.pdf
 ├── data/example-metrics.csv
 ├── scripts/plot_example.py
+├── scripts/verify_claims.py   # 地の文の数値の検査（build と verify が実行）
 ├── build/                   # 中間ファイルとPDF検査用PNG
 └── report.pdf               # 最終出力
 ```
@@ -101,4 +110,4 @@ uv run --no-project --with matplotlib python \
 
 ### 品質保証の限界
 
-`build` はTeXコンパイルとPDF構造/テキストの検証、`render` はPDFページのPNG化を行います。**視覚的検査そのものはスクリプトではなくエージェント/人間が画像を見て行います**。PDF出力成功をもって図表配置や研究内容の正確性を保証するわけではありません。
+`build` はTeXコンパイルとPDF構造/テキストの検証、`render` はPDFページのPNG化を行います。`verify` は `scripts/verify_claims.py` に登録した数値を一次データから再計算して本文と突き合わせ、出典のない数値を含む文を一覧にします。`crosscheck` は要旨（`abstract` 環境か `% research-latex: summary-begin`〜`summary-end` の範囲）の数値のうち、本文のどこにもないものを一覧にします。どちらも、一覧の項目が本当に誤りかどうかは人かエージェントが確かめます。**視覚的検査そのものはスクリプトではなくエージェント/人間が画像を見て行います**。PDF出力成功をもって図表配置や研究内容の正確性を保証するわけではありません。

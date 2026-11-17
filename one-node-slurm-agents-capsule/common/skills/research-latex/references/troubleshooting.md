@@ -12,6 +12,14 @@ With LuaTeX-ja/fontspec, specify bold Japanese fonts explicitly using the provid
 
 Check that the cite key exists in `references.bib`, `\addbibresource{references.bib}` is present, Biber is installed and latexmk can run it. Do not suppress errors; use `build` again and check `build/main.blg`.
 
+## `another build is running in this project` or `Biber: malformed bcf file`
+
+Two builds of one project share `build/`, and the second latexmk reads the first one's half-written intermediates (`main.bcf`, `main.aux`). `build` therefore holds `build/.lock` and refuses a second concurrent build. Wait for the first build to finish; the lock is released when its process exits, even if it crashed. If a malformed-file error remains from an earlier concurrent run, delete `build/` and build again.
+
+## Finding the source of a warning
+
+`build` and `validate` print up to five locations per warning type, as `file, lines A--B: message`, from the file TeX had open when it wrote the warning. The file is reconstructed from parentheses in `build/main.log` and is a hint; the line numbers are copied from the message. Search `build/main.log` for the remainder.
+
 ## `! LaTeX Error: File '...sty' not found`
 
 This is a missing TeX Live component. Run `doctor`, then install the matching OS TeX Live package (do not mix year-mismatched tlmgr and apt installations).

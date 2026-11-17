@@ -3,6 +3,7 @@ LICENSE
 README.md
 SKILL.md
 assets/common/preamble.tex
+assets/common/verify_claims.py
 assets/examples/example-curve.pdf
 assets/examples/example-metrics.csv
 assets/examples/references.bib
