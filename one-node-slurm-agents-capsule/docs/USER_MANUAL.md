@@ -933,6 +933,9 @@ agentrun history                         # 最新の実行を保存
 agentrun history RUN_ID                  # 指定した実行を再保存。改名後も指定可能
 agentrun history /absolute/path/to/run
 agentrun history --watch RUN_ID          # 投入元ホストで終了を待ち、履歴を回収
+agentrun history list                    # 保存した会話の一覧（どこからでも。下記参照）
+agentrun history search 語...            # 保存した会話の全文検索
+agentrun history export-md DIR            # 1 会話 1 ファイルで書き出し（Obsidian 向け）
 ```
 
 投入元ホストの再起動などで回収プロセスが止まった場合は、元の投入元ホストで `history --watch` を実行してください。
@@ -942,6 +945,45 @@ agentrun history --watch RUN_ID          # 投入元ホストで終了を待ち�
 保存に失敗すると、`live/history_export.json` と診断ログに記録します。エージェントの終了コードは変えず、一時ホームの削除も続行します。元の永続化済み履歴は残るため、後から再保存できます。
 
 対話実行の終了処理では、履歴保存を最大 120 秒で打ち切ります。時間切れを記録して一時ホームの削除へ進むため、時間のかかる履歴は `agentrun history` で再保存してください。手動保存には、この終了処理用の制限時間はありません。回収時には `SQUEUE_PARTITION` などの表示用フィルタを無視し、実行中のジョブを見失わないようにします。
+
+### 保存した会話の一覧と検索
+
+どのディレクトリからでも、保存した全プロジェクトの会話を新しい順に一覧・検索できます。
+
+```bash
+agentrun history list                      # 新しい順に 20 件
+agentrun history list --repo chem --limit 50
+agentrun history search 学習率 loss         # すべての語を含む会話（大文字小文字は区別しない）
+agentrun history search OOM --agent codex
+```
+
+1 件ごとに、起動日時・エージェント・モード・作業リポジトリ名・run のタイトル（`run_title.txt`）、最初の依頼、検索語の前後の文、Markdown のパスを表示します。
+
+```text
+2026-11-13 12:00  codex  assist  chem-model  retrained chem model
+    最初の依頼: 学習率を下げて再学習して
+    一致: …### Assistant · loss は 0.31 まで下がった
+    ~/.agentrun/history/runs/20261113_120000_assist_codex-58327cfed3fda308/conversation.md
+```
+
+`--repo` は作業リポジトリのパスの一部で絞り込みます。検索対象は Markdown の全文で、ツールの出力と実行情報も含みます。データベースは読み取り専用で開くので、一覧や検索で履歴が変わることはありません。
+
+### Obsidian などへの書き出し
+
+`agentrun history export-md DIR` は、保存済みの会話を 1 会話 1 ファイルの Markdown として `DIR` に書き出します。会話を作り直すのではなく、保存済みのデータから読みやすい形のコピーを作ります。`~/.agentrun/history/` の中身は変わりません。
+
+```bash
+agentrun history export-md ~/vault/agent-history            # 全プロジェクトの会話
+agentrun history export-md ~/vault/agent-history --repo chem # 作業リポジトリで絞り込み
+```
+
+- ファイル名は `2026-11-13 1200 retrained chem model.md` のように、起動日時と run のタイトルにします。タイトルがない場合は最初の依頼を使います。Obsidian やファイル同期で使えない文字（`/ : # [ ]` など）は空白に置き換えます。
+- 冒頭は Obsidian のプロパティ（YAML フロントマター）で、`date`、`agent`、`mode`、`repo`、`title`、`run_id`、`archive_id`、`archived_at`、`tags: [agentrun]` を持ちます。本文は保存済みの `conversation.md` から冒頭の JSON ブロックを除いたものです。
+- 2 回目以降は、前回から保存し直された会話と新しい会話だけを書き直します。タイトルが変わった会話はファイル名も変わり、古いファイルは削除します。
+- 書き出した記録は `DIR/.agentrun-export.json` に残します。このコマンドが書いていないファイルは上書きも削除もしません。同じ名前のファイルが既にあれば、` (2)` のような番号を付けた名前で書き出します。
+- ファイルは本人だけが読める権限（`0600`）で作ります。会話にはコマンドの出力も含まれるので、共有する保管庫に書き出すときは中身に注意してください。
+
+サーバーで書き出したフォルダを手元にコピーする（`scp -r`、`rsync` など）か、同期しているフォルダを書き出し先にしてください。
 
 ### SQLite に保存した会話の検索
 

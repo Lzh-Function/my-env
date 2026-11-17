@@ -24,6 +24,9 @@ Usage:
   agentrun resume --list
   agentrun resume RUN_ID --preview
   agentrun history [RUN_ID|RUN_DIR] [--watch]  # export now, or recover a host-side batch collector
+  agentrun history list [--agent A] [--repo TEXT] [--limit N]   # archived conversations, newest first
+  agentrun history search WORD... [--agent A] [--repo TEXT] [--limit N]
+  agentrun history export-md DIR [--agent A] [--repo TEXT]  # one note per conversation, e.g. for Obsidian
   agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]  # read cross-review dialogues
   agentrun wizard [options] [PROMPT]         # guided/menu-driven alternative to assist|experiment|campaign|review|multi-review
   agentrun template list|show NAME|delete NAME [--yes]
@@ -823,6 +826,9 @@ interactive_srun_args() {
 
 command_history() {
     local target="" watch=0 run_dir
+    case "${1:-}" in
+        list|search|export-md) python3 "$ROOT_DIR/runtime/agentrun/history_index.py" "$@"; return $? ;;
+    esac
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --watch) watch=1; shift ;;
@@ -1601,6 +1607,7 @@ command_validate() {
         runtime/agentrun/review_inputs.py \
         runtime/agentrun/history.py \
         runtime/agentrun/history_export.py \
+        runtime/agentrun/history_index.py \
         runtime/agentrun/review_view.py \
         runtime/agentrun/review_hook.py \
         runtime/agentrun/overlap.py \

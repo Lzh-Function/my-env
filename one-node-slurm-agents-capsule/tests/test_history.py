@@ -116,6 +116,89 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(Path(row[1]).stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.history_root / "index.sqlite3").stat().st_mode & 0o777, 0o600)
 
+    def test_list_and_search_show_readable_runs_newest_first(self):
+        def archived(name, repo, request, answer, title=None):
+            run = self.parent / name
+            run.mkdir()
+            (self.root / repo).mkdir(exist_ok=True)
+            sessions.init(run, "codex", str(self.root / repo), "assist")
+            store = sessions.state_dir(run, sessions.manifest(run))
+            write_jsonl(store / ".codex/sessions/rollout.jsonl", [
+                message("user", "<environment_context>injected</environment_context>"),
+                message("user", request), message("assistant", answer)])
+            if title:
+                (run / "artifacts").mkdir(exist_ok=True)
+                (run / "artifacts/run_title.txt").write_text(title + "\n")
+            collector.archive(run)
+
+        def agentrun(*args):
+            result = subprocess.run([str(LAUNCHER), "history", *args], cwd=self.root / "elsewhere",
+                                    capture_output=True, text=True, timeout=10, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout
+
+        (self.root / "elsewhere").mkdir()
+        self.assertIn("保存された会話はまだありません", agentrun("list"))
+        archived("20261113_120000_assist_codex", "chem model", "学習率を下げて再学習して", "loss は 0.31 まで下がった",
+                 title="retrained chem model")
+        archived("20261114_093000_assist_codex", "slides", "発表スライドを直して", "図 3 を差し替えた")
+        out = agentrun("list")
+        newest, oldest = out.index("2026-11-14 09:30"), out.index("2026-11-13 12:00")
+        self.assertLess(newest, oldest)
+        self.assertIn("2026-11-13 12:00  codex  assist  chem model  retrained chem model", out)
+        self.assertIn("最初の依頼: 学習率を下げて再学習して", out)
+        self.assertNotIn("environment_context", out)
+        self.assertIn("conversation.md", out)
+        out = agentrun("search", "LOSS")
+        self.assertIn("chem model", out)
+        self.assertNotIn("slides", out)
+        self.assertIn("一致: ", out)
+        self.assertIn("該当する会話はありません", agentrun("search", "loss", "スライド"))
+        self.assertIn("slides", agentrun("list", "--repo", "slides"))
+        self.assertNotIn("chem model", agentrun("list", "--repo", "slides"))
+        self.assertIn("ほかに 1 件", agentrun("list", "--limit", "1"))
+
+    def test_export_md_writes_named_notes_and_only_rewrites_its_own_changed_notes(self):
+        def archived(name, request, answer, title=None):
+            run = self.parent / name
+            run.mkdir(exist_ok=True)
+            if not (run / "session.json").exists():
+                sessions.init(run, "codex", str(self.root), "assist")
+            store = sessions.state_dir(run, sessions.manifest(run))
+            write_jsonl(store / ".codex/sessions/rollout.jsonl", [message("user", request), message("assistant", answer)])
+            if title:
+                (run / "artifacts").mkdir(exist_ok=True)
+                (run / "artifacts/run_title.txt").write_text(title + "\n")
+            collector.archive(run)
+
+        def export():
+            result = subprocess.run([str(LAUNCHER), "history", "export-md", str(vault)], cwd=self.root,
+                                    capture_output=True, text=True, timeout=10, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout
+
+        vault = self.root / "vault/agent history"
+        archived("20261113_120000_assist_codex", "学習率を下げて", "loss は 0.31", title="retrained: chem/model")
+        archived("20261114_093000_assist_codex", "発表スライドを直して", "図 3 を差し替えた")
+        vault.mkdir(parents=True)
+        (vault / "2026-11-14 0930 発表スライドを直して.md").write_text("my own note\n")
+        self.assertIn("新規 2 件、更新 0 件、変更なし 0 件", export())
+        note = (vault / "2026-11-13 1200 retrained chem model.md").read_text()
+        self.assertTrue(note.startswith('---\ndate: "2026-11-13T12:00:00"\nagent: "codex"\nmode: "assist"\n'))
+        self.assertIn('title: "retrained: chem/model"\n', note)
+        self.assertIn("tags: [agentrun]\n---\n", note)
+        self.assertNotIn("# Conversation archive", note)
+        self.assertIn("loss は 0.31", note)
+        # The user's note with the same name is kept; the export takes the next free name.
+        self.assertEqual((vault / "2026-11-14 0930 発表スライドを直して.md").read_text(), "my own note\n")
+        self.assertIn("図 3", (vault / "2026-11-14 0930 発表スライドを直して (2).md").read_text())
+        self.assertIn("新規 0 件、更新 0 件、変更なし 2 件", export())
+        archived("20261113_120000_assist_codex", "学習率を下げて", "loss は 0.29", title="retrained again")
+        self.assertIn("新規 0 件、更新 1 件、変更なし 1 件", export())
+        self.assertFalse((vault / "2026-11-13 1200 retrained chem model.md").exists())
+        self.assertIn("loss は 0.29", (vault / "2026-11-13 1200 retrained again.md").read_text())
+        self.assertEqual((vault / "2026-11-13 1200 retrained again.md").stat().st_mode & 0o777, 0o600)
+
     def test_default_root_and_override(self):
         with patch.dict(os.environ, HOME=str(self.root / "host-home")):
             os.environ.pop("AGENTRUN_HISTORY_DIR")

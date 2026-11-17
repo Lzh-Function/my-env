@@ -312,6 +312,10 @@ def export_run(run, data, store):
                 if path.is_file() and within(path, directory):
                     parts.append(f"\n### {name}\n\n" + fence(path.read_text(), "json" if name.endswith(".json") else "markdown"))
         info = {k: data[k] for k in ("run_id", "agent", "repo", "mode", "session_key", "parent_run_id") if k in data}
+        try:
+            info["title"] = (run / "artifacts/run_title.txt").read_text(encoding="utf-8").strip().splitlines()[0]
+        except (FileNotFoundError, IndexError):
+            pass  # the agent has not written a title (yet)
         info.update(archive_id=archive_id, run_parent=str(run.parent.resolve()),
                     launcher_cwd=data.get("launcher_cwd"),
                     archived_at=datetime.now(timezone.utc).isoformat(), archive_host=socket.gethostname(),
