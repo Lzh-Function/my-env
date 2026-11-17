@@ -110,7 +110,7 @@ class OverlapBase(unittest.TestCase):
                                     stdin=slave, stdout=slave, stderr=slave, preexec_fn=controlling_terminal)
             prompts = re.compile(
                 rb'\x1b\[1;36m[^\r\n]*:cancel=[^\r\n]*\x1b\[0m\r?\n'
-                rb'|#\? \(Enter=1, :back, :cancel\) |\(:back, :cancel\): '
+                + '|番号を入力 \\(Enter=1, :back=戻る, :cancel=キャンセル\\) |\\(:back=戻る, :cancel=キャンセル\\): '.encode()
             )
             output = bytearray()
             sent = 0
@@ -267,11 +267,11 @@ class OverlapResumeTests(OverlapBase):
 
     def test_wizard_resume_offers_running_job(self):
         # mode=resume, run=1, preview=no, overlap=job, binds=no, launch=yes
-        rc, output = self.execute(["wizard"], ["6", "1", "n", "2", "n", "y"])
+        rc, output = self.execute(["wizard"], ["1", "6", "1", "n", "2", "n", "y"])
         self.assertEqual(rc, 0, output)
         self.assertIn("このジョブに overlap して", output)
         self.assertIn(f"--overlap {JOB}", output)
-        self.assertNotIn("Memory (e.g.", output)
+        self.assertNotIn("メモリ（例", output)
         self.assertEqual(json.loads((self.latest() / "srun-args.json").read_text())[0], f"--jobid={JOB}")
 
 
@@ -279,18 +279,19 @@ class OverlapWizardTests(OverlapBase):
     STUB = 'source "$1"; command_prepare() { printf "PREPARE_ARGS=%s\\n" "$*"; }; command_wizard'
 
     def wizard(self, answers):
-        return self.execute([], answers, command=["bash", "-c", self.STUB, "bash", str(LAUNCHER)])
+        # The first menu (launch or other features) comes before the launch questions.
+        return self.execute([], ["1", *answers], command=["bash", "-c", self.STUB, "bash", str(LAUNCHER)])
 
     def test_assist_asks_to_overlap_and_skips_resource_questions(self):
         # mode, agent, interactive, overlap=job, repo, binds, fuse, secrets, goal, save template, launch
         rc, output = self.wizard(["1", "1", "1", "2", str(self.second), "n", "n", "n", "", "", "y"])
         self.assertEqual(rc, 0, output)
         self.assertIn("このジョブに overlap して、同じ割り当て内でエージェントコンテナをもう一つ起動しますか？", output)
-        self.assertIn(f"overlap: job {JOB} (agentrun-assist-codex) / node: node01", output)
+        self.assertIn(f"overlap 先: job {JOB}（agentrun-assist-codex） / ノード: node01", output)
         line = next(l for l in output.replace("\r", "").splitlines() if l.startswith("PREPARE_ARGS="))
         self.assertIn(f"--overlap {JOB}", line)
         self.assertNotIn("--mem", line)
-        self.assertNotIn("Memory (e.g.", output)
+        self.assertNotIn("メモリ（例", output)
 
     def test_declining_overlap_keeps_normal_resource_flow(self):
         rc, output = self.wizard(["1", "1", "1", "1", "", "", "", "", "", "", "n", "n", "n", "", "", "y"])
@@ -314,7 +315,7 @@ class OverlapWizardTests(OverlapBase):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             rc, output = self.wizard(["1", "1", "1", "2", str(self.second), str(self.root), "n", "n", "n", "", "", "y"])
         self.assertEqual(rc, 0, output)
-        self.assertIn("choose another repository or a git worktree", output)
+        self.assertIn("別のリポジトリか git worktree を選んでください", output)
         line = next(l for l in output.replace("\r", "").splitlines() if l.startswith("PREPARE_ARGS="))
         self.assertIn(f"--repo {self.root}", line)
 
@@ -330,7 +331,7 @@ class OverlapWizardTests(OverlapBase):
         self.assertIn(f"--repo {self.second}", line)
         self.assertIn(f"--bind {self.root}:/data:ro", line)
         self.assertIn("--agent codex", line)
-        self.assertNotIn("Repository path", output)
+        self.assertNotIn("作業リポジトリのパス", output)
 
 
 if __name__ == "__main__":

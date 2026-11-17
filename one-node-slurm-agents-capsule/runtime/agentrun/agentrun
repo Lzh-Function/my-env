@@ -28,13 +28,14 @@ Usage:
   agentrun history search WORD... [--agent A] [--repo TEXT] [--limit N]
   agentrun history export-md DIR [--agent A] [--repo TEXT]  # one note per conversation, e.g. for Obsidian
   agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]  # read cross-review dialogues
-  agentrun wizard [options] [PROMPT]         # guided/menu-driven alternative to assist|experiment|campaign|review|multi-review
+  agentrun wizard [options] [PROMPT]         # menus for launching and for every other feature; options skip to launching
   agentrun template list|show NAME|delete NAME [--yes]
   agentrun template save NAME [--mode MODE] [--force] [run options]   # save run options under a name
   agentrun template save NAME --from RUN_ID|RUN_DIR [--force]        # copy a running or finished run's settings
   agentrun skill-install SOURCE_DIR|GIT_URL [SKILL_NAME...] [--force]
   agentrun smoke-test [--agent NAME]
   agentrun init-goal
+  agentrun ps [--scan DIR]                 # running agentrun sessions by Slurm job, with overlaps
   agentrun status
   agentrun logs [--follow]
   agentrun tail
@@ -98,7 +99,7 @@ is_supported_agent() {
 
 require_supported_agent() {
     is_supported_agent "$1" || {
-        printf 'unknown agent: %s (supported: codex, claude)\n' "$1" >&2
+        printf '知らないエージェントです: %s（使えるのは codex と claude）\n' "$1" >&2
         return 2
     }
 }
@@ -109,7 +110,7 @@ AUTH_AGENTS=(codex claude antigravity)
 require_auth_agent() {
     case "$1" in
         codex|claude|antigravity) return 0 ;;
-        *) printf 'unknown agent: %s (supported: codex, claude, antigravity)\n' "$1" >&2; return 2 ;;
+        *) printf '知らないエージェントです: %s（使えるのは codex、claude、antigravity）\n' "$1" >&2; return 2 ;;
     esac
 }
 
@@ -142,23 +143,24 @@ detect_wizard_ui() {
         WIZARD_UI="gum"
         return 0
     fi
-    printf 'gum not found, falling back to whiptail\n' >&2
+    printf 'gum がないので whiptail で表示します\n' >&2
     if command -v whiptail >/dev/null 2>&1; then
         WIZARD_UI="whiptail"
         DIALOG_BIN="whiptail"
         return 0
     fi
-    printf 'whiptail not found, falling back to dialog\n' >&2
+    printf 'whiptail がないので dialog で表示します\n' >&2
     if command -v dialog >/dev/null 2>&1; then
         WIZARD_UI="dialog"
         DIALOG_BIN="dialog"
         return 0
     fi
-    printf 'dialog not found, falling back to plain prompts\n' >&2
+    printf 'dialog がないので文字だけの画面で表示します\n' >&2
     WIZARD_UI="plain"
 }
 
 source "$ROOT_DIR/runtime/agentrun/wizard.sh"
+source "$ROOT_DIR/runtime/agentrun/wizard_tools.sh"
 
 agent_command() {
     local agent="$1" mode="${2:-}" launch="${3:-batch}"
@@ -346,7 +348,7 @@ copy_auth_credentials() {
     stage_auth_file "$store_root" "antigravity" ".gemini/antigravity-cli/installation_id" "$run_dir"
     # Later logins and imports update running sessions found through this registry.
     python3 "$ROOT_DIR/runtime/agentrun/auth_sync.py" register --store "$store_root" "$run_dir" 2>/dev/null || \
-        printf 'could not register the run for credential updates: %s\n' "$run_dir" >&2
+        printf '認証の更新先として run を登録できませんでした: %s\n' "$run_dir" >&2
 }
 
 auth_sync_running() {
@@ -355,7 +357,7 @@ auth_sync_running() {
     local agent run
     for agent in "$@"; do args+=(--agent "$agent"); done
     for run in "${AUTH_SYNC_RUNS[@]+"${AUTH_SYNC_RUNS[@]}"}"; do args+=(--run "$run"); done
-    printf '\n[auth sync] updating running sessions\n'
+    printf '\n[auth sync] 実行中のセッションの認証を更新します\n'
     python3 "$ROOT_DIR/runtime/agentrun/auth_sync.py" "${args[@]}"
 }
 
@@ -589,7 +591,7 @@ ensure_default_secrets_file() {
     [ -e "$DEFAULT_SECRETS_FILE" ] && return 0
     [ -f "$SECRETS_TEMPLATE" ] || return 0
     (umask 077 && cp "$SECRETS_TEMPLATE" "$DEFAULT_SECRETS_FILE")
-    printf 'created %s from template (all entries commented out)\n' "$DEFAULT_SECRETS_FILE" >&2
+    printf '%s を雛形から作りました（中身はすべてコメントアウトしてあります）\n' "$DEFAULT_SECRETS_FILE" >&2
 }
 
 path_is_within() {
@@ -666,7 +668,7 @@ ensure_default_gh_env_file() {
     [ -e "$DEFAULT_GH_ENV_FILE" ] && return 0
     [ -f "$GH_ENV_TEMPLATE" ] || return 0
     (umask 077 && cp "$GH_ENV_TEMPLATE" "$DEFAULT_GH_ENV_FILE")
-    printf 'created %s from template (GH_TOKEN commented out)\n' "$DEFAULT_GH_ENV_FILE" >&2
+    printf '%s を雛形から作りました（GH_TOKEN はコメントアウトしてあります）\n' "$DEFAULT_GH_ENV_FILE" >&2
 }
 
 session_tool() {
@@ -755,7 +757,7 @@ command_template() {
                 case "$1" in
                     --from) from="$2"; shift 2 ;;
                     --force) force=(--force); shift ;;
-                    --mode) is_profile "$2" || { printf 'unknown mode: %s\n' "$2" >&2; exit 2; }; mode="$2"; shift 2 ;;
+                    --mode) is_profile "$2" || { printf '知らないモードです: %s\n' "$2" >&2; exit 2; }; mode="$2"; shift 2 ;;
                     *) rest+=("$1"); shift ;;
                 esac
             done
@@ -767,8 +769,8 @@ command_template() {
             ensure_default_secrets_file
             ensure_default_gh_env_file
             parse_run_args "${rest[@]+"${rest[@]}"}"
-            [ -z "$OVERLAP_JOB" ] || printf 'note: --overlap はテンプレートに保存しません（起動時に選びます）\n' >&2
-            [ -z "$PROMPT" ] || printf 'note: prompt はテンプレートに保存しません\n' >&2
+            [ -z "$OVERLAP_JOB" ] || printf '注意: --overlap はテンプレートに保存しません（起動時に選びます）\n' >&2
+            [ -z "$PROMPT" ] || printf '注意: prompt はテンプレートに保存しません\n' >&2
             template_state_args || return $?
             template_tool save "$name" --mode "${mode:-${TEMPLATE_MODE:-assist}}" --agent "$AGENT" --submit "$SUBMIT" \
                 "${force[@]+"${force[@]}"}" -- "${TEMPLATE_STATE[@]}" ;;
@@ -807,7 +809,7 @@ repo_lock_busy() {
 require_overlap_repo() {
     [ -n "$OVERLAP_JOB" ] || return 0
     if repo_lock_busy "$1"; then
-        printf 'another agentrun is already active on this repo (%s). overlap では別のリポジトリか git worktree を --repo に指定してください。\n' "$1" >&2
+        printf 'このリポジトリ（%s）では既に agentrun が動いています。overlap では別のリポジトリか git worktree を --repo に指定してください。\n' "$1" >&2
         return 1
     fi
 }
@@ -832,8 +834,8 @@ command_history() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --watch) watch=1; shift ;;
-            --*) printf 'unknown history option: %s\n' "$1" >&2; return 2 ;;
-            *) [ -z "$target" ] || { printf 'history accepts one run\n' >&2; return 2; }
+            --*) printf 'history に知らないオプションです: %s\n' "$1" >&2; return 2 ;;
+            *) [ -z "$target" ] || { printf 'history に指定できる run は 1 つです\n' >&2; return 2; }
                target="$1"; shift ;;
         esac
     done
@@ -852,11 +854,11 @@ command_reviews() {
         case "$1" in
             --follow) options+=(--follow); shift ;;
             --reviewer) options+=(--reviewer "${2:?--reviewer requires a name}"); shift 2 ;;
-            --*) printf 'unknown reviews option: %s\n' "$1" >&2; return 2 ;;
+            --*) printf 'reviews に知らないオプションです: %s\n' "$1" >&2; return 2 ;;
             *) positional+=("$1"); shift ;;
         esac
     done
-    [ "${#positional[@]}" -le 2 ] || { printf 'usage: agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]\n' >&2; return 2; }
+    [ "${#positional[@]}" -le 2 ] || { printf '使い方: agentrun reviews [RUN_ID|RUN_DIR] [番号] [--follow] [--reviewer NAME]\n' >&2; return 2; }
     local target="${positional[0]:-$PWD/.agent-runs/latest}" review="${positional[1]:-}"
     # A single argument that does not resolve to a run is a review number in the latest run.
     if [ "${#positional[@]}" -eq 1 ] && ! session_tool resolve "$PWD/.agent-runs" "$target" >/dev/null 2>&1; then
@@ -1080,7 +1082,7 @@ apptainer --version > "\$run_dir/artifacts/container.txt" 2>/dev/null || true
 # Match interactive runs: refuse concurrent git operations in this repository.
 exec 200>"\$repo/.agentrun.lock"
 if ! flock -n 200; then
-    printf 'another agentrun is already active on this repo (%s).\n' "\$repo" >&2
+    printf 'このリポジトリ（%s）では既に agentrun が動いています。\n' "\$repo" >&2
     exit 1
 fi
 set +e
@@ -1112,13 +1114,13 @@ settings_tool() {
 }
 
 command_agents() {
-    printf 'Available agents:\n'
+    printf '使えるエージェント:\n'
     local agent found
     for agent in "${SUPPORTED_AGENTS[@]}"; do
         if found="$(command -v "$agent")"; then
-            printf '  %-12s available %s\n' "$agent" "$found"
+            printf '  %-12s あり  %s\n' "$agent" "$found"
         else
-            printf '  %-12s missing   %s\n' "$agent" "$agent"
+            printf '  %-12s なし  （%s コマンドが見つかりません）\n' "$agent" "$agent"
         fi
     done
 }
@@ -1130,12 +1132,12 @@ check_agent_auth() {
     _check_auth_file() {
         local store_path="$1" host_path="$2" label="$3"
         if [ -f "$store_path" ]; then
-            printf '[OK] auth:%s - store: %s\n' "$label" "$store_path"
+            printf '[OK] auth:%s - 保管場所にあります: %s\n' "$label" "$store_path"
         elif [ -f "$host_path" ]; then
-            printf '[OK] auth:%s - host: %s (run: agentrun auth import --agent %s to persist to store)\n' \
+            printf '[OK] auth:%s - ホストにあります: %s（保管場所に入れるには agentrun auth import --agent %s）\n' \
                 "$label" "$host_path" "$agent"
         else
-            printf '[FAIL] auth:%s - not found in store (%s) or host (%s)\n' \
+            printf '[FAIL] auth:%s - 保管場所（%s）にもホスト（%s）にもありません\n' \
                 "$label" "$store_path" "$host_path"
             failed=1
         fi
@@ -1164,7 +1166,7 @@ check_agent_auth() {
                 "antigravity:.gemini/antigravity-cli/antigravity-oauth-token"
             ;;
         *)
-            printf '[FAIL] auth:%s - unknown agent\n' "$agent"
+            printf '[FAIL] auth:%s - 知らないエージェントです\n' "$agent"
             failed=1
             ;;
     esac
@@ -1263,7 +1265,7 @@ validate_codex_hook_manifest() {
         if printf '%s\n' "$covered" | grep -Fxq "$hook"; then
             :
         else
-            printf '[FAIL] codex-hooks-unclassified:%s - add to hooks or ignored\n' "$hook"
+            printf '[FAIL] codex-hooks-unclassified:%s - hooks か ignored に追加してください\n' "$hook"
             unclassified=1
             failed=1
         fi
@@ -1276,11 +1278,11 @@ validate_codex_hook_manifest() {
 
 command_sync_codex() {
     if [ "$#" -ne 0 ]; then
-        printf 'sync-codex takes no arguments\n' >&2
+        printf 'sync-codex に引数は要りません\n' >&2
         return 2
     fi
     if ! command -v jq >/dev/null 2>&1; then
-        printf 'jq is required for sync-codex\n' >&2
+        printf 'sync-codex には jq が必要です\n' >&2
         return 1
     fi
     validate_codex_hook_manifest >/dev/null
@@ -1291,9 +1293,9 @@ command_sync_codex() {
     chmod 0644 "$ROOT_DIR/agents/codex/requirements.toml"
     ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/codex/AGENTS.md"
     ln -sfnT ../../common/skills "$ROOT_DIR/agents/codex/skills"
-    printf '[OK] synced agents/codex/requirements.toml from agents/codex/hooks.manifest.json\n'
-    printf '[OK] synced agents/codex/AGENTS.md -> ../../common/AGENTS.md\n'
-    printf '[OK] synced agents/codex/skills -> ../../common/skills\n'
+    printf '[OK] agents/codex/hooks.manifest.json から agents/codex/requirements.toml を作り直しました\n'
+    printf '[OK] agents/codex/AGENTS.md -> ../../common/AGENTS.md のリンクを張り直しました\n'
+    printf '[OK] agents/codex/skills -> ../../common/skills のリンクを張り直しました\n'
 }
 
 claude_hooks_manifest() {
@@ -1383,7 +1385,7 @@ validate_claude_hook_manifest() {
         if printf '%s\n' "$covered" | grep -Fxq "$hook"; then
             :
         else
-            printf '[FAIL] claude-hooks-unclassified:%s - add it to hooks or ignored\n' "$hook"
+            printf '[FAIL] claude-hooks-unclassified:%s - hooks か ignored に追加してください\n' "$hook"
             unclassified=1
             failed=1
         fi
@@ -1396,11 +1398,11 @@ validate_claude_hook_manifest() {
 
 command_sync_claude() {
     if [ "$#" -ne 0 ]; then
-        printf 'sync-claude takes no arguments\n' >&2
+        printf 'sync-claude に引数は要りません\n' >&2
         return 2
     fi
     if ! command -v jq >/dev/null 2>&1; then
-        printf 'jq is required for sync-claude\n' >&2
+        printf 'sync-claude には jq が必要です\n' >&2
         return 1
     fi
     validate_claude_hook_manifest >/dev/null
@@ -1415,9 +1417,9 @@ command_sync_claude() {
     rm -f "$hooks_tmp"
     ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/claude/CLAUDE.md"
     ln -sfnT ../../common/skills "$ROOT_DIR/agents/claude/skills"
-    printf '[OK] synced agents/claude/settings.json hooks from agents/claude/hooks.manifest.json\n'
-    printf '[OK] synced agents/claude/CLAUDE.md -> ../../common/AGENTS.md\n'
-    printf '[OK] synced agents/claude/skills -> ../../common/skills\n'
+    printf '[OK] agents/claude/hooks.manifest.json から agents/claude/settings.json のフックを作り直しました\n'
+    printf '[OK] agents/claude/CLAUDE.md -> ../../common/AGENTS.md のリンクを張り直しました\n'
+    printf '[OK] agents/claude/skills -> ../../common/skills のリンクを張り直しました\n'
 }
 
 validate_claude_sync() {
@@ -1434,20 +1436,20 @@ validate_claude_sync() {
     if cmp -s "$hooks_tmp" "$settings_hooks_tmp"; then
         printf '[OK] claude-hooks-generated:agents/claude/settings.json\n'
     else
-        printf '[FAIL] claude-hooks-generated:agents/claude/settings.json - run agentrun sync-claude\n'
+        printf '[FAIL] claude-hooks-generated:agents/claude/settings.json - agentrun sync-claude で直してください\n'
         failed=1
     fi
     rm -f "$hooks_tmp" "$settings_hooks_tmp"
     if [ "$(readlink "$ROOT_DIR/agents/claude/CLAUDE.md" 2>/dev/null || true)" = "../../common/AGENTS.md" ]; then
         printf '[OK] claude-agents-link:agents/claude/CLAUDE.md\n'
     else
-        printf '[FAIL] claude-agents-link:agents/claude/CLAUDE.md - run agentrun sync-claude\n'
+        printf '[FAIL] claude-agents-link:agents/claude/CLAUDE.md - agentrun sync-claude で直してください\n'
         failed=1
     fi
     if [ "$(readlink "$ROOT_DIR/agents/claude/skills" 2>/dev/null || true)" = "../../common/skills" ]; then
         printf '[OK] claude-skills-link:agents/claude/skills\n'
     else
-        printf '[FAIL] claude-skills-link:agents/claude/skills - run agentrun sync-claude\n'
+        printf '[FAIL] claude-skills-link:agents/claude/skills - agentrun sync-claude で直してください\n'
         failed=1
     fi
     return "$failed"
@@ -1465,20 +1467,20 @@ validate_codex_sync() {
     if cmp -s "$tmp" "$ROOT_DIR/agents/codex/requirements.toml"; then
         printf '[OK] codex-hooks-generated:agents/codex/requirements.toml\n'
     else
-        printf '[FAIL] codex-hooks-generated:agents/codex/requirements.toml - run agentrun sync-codex\n'
+        printf '[FAIL] codex-hooks-generated:agents/codex/requirements.toml - agentrun sync-codex で直してください\n'
         failed=1
     fi
     rm -f "$tmp"
     if [ "$(readlink "$ROOT_DIR/agents/codex/AGENTS.md" 2>/dev/null || true)" = "../../common/AGENTS.md" ]; then
         printf '[OK] codex-agents-link:agents/codex/AGENTS.md\n'
     else
-        printf '[FAIL] codex-agents-link:agents/codex/AGENTS.md - run agentrun sync-codex\n'
+        printf '[FAIL] codex-agents-link:agents/codex/AGENTS.md - agentrun sync-codex で直してください\n'
         failed=1
     fi
     if [ "$(readlink "$ROOT_DIR/agents/codex/skills" 2>/dev/null || true)" = "../../common/skills" ]; then
         printf '[OK] codex-skills-link:agents/codex/skills\n'
     else
-        printf '[FAIL] codex-skills-link:agents/codex/skills - run agentrun sync-codex\n'
+        printf '[FAIL] codex-skills-link:agents/codex/skills - agentrun sync-codex で直してください\n'
         failed=1
     fi
     return "$failed"
@@ -1498,7 +1500,7 @@ command_skill_install() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --force) force=1; shift ;;
-            -*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+            -*) printf '知らないオプションです: %s\n' "$1" >&2; exit 2 ;;
             *)
                 if [ -z "$source_arg" ]; then
                     source_arg="$1"
@@ -1510,33 +1512,33 @@ command_skill_install() {
         esac
     done
     if [ -z "$source_arg" ]; then
-        printf 'usage: agentrun skill-install SOURCE_DIR|GIT_URL [SKILL_NAME...] [--force]\n' >&2
+        printf '使い方: agentrun skill-install SOURCE_DIR|GIT_URL [SKILL_NAME...] [--force]\n' >&2
         exit 2
     fi
 
     local source_dir tmp_clone=""
     if is_remote_skill_source "$source_arg"; then
         command -v git >/dev/null 2>&1 || {
-            printf '[FAIL] git is required to clone %s\n' "$source_arg" >&2
+            printf '[FAIL] %s を取得するには git が必要です\n' "$source_arg" >&2
             exit 1
         }
         tmp_clone="$(mktemp -d "${TMPDIR:-/tmp}/agentrun-skill-install.XXXXXX")"
         trap "rm -rf $(printf '%q' "$tmp_clone")" EXIT INT TERM
-        printf '[..] cloning %s\n' "$source_arg"
+        printf '[..] %s を取得しています\n' "$source_arg"
         if ! git clone --depth 1 --quiet "$source_arg" "$tmp_clone"; then
-            printf '[FAIL] git clone failed: %s\n' "$source_arg" >&2
+            printf '[FAIL] git clone に失敗しました: %s\n' "$source_arg" >&2
             exit 1
         fi
         source_dir="$tmp_clone"
     else
         source_dir="$(cd "$source_arg" 2>/dev/null && pwd)" || {
-            printf '[FAIL] source directory not found: %s\n' "$source_arg" >&2
+            printf '[FAIL] スキルのフォルダがありません: %s\n' "$source_arg" >&2
             exit 1
         }
     fi
     local skills_dir="$source_dir/skills"
     [ -d "$skills_dir" ] || {
-        printf '[FAIL] no skills/ directory under %s\n' "$source_dir" >&2
+        printf '[FAIL] %s の下に skills/ フォルダがありません\n' "$source_dir" >&2
         exit 1
     }
 
@@ -1553,24 +1555,24 @@ command_skill_install() {
     for name in "${candidates[@]}"; do
         local src="$skills_dir/$name"
         if [ ! -d "$src" ]; then
-            printf '[FAIL] skill not found: %s\n' "$name" >&2
+            printf '[FAIL] スキルが見つかりません: %s\n' "$name" >&2
             failed=1
             continue
         fi
         if [ ! -f "$src/SKILL.md" ]; then
-            printf '[SKIP] %s - no SKILL.md\n' "$name"
+            printf '[SKIP] %s - SKILL.md がありません\n' "$name"
             skipped=$((skipped + 1))
             continue
         fi
         local dest="$ROOT_DIR/common/skills/$name"
         if [ -e "$dest" ] && [ "$force" -ne 1 ]; then
-            printf '[SKIP] %s - already exists in common/skills (use --force to overwrite)\n' "$name"
+            printf '[SKIP] %s - common/skills に既にあります（上書きするには --force）\n' "$name"
             skipped=$((skipped + 1))
             continue
         fi
         rm -rf "$dest"
         cp -r "$src" "$dest"
-        printf '[OK] installed %s\n' "$name"
+        printf '[OK] %s を追加しました\n' "$name"
         installed=$((installed + 1))
     done
 
@@ -1584,7 +1586,7 @@ command_skill_install() {
         command_sync_codex
     fi
 
-    printf 'skill-install: installed=%d skipped=%d\n' "$installed" "$skipped"
+    printf 'skill-install: 追加 %d 件、スキップ %d 件\n' "$installed" "$skipped"
     [ "$failed" -eq 0 ]
 }
 
@@ -1608,6 +1610,7 @@ command_validate() {
         runtime/agentrun/history.py \
         runtime/agentrun/history_export.py \
         runtime/agentrun/history_index.py \
+        runtime/agentrun/active.py \
         runtime/agentrun/review_view.py \
         runtime/agentrun/review_hook.py \
         runtime/agentrun/overlap.py \
@@ -1620,6 +1623,8 @@ command_validate() {
         runtime/agentrun/review_snapshot.py \
         common/skills/cross-review/SKILL.md \
         runtime/agentrun/wizard.sh \
+        runtime/agentrun/wizard_tools.sh \
+        runtime/agentrun/run_menu.py \
         runtime/agentrun/wizard-state.py \
         runtime/agentrun/templates.py \
         runtime/agentrun/path-input.py \
@@ -1676,7 +1681,7 @@ command_validate() {
             fi
         done < <(find "$ROOT_DIR/agents" -name '*.json' -type f)
     else
-        printf '[FAIL] jq:not-found - JSON validation unavailable\n'
+        printf '[FAIL] jq:not-found - jq がないので JSON を検証できません\n'
         missing=1
     fi
     while IFS= read -r toml_file; do
@@ -1712,11 +1717,11 @@ check_fuse_support() {
     if [ -e "$FUSE_DEVICE" ]; then
         printf '[OK] fuse:%s - %s\n' "$FUSE_DEVICE" "$(ls -l "$FUSE_DEVICE" | awk '{print $1}')"
     else
-        printf '[WARN] fuse:%s - not present on this host; nested apptainer will fail on nodes without it\n' "$FUSE_DEVICE"
+        printf '[WARN] fuse:%s - このホストにありません。これがないノードでは、コンテナ内の apptainer が失敗します\n' "$FUSE_DEVICE"
         return 0
     fi
     if ! command -v apptainer >/dev/null 2>&1 || [ ! -e "$image" ]; then
-        printf '[WARN] fuse:image-libs - cannot verify without apptainer and base-system.sif on this host\n'
+        printf '[WARN] fuse:image-libs - このホストに apptainer と base-system.sif がないので確認できません\n'
         return 0
     fi
     local missing=""
@@ -1727,9 +1732,9 @@ check_fuse_support() {
         fi
     done
     if [ -n "$missing" ]; then
-        printf '[WARN] fuse:image-libs - missing in base-system.sif: %s (rebuild the image; see runtime/apptainer/base-system.def)\n' "$missing"
+        printf '[WARN] fuse:image-libs - base-system.sif にありません: %s（イメージを作り直してください。runtime/apptainer/base-system.def を参照）\n' "$missing"
     else
-        printf '[OK] fuse:image-libs - libfuse3 and liblzo2 present in base-system.sif\n'
+        printf '[OK] fuse:image-libs - base-system.sif に libfuse3 と liblzo2 があります\n'
     fi
 }
 
@@ -1737,18 +1742,18 @@ check_fuse_support() {
 check_secrets_file() {
     local file="${AGENTRUN_SECRETS_FILE:-$DEFAULT_SECRETS_FILE}" keys
     if [ ! -f "$file" ]; then
-        printf '[WARN] secrets:file - %s not found; no secrets will be passed (template: %s)\n' "$file" "$SECRETS_TEMPLATE"
+        printf '[WARN] secrets:file - %s がありません。秘密情報は渡しません（雛形: %s）\n' "$file" "$SECRETS_TEMPLATE"
         return 0
     fi
     if secrets_file_mode_ok "$file"; then
         printf '[OK] secrets:permissions - %s\n' "$(stat -c '%a' "$file")"
     else
-        printf '[WARN] secrets:permissions - %s is readable by group/others; run: chmod 600 %s\n' "$file" "$file"
+        printf '[WARN] secrets:permissions - %s をグループや他人が読めます。chmod 600 %s を実行してください\n' "$file" "$file"
     fi
     keys="$(secret_keys_csv "$file")"
-    printf '[OK] secrets:keys - %s\n' "${keys:-<none set>}"
+    printf '[OK] secrets:keys - %s\n' "${keys:-（設定なし）}"
     if path_is_within "$file" "$PWD"; then
-        printf '[WARN] secrets:visibility - %s is inside the current directory; running with the default --repo . exposes it via /workspace\n' "$file"
+        printf '[WARN] secrets:visibility - %s は今のディレクトリの中にあります。既定の --repo . で起動すると /workspace から見えてしまいます\n' "$file"
     fi
     return 0
 }
@@ -1756,22 +1761,22 @@ check_secrets_file() {
 check_gh_broker() {
     local file="$DEFAULT_GH_ENV_FILE"
     if [ ! -f "$file" ] || ! file_sets_key "$file" GH_TOKEN; then
-        printf '[WARN] gh-broker:disabled - GH_TOKEN not set in %s\n' "$file"
+        printf '[WARN] gh-broker:disabled - %s に GH_TOKEN がありません\n' "$file"
     elif secrets_file_mode_ok "$file"; then
         printf '[OK] gh-broker:token - %s (%s)\n' "$file" "$(stat -c '%a' "$file")"
     else
-        printf '[WARN] gh-broker:permissions - %s is readable by group/others; run: chmod 600 %s\n' "$file" "$file"
+        printf '[WARN] gh-broker:permissions - %s をグループや他人が読めます。chmod 600 %s を実行してください\n' "$file" "$file"
     fi
     if [ -f "$file" ] && file_sets_key "$file" GH_TOKEN; then
         if file_sets_key "$file" GH_BROKER_REPOS; then
             printf '[OK] gh-broker:repos - %s\n' "$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?GH_BROKER_REPOS=//p' "$file" | tail -n 1)"
         else
-            printf '[WARN] gh-broker:repos - GH_BROKER_REPOS not set; commands may target any repository the token can access\n'
+            printf '[WARN] gh-broker:repos - GH_BROKER_REPOS がありません。トークンで触れるすべてのリポジトリが操作の対象になります\n'
         fi
     fi
     local secrets="${AGENTRUN_SECRETS_FILE:-$DEFAULT_SECRETS_FILE}"
     if [ -f "$secrets" ] && file_sets_key "$secrets" GH_TOKEN; then
-        printf '[WARN] gh-broker:bypass - %s sets GH_TOKEN, which hands the token to the agent directly; move it to %s\n' "$secrets" "$file"
+        printf '[WARN] gh-broker:bypass - %s に GH_TOKEN があり、エージェントにトークンがそのまま渡ります。%s に移してください\n' "$secrets" "$file"
     fi
     return 0
 }
@@ -1790,7 +1795,7 @@ command_doctor() {
         if command -v "$cmd" >/dev/null 2>&1; then
             printf '[OK] command:%s - %s\n' "$cmd" "$(command -v "$cmd")"
         else
-            printf '[FAIL] command:%s - not found\n' "$cmd"
+            printf '[FAIL] command:%s - 見つかりません\n' "$cmd"
             failed=1
         fi
     done
@@ -1798,7 +1803,7 @@ command_doctor() {
         if command -v "$cmd" >/dev/null 2>&1; then
             printf '[OK] command:%s - %s\n' "$cmd" "$(command -v "$cmd")"
         else
-            printf '[WARN] command:%s - not found on this host; may be provided on compute nodes or inside the image\n' "$cmd"
+            printf '[WARN] command:%s - このホストにはありません（計算ノードかイメージの中にあれば問題ありません）\n' "$cmd"
         fi
     done
     if [ "$all" -eq 1 ]; then
@@ -1816,7 +1821,7 @@ command_doctor() {
     if [ -e "$ROOT_DIR/runtime/apptainer/base-system.sif" ]; then
         printf '[OK] image:base-system.sif\n'
     else
-        printf '[FAIL] image:base-system.sif - not built\n'
+        printf '[FAIL] image:base-system.sif - まだ作られていません\n'
         failed=1
     fi
     check_fuse_support || true
@@ -1832,7 +1837,7 @@ command_doctor() {
         if command -v nvidia-smi >/dev/null 2>&1; then
             printf '[OK] gpu:nvidia-smi - %s\n' "$(command -v nvidia-smi)"
         else
-            printf '[FAIL] gpu:nvidia-smi - not found\n'
+            printf '[FAIL] gpu:nvidia-smi - 見つかりません\n'
             failed=1
         fi
     fi
@@ -1845,7 +1850,7 @@ command_doctor() {
             printf '[WARN] git:worktree-dirty\n'
         fi
     else
-        printf '[FAIL] git:repo - not inside a git worktree\n'
+        printf '[FAIL] git:repo - git のリポジトリの中ではありません\n'
         failed=1
     fi
     return "$failed"
@@ -1913,7 +1918,7 @@ parse_run_args() {
             --agents) validate_agent_list "$2" || return $?; REQUESTED_AGENTS="$2"; shift 2 ;;
             --submit) SUBMIT=1; shift ;;
             --) shift; PROMPT="$*"; break ;;
-            --*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+            --*) printf '知らないオプションです: %s\n' "$1" >&2; exit 2 ;;
             *) PROMPT="${PROMPT:+$PROMPT }$1"; shift ;;
         esac
     done
@@ -1927,7 +1932,7 @@ parse_run_args() {
             ALLOW_FUSE=1
             continue
         fi
-        [ -e "$src" ] || { printf 'bind source does not exist: %s\n' "$src" >&2; exit 2; }
+        [ -e "$src" ] || { printf 'bind mount の元がありません: %s\n' "$src" >&2; exit 2; }
         # An explicit mount for an inherited destination replaces that mount.
         local destination="${bind#*:}" i replaced=0 previous
         if [ "$destination" = "$bind" ]; then destination="$(readlink -f "$src")"
@@ -1947,7 +1952,7 @@ parse_run_args() {
     # agentrun usually runs on a login node while the capsule runs on a compute
     # node, so a missing device here is a warning, never a hard failure.
     if fuse_enabled && [ ! -e "$FUSE_DEVICE" ]; then
-        printf 'warning: %s not present on this host; --allow-fuse only works if the compute node exposes it\n' \
+        printf '警告: このホストに %s がありません。--allow-fuse は、計算ノードにあるときだけ効きます\n' \
             "$FUSE_DEVICE" >&2
     fi
 }
@@ -1959,7 +1964,7 @@ resolve_secrets_file() {
         return 0
     fi
     if [ "$explicit" -eq 1 ]; then
-        [ -f "$SECRETS_FILE" ] || { printf 'secrets file does not exist: %s\n' "$SECRETS_FILE" >&2; exit 2; }
+        [ -f "$SECRETS_FILE" ] || { printf '秘密情報ファイルがありません: %s\n' "$SECRETS_FILE" >&2; exit 2; }
     elif [ -f "$DEFAULT_SECRETS_FILE" ]; then
         SECRETS_FILE="$DEFAULT_SECRETS_FILE"
     else
@@ -1968,17 +1973,17 @@ resolve_secrets_file() {
     fi
     SECRETS_FILE="$(cd "$(dirname "$SECRETS_FILE")" && pwd -P)/$(basename "$SECRETS_FILE")"
     if ! secrets_file_mode_ok "$SECRETS_FILE"; then
-        printf 'warning: %s is readable by group/others; run: chmod 600 %q\n' "$SECRETS_FILE" "$SECRETS_FILE" >&2
+        printf '警告: %s をグループや他人が読めます。chmod 600 %q を実行してください\n' "$SECRETS_FILE" "$SECRETS_FILE" >&2
     fi
     # The file itself must never be reachable through a mount.
     local bind
     if path_is_within "$SECRETS_FILE" "$REPO"; then
-        printf 'warning: secrets file %s is inside --repo %s and is visible to the agent via /workspace\n' \
+        printf '警告: 秘密情報ファイル %s は --repo %s の中にあり、/workspace からエージェントに見えます\n' \
             "$SECRETS_FILE" "$REPO" >&2
     fi
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
         if path_is_within "$SECRETS_FILE" "${bind%%:*}"; then
-            printf 'warning: secrets file %s is visible to the agent via --bind %s\n' "$SECRETS_FILE" "$bind" >&2
+            printf '警告: 秘密情報ファイル %s は --bind %s からエージェントに見えます\n' "$SECRETS_FILE" "$bind" >&2
         fi
     done
 }
@@ -1987,22 +1992,22 @@ resolve_gh_broker() {
     local disabled="${1:-${GH_BROKER_DISABLED:-0}}"
     GH_ENV_FILE=""
     if secrets_enabled && file_sets_key "$SECRETS_FILE" GH_TOKEN; then
-        printf 'warning: %s sets GH_TOKEN, which hands the token to the agent directly; move it to %s to use the GitHub CLI broker\n' \
+        printf '警告: %s に GH_TOKEN があり、エージェントにトークンがそのまま渡ります。GitHub 仲介を使うには %s に移してください\n' \
             "$SECRETS_FILE" "$DEFAULT_GH_ENV_FILE" >&2
     fi
     [ "$disabled" -eq 0 ] || return 0
     [ -f "$DEFAULT_GH_ENV_FILE" ] && file_sets_key "$DEFAULT_GH_ENV_FILE" GH_TOKEN || return 0
     GH_ENV_FILE="$(cd "$(dirname "$DEFAULT_GH_ENV_FILE")" && pwd -P)/$(basename "$DEFAULT_GH_ENV_FILE")"
     if ! secrets_file_mode_ok "$GH_ENV_FILE"; then
-        printf 'warning: %s is readable by group/others; run: chmod 600 %q\n' "$GH_ENV_FILE" "$GH_ENV_FILE" >&2
+        printf '警告: %s をグループや他人が読めます。chmod 600 %q を実行してください\n' "$GH_ENV_FILE" "$GH_ENV_FILE" >&2
     fi
     local bind
     if path_is_within "$GH_ENV_FILE" "$REPO"; then
-        printf 'warning: %s is inside --repo %s and is visible to the agent via /workspace\n' "$GH_ENV_FILE" "$REPO" >&2
+        printf '警告: %s は --repo %s の中にあり、/workspace からエージェントに見えます\n' "$GH_ENV_FILE" "$REPO" >&2
     fi
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do
         if path_is_within "$GH_ENV_FILE" "${bind%%:*}"; then
-            printf 'warning: %s is visible to the agent via --bind %s\n' "$GH_ENV_FILE" "$bind" >&2
+            printf '警告: %s は --bind %s からエージェントに見えます\n' "$GH_ENV_FILE" "$bind" >&2
         fi
     done
 }
@@ -2012,10 +2017,10 @@ command_dry_run() {
     parse_run_args "$@"
     require_overlap_launch "$mode" || return $?
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
-        [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
+        [ -z "$PROMPT" ] || printf '警告: 対話の assist では PROMPT を使いません\n' >&2
         PROMPT=""
     else
-        [ -n "$PROMPT" ] || { printf 'missing prompt\n' >&2; exit 2; }
+        [ -n "$PROMPT" ] || { printf '作業の指示（PROMPT）を指定してください\n' >&2; exit 2; }
     fi
     local id run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
@@ -2140,7 +2145,7 @@ run_interactive_session() {
                 case "$history_rc" in
                     124|137) timeout --kill-after=2s 5s python3 "$ROOT_DIR/runtime/agentrun/history.py" failure "$run_dir" "Conversation export timed out (exit=$history_rc); retry with agentrun history" 200>&- || true ;;
                 esac
-                printf 'warning: conversation export failed (exit=%s); native history is retained; see %s\n' "$history_rc" "$run_dir/live/history_export.log" >&2
+                printf '警告: 会話履歴の保存に失敗しました（exit=%s）。元の履歴は残っています。詳細: %s\n' "$history_rc" "$run_dir/live/history_export.log" >&2
             fi
             agent_started=0
         fi
@@ -2175,7 +2180,7 @@ run_interactive_session() {
     trap '_stop_interactive_session 130' INT
     trap '_stop_interactive_session 143' TERM
     if ! { exec {terminal_fd}<>/dev/tty; } 2>/dev/null; then
-        printf 'interactive assist requires a controlling terminal; use --submit for batch runs\n' >&2
+        printf '対話の assist には端末が必要です。バッチで動かすときは --submit を付けてください\n' >&2
         rc=1
         exit 1
     fi
@@ -2183,10 +2188,10 @@ run_interactive_session() {
     copy_auth_credentials "$run_dir" "$AGENT"
     exec 200>"$repo_abs/.agentrun.lock"
     if ! flock -n 200; then
-        printf 'another agentrun is already active on this repo (%s). Refusing to start to avoid concurrent git operations.\n' "$repo_abs" >&2
+        printf 'このリポジトリ（%s）では既に agentrun が動いています。git の操作がぶつからないよう、起動しません。\n' "$repo_abs" >&2
         rc=1
     else
-        printf 'launching interactive session via srun %s\n' "$*"
+        printf '対話セッションを起動します: srun %s\n' "$*"
         session_started=1
         agent_started=1
         # ロックを持つlauncher/監視processと、FDを継承しないsrunを分ける。
@@ -2207,15 +2212,15 @@ command_prepare() {
     ensure_default_gh_env_file
     parse_run_args "$@"
     if [ -n "$TEMPLATE_MODE" ] && [ "$TEMPLATE_MODE" != "$mode" ]; then
-        printf 'warning: template %s was saved for %s; launching it as %s\n' "$TEMPLATE_NAME" "$TEMPLATE_MODE" "$mode" >&2
+        printf '警告: テンプレート %s は %s 用に保存したものですが、%s として起動します\n' "$TEMPLATE_NAME" "$TEMPLATE_MODE" "$mode" >&2
     fi
     require_overlap_launch "$mode" || return $?
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
-        [ -z "$PROMPT" ] || printf 'warning: PROMPT is ignored in interactive assist mode\n' >&2
+        [ -z "$PROMPT" ] || printf '警告: 対話の assist では PROMPT を使いません\n' >&2
         PROMPT=""
-        [ -t 0 ] || { printf 'interactive assist requires a terminal; use --submit for batch runs\n' >&2; return 1; }
+        [ -t 0 ] || { printf '対話の assist には端末が必要です。バッチで動かすときは --submit を付けてください\n' >&2; return 1; }
     else
-        [ -n "$PROMPT" ] || { printf 'missing prompt\n' >&2; exit 2; }
+        [ -n "$PROMPT" ] || { printf '作業の指示（PROMPT）を指定してください\n' >&2; exit 2; }
     fi
     local run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
@@ -2229,7 +2234,7 @@ command_prepare() {
         launch="interactive"
     fi
     write_plan "$mode" "$AGENT" "$REPO" "$GOAL" "$GPUS" "$TIME_LIMIT" "$PROMPT" "$run_dir" "$PARTITION" "$launch" || return $?
-    printf 'prepared run: %s\n' "$run_dir"
+    printf '起動の準備をしました: %s\n' "$run_dir"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
         local repo_abs
         repo_abs="$(cd "$REPO" && pwd)"
@@ -2238,12 +2243,12 @@ command_prepare() {
         run_interactive_session "$run_dir" "$repo_abs" "${SRUN_ARGS[@]}"
         return $?
     fi
-    printf 'submit script: %s\n' "$run_dir/submit.sbatch"
+    printf '投入用スクリプト: %s\n' "$run_dir/submit.sbatch"
     if [ "$SUBMIT" -eq 1 ]; then
         copy_auth_credentials "$run_dir" "$AGENT"
         history_tool submit "$run_dir"
     elif [ "$AGENT" = "claude" ] || [ "$AGENT" = "codex" ]; then
-        printf 'auth credentials were not staged; rerun with --submit to copy them before sbatch\n'
+        printf '認証情報はまだ配置していません。--submit を付けて実行すると、sbatch の前に配置します\n'
     fi
 }
 
@@ -2257,7 +2262,7 @@ command_smoke_test() {
             --time) time_limit="$2"; shift 2 ;;
             --mem) mem="$2"; shift 2 ;;
             --submit) submit=1; shift ;;
-            *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+            *) printf '知らないオプションです: %s\n' "$1" >&2; exit 2 ;;
         esac
     done
     local id run_dir
@@ -2308,8 +2313,8 @@ printf '{"status":"success","agent":"%s","mode":"smoke-test","job_id":"%s"}\n' "
 printf '0\n' > "\$run_dir/live/exit_code.txt"
 EOF
     chmod +x "$run_dir/submit.sbatch"
-    printf 'prepared smoke-test run: %s\n' "$run_dir"
-    printf 'submit script: %s\n' "$run_dir/submit.sbatch"
+    printf 'smoke-test の準備をしました: %s\n' "$run_dir"
+    printf '投入用スクリプト: %s\n' "$run_dir/submit.sbatch"
     if [ "$submit" -eq 1 ]; then
         sbatch --nodes=1 --ntasks=1 "$run_dir/submit.sbatch"
     fi
@@ -2318,11 +2323,11 @@ EOF
 command_init_goal() {
     local dest="goal.yaml"
     if [ -e "$dest" ]; then
-        printf 'error: %s already exists\n' "$dest" >&2
+        printf 'エラー: %s は既にあります\n' "$dest" >&2
         exit 2
     fi
     cp "$ROOT_DIR/templates/goal.yaml" "$dest"
-    printf 'created %s\n' "$dest"
+    printf '%s を作りました\n' "$dest"
 }
 
 command_status() {
@@ -2383,18 +2388,18 @@ load_resume_settings() {
 
 resume_summary() {
     local source="$1" bind key
-    printf '\n再開する設定\n  元の実行: %q\n  agent / mode: %s / %s\n  repo: %q\n' "$source" "$AGENT" "$mode" "$REPO" >&2
+    printf '\n再開する設定\n  元の実行: %q\n  エージェント / モード: %s / %s\n  作業リポジトリ: %q\n' "$source" "$AGENT" "$mode" "$REPO" >&2
     if [ -n "$OVERLAP_JOB" ]; then
         printf '  overlap: %s\n' "$OVERLAP_SUMMARY" >&2
     else
-        printf '  mem / cpus / time: %q / %q / %q\n  partition: %q / GPU: %q\n' \
-            "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}" "$TIME_LIMIT" "${PARTITION:-<cluster default>}" "$GPUS" >&2
+        printf '  メモリ / CPU / 制限時間: %q / %q / %q\n  パーティション: %q / GPU: %q\n' \
+            "${MEM:-$(profile_mem "$mode")}" "${CPUS:-$(profile_cpus "$mode")}" "$TIME_LIMIT" "${PARTITION:-（クラスタの既定）}" "$GPUS" >&2
     fi
-    printf '  FUSE: %s\n  secrets file: %q\n  GitHub broker: %q\n' "$ALLOW_FUSE" "${SECRETS_FILE:-<none>}" "${GH_ENV_FILE:-<disabled>}" >&2
-    printf '  extra bind mounts:\n' >&2
+    printf '  FUSE: %s\n  秘密情報ファイル: %s\n  GitHub 仲介: %s\n' "$([ "$ALLOW_FUSE" -eq 1 ] && printf 渡す || printf 渡さない)" "${SECRETS_FILE:-（渡さない）}" "${GH_ENV_FILE:-（使わない）}" >&2
+    printf '  追加の bind mount:\n' >&2
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do printf '    %q\n' "$bind" >&2; done
-    [ "${#EXTRA_BINDS[@]}" -ne 0 ] || printf '    <none>\n' >&2
-    printf '  goal: %q\n  reviewers: %q / agents: %q\n  target diff/report: %q / %q\n' "$GOAL" "$REVIEWERS" "$REQUESTED_AGENTS" "$TARGET_DIFF" "$TARGET_REPORT" >&2
+    [ "${#EXTRA_BINDS[@]}" -ne 0 ] || printf '    なし\n' >&2
+    printf '  目標ファイル: %q\n  レビュー担当: %q / multi-review のエージェント: %q\n  レビューする差分 / レポート: %q / %q\n' "$GOAL" "$REVIEWERS" "$REQUESTED_AGENTS" "$TARGET_DIFF" "$TARGET_REPORT" >&2
     if [ "${RESUME_FRESH_CONFIG:-0}" -eq 1 ]; then printf '  エージェント設定: 現在のリポジトリから生成\n' >&2
     else settings_tool describe "$source" >&2 || return $?; fi
     for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ANTIGRAVITY_MODEL AGENT_REVIEW_ANTIGRAVITY_EFFORT \
@@ -2422,11 +2427,11 @@ command_resume() {
             --preview) preview=1; shift ;;
             --fresh-config) RESUME_FRESH_CONFIG=1; shift ;;
             --time|--mem|--cpus|--bind|--partition|--gpus|--repo|--goal|--secrets-file|--reviewers|--agents|--target-diff|--target-report|--overlap)
-                [ "$#" -ge 2 ] || { printf '%s requires a value\n' "$1" >&2; return 2; }
+                [ "$#" -ge 2 ] || { printf '%s には値が必要です\n' "$1" >&2; return 2; }
                 overrides+=("$1" "$2"); shift 2 ;;
             --no-binds|--allow-fuse|--no-allow-fuse|--no-secrets|--no-gh-broker|--gh-broker)
                 overrides+=("$1"); shift ;;
-            --*) printf 'unknown resume option: %s\n' "$1" >&2; return 2 ;;
+            --*) printf 'resume に知らないオプションです: %s\n' "$1" >&2; return 2 ;;
             *) [ -z "$target" ] || { printf '指定できる run は1件です\n' >&2; return 2; }
                 target="$1"; shift ;;
         esac
@@ -2491,7 +2496,7 @@ command_verify_run() {
     [ -L "$run_dir" ] && run_dir="$(readlink -f "$run_dir")"
     local failed=0
     if [ ! -d "$run_dir" ]; then
-        printf '[FAIL] run directory: %s\n' "$run_dir"
+        printf '[FAIL] run directory: %s（見つかりません）\n' "$run_dir"
         return 1
     fi
     printf '[OK] run directory: %s\n' "$run_dir"
@@ -2566,19 +2571,19 @@ command_verify_run() {
             esac
         fi
     else
-        printf '[FAIL] jq:not-found - JSON/JSONL verification unavailable\n'
+        printf '[FAIL] jq:not-found - jq がないので JSON / JSONL を検証できません\n'
         failed=1
     fi
     if [ -e "$run_dir/live/exit_code.txt" ]; then
         printf '[OK] exit_code\n'
     else
-        printf '[FAIL] exit_code missing\n'
+        printf '[FAIL] exit_code がありません\n'
         failed=1
     fi
     if [ -e "$run_dir/live/slurm_job_id.txt" ]; then
         printf '[OK] slurm_job_id\n'
     else
-        printf '[FAIL] slurm_job_id missing\n'
+        printf '[FAIL] slurm_job_id がありません\n'
         failed=1
     fi
     return "$failed"
@@ -2587,7 +2592,7 @@ command_verify_run() {
 _auth_import_file() {
     local host_path="$1" store_path="$2"
     if [ ! -f "$host_path" ]; then
-        printf '[SKIP] %s - not found on host\n' "$host_path"
+        printf '[SKIP] %s - ホストにありません\n' "$host_path"
         return 0
     fi
     mkdir -p "$(dirname "$store_path")"
@@ -2609,11 +2614,11 @@ _auth_login_agent() {
             ;;
         antigravity)
             # agy has no login subcommand: sign in from its first screen, then /exit.
-            printf 'Sign in when agy starts, then type /exit to return.\n'
+            printf 'agy が起動したらサインインし、終わったら /exit で戻ってください。\n'
             cmd="agy"
             ;;
         *)
-            printf '[FAIL] unknown agent: %s\n' "$agent" >&2
+            printf '[FAIL] 知らないエージェントです: %s\n' "$agent" >&2
             return 1
             ;;
     esac
@@ -2621,11 +2626,11 @@ _auth_login_agent() {
     local cli
     cli="$(printf '%s' "$cmd" | awk '{print $1}')"
     if ! command -v "$cli" >/dev/null 2>&1; then
-        printf '[FAIL] CLI not found on host: %s\n' "$cli" >&2
+        printf '[FAIL] ホストに CLI がありません: %s\n' "$cli" >&2
         return 1
     fi
     eval "$cmd"
-    printf '\n[auth import] syncing to store\n'
+    printf '\n[auth import] 保管場所に取り込みます\n'
     _auth_import_agent "$agent"
 }
 
@@ -2648,7 +2653,7 @@ _auth_import_agent() {
                 "$store_root/.gemini/antigravity-cli/installation_id"
             ;;
         *)
-            printf '[FAIL] unknown agent: %s\n' "$agent" >&2
+            printf '[FAIL] 知らないエージェントです: %s\n' "$agent" >&2
             return 1
             ;;
     esac
@@ -2684,7 +2689,7 @@ _auth_status_agent() {
 
 command_auth() {
     local subcmd="${1:-}"
-    [ -n "$subcmd" ] || { printf 'usage: agentrun auth login|import|status|reset\n' >&2; exit 2; }
+    [ -n "$subcmd" ] || { printf '使い方: agentrun auth login|import|status|reset\n' >&2; exit 2; }
     shift || true
     case "$subcmd" in
         login)
@@ -2696,7 +2701,7 @@ command_auth() {
                     --all) do_all=1; shift ;;
                     --run) [ -n "${2:-}" ] || { printf -- '--run requires a run directory\n' >&2; exit 2; }
                         AUTH_SYNC_RUNS+=("$2"); shift 2 ;;
-                    *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+                    *) printf '知らないオプションです: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ "$do_all" -eq 1 ]; then
@@ -2705,7 +2710,7 @@ command_auth() {
             elif [ -n "$agent_arg" ]; then
                 _auth_login_agent "$agent_arg" && auth_sync_running "$agent_arg"
             else
-                printf 'usage: agentrun auth login --agent NAME|--all [--run RUN]\n' >&2; exit 2
+                printf '使い方: agentrun auth login --agent NAME|--all [--run RUN]\n' >&2; exit 2
             fi
             ;;
         import)
@@ -2717,7 +2722,7 @@ command_auth() {
                     --all) do_all=1; shift ;;
                     --run) [ -n "${2:-}" ] || { printf -- '--run requires a run directory\n' >&2; exit 2; }
                         AUTH_SYNC_RUNS+=("$2"); shift 2 ;;
-                    *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+                    *) printf '知らないオプションです: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ "$do_all" -eq 1 ]; then
@@ -2726,7 +2731,7 @@ command_auth() {
             elif [ -n "$agent_arg" ]; then
                 _auth_import_agent "$agent_arg" && auth_sync_running "$agent_arg"
             else
-                printf 'usage: agentrun auth import --agent NAME|--all [--run RUN]\n' >&2; exit 2
+                printf '使い方: agentrun auth import --agent NAME|--all [--run RUN]\n' >&2; exit 2
             fi
             ;;
         status)
@@ -2734,7 +2739,7 @@ command_auth() {
             while [ "$#" -gt 0 ]; do
                 case "$1" in
                     --agent) require_auth_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
-                    *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+                    *) printf '知らないオプションです: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
             if [ -n "$agent_arg" ]; then
@@ -2748,21 +2753,21 @@ command_auth() {
             while [ "$#" -gt 0 ]; do
                 case "$1" in
                     --agent) require_auth_agent "$2" || return $?; agent_arg="$2"; shift 2 ;;
-                    *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+                    *) printf '知らないオプションです: %s\n' "$1" >&2; exit 2 ;;
                 esac
             done
-            [ -n "$agent_arg" ] || { printf 'usage: agentrun auth reset --agent NAME\n' >&2; exit 2; }
+            [ -n "$agent_arg" ] || { printf '使い方: agentrun auth reset --agent NAME\n' >&2; exit 2; }
             local store_dir
             store_dir="$(auth_store_root)/$agent_arg"
             if [ -d "$store_dir" ]; then
                 rm -rf "$store_dir"
-                printf '[OK] auth store removed: %s\n' "$store_dir"
+                printf '[OK] 保存した認証を削除しました: %s\n' "$store_dir"
             else
-                printf '[OK] auth store not found (nothing to reset): %s\n' "$store_dir"
+                printf '[OK] 保存した認証はありません（削除するものはありません）: %s\n' "$store_dir"
             fi
             ;;
         *)
-            printf 'unknown auth subcommand: %s\n' "$subcmd" >&2; exit 2
+            printf 'auth に知らないサブコマンドです: %s\n' "$subcmd" >&2; exit 2
             ;;
     esac
 }
@@ -2785,6 +2790,7 @@ main() {
         assist|experiment|campaign|review|multi-review) command_prepare "$command" "$@" ;;
         resume) command_resume "$@" ;;
         history) command_history "$@" ;;
+        ps) python3 "$ROOT_DIR/runtime/agentrun/active.py" "$@" ;;
         reviews) command_reviews "$@" ;;
         wizard) command_wizard "$@" ;;
         template|templates) command_template "$@" ;;
@@ -2799,7 +2805,7 @@ main() {
         verify-run) command_verify_run "$@" ;;
         auth) command_auth "$@" ;;
         -h|--help|help) usage ;;
-        *) printf 'unknown command: %s\n' "$command" >&2; usage; exit 2 ;;
+        *) printf '知らないコマンドです: %s\n' "$command" >&2; usage; exit 2 ;;
     esac
 }
 

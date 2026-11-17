@@ -33,7 +33,7 @@ with Path(os.environ["TEST_GUM_LOG"]).open("a") as stream:
 if args[0] == "choose":
     header = args[args.index("--header") + 1]
     choices = args[args.index("--header") + 2:]
-    print("resume" if header == "Select run mode" else choices[0])
+    print(next(c for c in choices if c.startswith("resume")) if header.startswith("実行モード") else choices[0])
 elif args[0] == "input":
     print(args[args.index("--value") + 1])
 elif args[0] == "confirm":
@@ -87,7 +87,7 @@ class WizardTests(unittest.TestCase):
             # "> " repeatedly or hide it when a long default scrolls sideways.
             prompts = re.compile(
                 rb'\x1b\[1;36m[^\r\n]*:cancel=[^\r\n]*\x1b\[0m\r?\n'
-                rb'|#\? \(Enter=1, :back, :cancel\) |\(:back, :cancel\): '
+                + '|番号を入力 \\(Enter=1, :back=戻る, :cancel=キャンセル\\) |\\(:back=戻る, :cancel=キャンセル\\): '.encode()
             )
             output = bytearray()
             deadline = time.monotonic() + 10
@@ -158,8 +158,8 @@ class WizardTests(unittest.TestCase):
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("bind を1つ除く（一覧から選択）", output)
-        self.assertIn(f"Bind mounts: {second}:/second:ro\x1b", output)
-        self.assertIn("Bind mounts: none. Add a bind mount?", output)
+        self.assertIn(f"追加の bind mount: {second}:/second:ro\x1b", output)
+        self.assertIn("追加の bind mount: なし。追加しますか？", output)
         generated = (self.parent / "latest/apptainer_exec.sh").read_text()
         self.assertNotIn("/first:ro", generated)
         self.assertNotIn("/second:ro", generated)
@@ -220,7 +220,7 @@ class WizardTests(unittest.TestCase):
         before = (self.original / "session.json").read_text()
         rc, output = self.execute(self.args, "6\n1\nn\n\n\n\nn\nn\n")
         self.assertEqual(rc, 0, output)
-        self.assertIn("aborted", output)
+        self.assertIn("起動を取りやめました", output)
         self.assertFalse((self.parent / "latest").exists())
         self.assertEqual((self.original / "session.json").read_text(), before)
         self.assertEqual(len(list(self.parent.glob("*_resume-*"))), 0)
@@ -237,7 +237,7 @@ class WizardTests(unittest.TestCase):
     def test_new_assist_flow_still_dispatches_normally(self):
         # 最後の起動処理だけを stub にして既存の新規 run 導線を検証する。
         script = 'source "$1"; command_prepare() { printf "PREPARE_MODE=%s\\n" "$1"; }; command_wizard'
-        rc, output = self.execute([], "1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n",
+        rc, output = self.execute([], "1\n1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n",
                                   command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("PREPARE_MODE=assist", output)
@@ -253,7 +253,7 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(rc, 0, output)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         menus = [call for call in calls if call[0] == "choose"]
-        self.assertIn("resume", menus[0])
+        self.assertTrue(any(item.startswith("resume") for item in menus[0]), menus[0])
         self.assertIn("wizard-run  codex", menus[1][3])
         self.assertIn("assistant: wizard の最後の発言", menus[1][3])
         self.assertNotIn("old-run", str(menus))
@@ -279,12 +279,12 @@ class WizardTests(unittest.TestCase):
         state_file.write_text(json.dumps({"cwd": str(self.root), "agent": "unsupported",
                                           "agents": "claude,unsupported", "reviewers": "unsupported"}))
         script = 'source "$1"; command_prepare() { printf "SELECTED=%s AGENTS=%s REVIEWERS=%s\\n" "$AGENT" "$REQUESTED_AGENTS" "$REVIEWERS"; }; command_wizard'
-        answers = "1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n"
+        answers = "1\n1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n"
         rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("SELECTED=claude AGENTS= REVIEWERS=", output)
         self.assertNotIn("unsupported", output)
-        menu = output.split("Select agent", 1)[1].split("Select launch style", 1)[0]
+        menu = output.split("エージェントを選んでください", 1)[1].split("起動方法を選んでください", 1)[0]
         self.assertIn("1) claude", menu)
         self.assertIn("2) codex", menu)
         self.assertIn("3) ← 戻る", menu)
@@ -317,7 +317,7 @@ class WizardTests(unittest.TestCase):
         gum = self.bin / "gum"
         gum.write_text(MOCK_GUM)
         gum.chmod(0o755)
-        env = dict(self.env, WIZARD_UI="gum", TEST_GUM_LOG=str(self.root / "gum.jsonl"), TEST_GUM_CANCEL_HEADER="CPU cores")
+        env = dict(self.env, WIZARD_UI="gum", TEST_GUM_LOG=str(self.root / "gum.jsonl"), TEST_GUM_CANCEL_HEADER="CPU コア数")
         rc, output = self.execute(self.args, env=env)
         self.assertEqual(rc, 130, output)
         self.assertFalse((self.parent / "latest").exists())
@@ -340,13 +340,13 @@ class WizardTests(unittest.TestCase):
         rc, output = self.execute(["wizard"], env=env)
         self.assertEqual(rc, 0, output)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
-        mode_menu = next(call for call in calls if call[:3] == ["choose", "--header", "Select run mode"])
-        self.assertEqual(mode_menu[3], "resume")
-        fields = {call[call.index("--header") + 1].split(" (")[0]: call[call.index("--value") + 1]
+        mode_menu = next(call for call in calls if call[:2] == ["choose", "--header"] and call[2].startswith("実行モード"))
+        self.assertTrue(mode_menu[3].startswith("resume"))
+        fields = {call[call.index("--header") + 1].split("（")[0].split(" (")[0]: call[call.index("--value") + 1]
                   for call in calls if call[0] == "input"}
-        self.assertEqual(fields["Memory"], "12000M")
-        self.assertEqual(fields["CPU cores"], "2")
-        self.assertEqual(fields["Walltime"], "02:00:00")
+        self.assertEqual(fields["メモリ"], "12000M")
+        self.assertEqual(fields["CPU コア数"], "2")
+        self.assertEqual(fields["制限時間"], "02:00:00")
         self.assertIn("/extra:ro", (self.parent / "latest/apptainer_exec.sh").read_text())
 
     def test_displayed_command_preserves_shell_specials_and_settings(self):
@@ -391,15 +391,15 @@ command_wizard "$@"
         self.assertEqual((saved["mode"], saved["agent"]), ("assist", "codex"))
         self.assertIn(f"{bind}:/data:ro", saved["args"])
         (Path(self.env["HOME"]) / ".agentrun/wizard-last").unlink()
-        # Mode → template (2 = gpu-a after "do not use") → keep it unchanged → launch.
-        rc, output = self.execute([], "1\n2\n\ny\n", command=["bash", "-c", script, "bash", str(LAUNCHER)])
+        # First menu (launch) → mode → template (2 = gpu-a after "do not use") → keep it unchanged → launch.
+        rc, output = self.execute([], "1\n1\n2\n\ny\n", command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("を変更しますか？", output)
-        self.assertIn("template: gpu-a（変更なし）", output)
+        self.assertIn("テンプレート: gpu-a（変更なし）", output)
         launched = next(line for line in output.splitlines() if line.startswith("PREPARE "))
         self.assertIn("--agent codex", launched)
         self.assertIn(f"{bind}:/data:ro", launched)
-        self.assertNotIn("Select agent", output)
+        self.assertNotIn("エージェントを選んでください", output)
 
     def test_template_management_registers_a_run_and_deletes_it(self):
         bind = self.root / "run data"

@@ -379,7 +379,7 @@ class Reviewer:
                             temporary.unlink(missing_ok=True)
                 self.credential_baseline[relative] = raw
             except (OSError, ValueError) as error:
-                print("Reviewer credential update failed: " + str(error), file=sys.stderr)
+                print("監査担当の認証の更新に失敗しました: " + str(error), file=sys.stderr)
 
     def sync_credentials(self):
         # Publish only refreshed credentials through the existing run-HOME sync.
@@ -408,7 +408,7 @@ class Reviewer:
                     finally:
                         temporary.unlink(missing_ok=True)
             except (OSError, ValueError) as error:
-                print("Reviewer credential synchronization failed: " + str(error), file=sys.stderr)
+                print("監査担当の認証の同期に失敗しました: " + str(error), file=sys.stderr)
 
     def close(self):
         stop(self.process)

@@ -17,7 +17,7 @@ class RunDirectoryTests(unittest.TestCase):
                                     cwd=root, env=dict(os.environ, HOME=str(root), AGENTRUN_STATE_DIR=str(root / 'state')),
                                     capture_output=True, text=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
-            self.assertNotIn('prepared run:', result.stdout)
+            self.assertNotIn('起動の準備をしました', result.stdout)
             self.assertEqual((root / '.agent-runs').read_text(), 'existing non-directory')
 
     def test_same_timestamp_keeps_prepared_run_contents(self):

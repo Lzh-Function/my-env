@@ -13,7 +13,7 @@ WIZARD_OVERLAP_LOADED=0 WIZARD_OVERLAP_INFO=''
 
 wizard_abort() {
     trap - INT TERM
-    printf '\nwizard cancelled, nothing was launched\n' >&2
+    printf '\nwizard をキャンセルしました。何も起動していません\n' >&2
     exit 130
 }
 
@@ -48,7 +48,16 @@ wizard_select() {
             local -a menu_args=()
             local opt
             for opt in "${opts[@]}"; do menu_args+=("$opt" ""); done
-            choice="$("$DIALOG_BIN" --title 'agentrun wizard' --menu "$prompt" 20 90 12 "${menu_args[@]}" 3>&1 1>&2 2>&3)" || return 130
+            # Size the box to a multi-line heading (e.g. a run summary) and the options, within the screen.
+            local lines height lists
+            lines="$(printf '%s\n' "$prompt" | wc -l)"
+            lists="${#opts[@]}"
+            height=$((lines + lists + 7))
+            [ "$height" -le "$(( ${LINES:-$(tput lines 2>/dev/null || echo 24)} - 1 ))" ] || height=$(( ${LINES:-$(tput lines 2>/dev/null || echo 24)} - 1 ))
+            [ "$height" -ge 12 ] || height=12
+            [ "$lists" -le $((height - lines - 7)) ] || lists=$((height - lines - 7))
+            [ "$lists" -ge 3 ] || lists=3
+            choice="$("$DIALOG_BIN" --title 'agentrun wizard' --menu "$prompt" "$height" 90 "$lists" "${menu_args[@]}" 3>&1 1>&2 2>&3)" || return 130
             ;;
         *)
             printf '\033[1;36m%s\033[0m\n' "$prompt" >&2
@@ -56,7 +65,7 @@ wizard_select() {
             local n
             for n in "${!opts[@]}"; do printf '%d) %s\n' "$((n + 1))" "${opts[n]}" >&2; done
             while :; do
-                read -e -r -p '#? (Enter=1, :back, :cancel) ' choice || return 130
+                read -e -r -p '番号を入力 (Enter=1, :back=戻る, :cancel=キャンセル) ' choice || return 130
                 [ -n "$choice" ] || choice=1
                 wizard_navigation "$choice" || return $?
                 if [[ "$choice" =~ ^[0-9]+$ ]] && [ "${#choice}" -lt 5 ] && [ "$((10#$choice))" -ge 1 ] && [ "$((10#$choice))" -le "${#opts[@]}" ]; then
@@ -105,15 +114,17 @@ wizard_confirm() {
         local suffix='[y/N]'
         [ "$default_yes" -eq 0 ] || suffix='[Y/n]'
         wizard_readline_keys
-        read -e -r -p "$prompt $suffix (:back, :cancel): " choice || return 130
+        # A long or multi-line prompt inside read -p is cut by Readline, so print it first.
+        printf '\033[1;36m%s\033[0m\n' "$prompt" >&2
+        read -e -r -p "$suffix (:back=戻る, :cancel=キャンセル): " choice || return 130
         wizard_navigation "$choice" || return $?
         if [ -z "$choice" ]; then [ "$default_yes" -eq 1 ]; return; fi
         case "$choice" in y|Y|yes|Yes|YES) return 0 ;; *) return 1 ;; esac
     fi
-    local -a opts=(Yes No)
-    [ "$default_yes" -eq 1 ] || opts=(No Yes)
+    local -a opts=(はい いいえ)
+    [ "$default_yes" -eq 1 ] || opts=(いいえ はい)
     choice="$(wizard_select "$prompt" "${opts[@]}")" || return $?
-    [ "$choice" = Yes ]
+    [ "$choice" = はい ]
 }
 
 wizard_ask() {
@@ -133,35 +144,53 @@ wizard_expand_tilde() {
     case "$1" in '~') printf '%s\n' "$HOME" ;; '~/'*) printf '%s/%s\n' "$HOME" "${1:2}" ;; *) printf '%s\n' "$1" ;; esac
 }
 
+wizard_mode_label() {
+    case "$1" in
+        assist) printf 'assist（対話で作業する。バッチ投入もできます）' ;;
+        experiment) printf 'experiment（目標に沿って実験し、次の作業を提案する）' ;;
+        campaign) printf 'campaign（長時間の継続実験。学習ジョブの提案も書く）' ;;
+        review) printf 'review（差分やレポートをレビューする）' ;;
+        multi-review) printf 'multi-review（複数の観点のレビューを整理する）' ;;
+        resume) printf 'resume（保存した会話を再開する）' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+wizard_valid_agents() {
+    local list="${1// /}"
+    if validate_agent_list "$list" >/dev/null 2>&1; then printf '%s\n' "$list"
+    else printf 'エージェントは codex と claude から選び、カンマで区切って入力してください: %s\n' "$1"; return 1; fi
+}
+
 wizard_valid_repo() {
     local path
     path="$(wizard_expand_tilde "${1:-.}")"
-    [ -d "$path" ] || { printf 'repository path is not a directory: %s\n' "$1"; return 1; }
+    [ -d "$path" ] || { printf '作業リポジトリのパスがディレクトリではありません: %s\n' "$1"; return 1; }
     path="$(readlink -f "$path")"
     if [ -n "${OVERLAP_JOB:-}" ] && repo_lock_busy "$path"; then
-        printf 'agentrun is already active on %s; with overlap, choose another repository or a git worktree\n' "$path"
+        printf '%s では既に agentrun が動いています。overlap するときは、別のリポジトリか git worktree を選んでください\n' "$path"
         return 1
     fi
     printf '%s\n' "$path"
 }
 
 wizard_valid_gpus() {
-    [[ "$1" =~ ^[0-9]+$ ]] && [ "${#1}" -lt 9 ] || { printf 'GPU count must be a nonnegative integer\n'; return 1; }
+    [[ "$1" =~ ^[0-9]+$ ]] && [ "${#1}" -lt 9 ] || { printf 'GPU 数は 0 以上の整数で入力してください\n'; return 1; }
     printf '%s\n' "$((10#$1))"
 }
 
 wizard_valid_mem() {
-    [[ "$1" =~ ^[1-9][0-9]*[KMGTkmgt]?$ ]] || { printf 'memory must look like 16000M or 64G: %s\n' "$1"; return 1; }
+    [[ "$1" =~ ^[1-9][0-9]*[KMGTkmgt]?$ ]] || { printf 'メモリは 16000M や 64G の形で入力してください: %s\n' "$1"; return 1; }
     printf '%s\n' "$1"
 }
 
 wizard_valid_cpus() {
-    [[ "$1" =~ ^[0-9]+$ ]] && [ "${#1}" -lt 9 ] && [ "$((10#$1))" -gt 0 ] || { printf 'CPU cores must be a positive integer: %s\n' "$1"; return 1; }
+    [[ "$1" =~ ^[0-9]+$ ]] && [ "${#1}" -lt 9 ] && [ "$((10#$1))" -gt 0 ] || { printf 'CPU コア数は 1 以上の整数で入力してください: %s\n' "$1"; return 1; }
     printf '%s\n' "$((10#$1))"
 }
 
 wizard_valid_time() {
-    [[ "$1" =~ ^([0-9]+-)?[0-9]+(:[0-5][0-9]){0,2}$ ]] || { printf 'walltime must look like HH:MM:SS, MM, or D-HH:MM:SS: %s\n' "$1"; return 1; }
+    [[ "$1" =~ ^([0-9]+-)?[0-9]+(:[0-5][0-9]){0,2}$ ]] || { printf '制限時間は HH:MM:SS、MM、D-HH:MM:SS のいずれかの形で入力してください: %s\n' "$1"; return 1; }
     printf '%s\n' "$1"
 }
 
@@ -169,7 +198,7 @@ wizard_valid_goal() {
     [ -n "$1" ] || { printf '\n'; return; }
     local path
     path="$(wizard_expand_tilde "$1")"
-    [ -f "$path" ] || { printf 'goal file does not exist: %s\n' "$1"; return 1; }
+    [ -f "$path" ] || { printf '目標ファイルがありません: %s\n' "$1"; return 1; }
     readlink -f "$path"
 }
 
@@ -178,7 +207,7 @@ wizard_valid_path() {
 }
 
 wizard_valid_prompt() {
-    [ -n "${1//[[:space:]]/}" ] || { printf 'a task prompt is required\n'; return 1; }
+    [ -n "${1//[[:space:]]/}" ] || { printf '作業の指示（プロンプト）を入力してください\n'; return 1; }
     printf '%s\n' "$1"
 }
 
@@ -237,7 +266,7 @@ wizard_overlap() {
         for line in "${WIZARD_OVERLAP_JOBS[@]+"${WIZARD_OVERLAP_JOBS[@]}"}"; do
             [ "${line%% *}" != "$OVERLAP_JOB" ] || options+=("$line")
         done
-        [ "${#options[@]}" -gt 0 ] || options+=("$OVERLAP_JOB  (specified job)")
+        [ "${#options[@]}" -gt 0 ] || options+=("$OVERLAP_JOB  （指定したジョブ）")
     fi
     options+=("$WIZARD_NO_OVERLAP")
     for line in "${WIZARD_OVERLAP_JOBS[@]+"${WIZARD_OVERLAP_JOBS[@]}"}"; do
@@ -257,7 +286,7 @@ wizard_overlap() {
         if fields="$(overlap_tool info "${choice%% *}" 2>&1)"; then
             mapfile -t info <<< "$fields"
             OVERLAP_JOB="${info[0]}"
-            WIZARD_OVERLAP_INFO="job ${info[0]}${info[7]:+ (${info[7]})} / node: ${info[4]} / partition: ${info[3]} / CPU: ${info[1]} / GPU: ${info[2]} / time limit: ${info[5]} (elapsed ${info[6]})"
+            WIZARD_OVERLAP_INFO="job ${info[0]}${info[7]:+（${info[7]}）} / ノード: ${info[4]} / パーティション: ${info[3]} / CPU: ${info[1]} / GPU: ${info[2]} / 制限時間: ${info[5]}（経過 ${info[6]}）"
             return 0
         fi
         wizard_banner "$fields" || return $?
@@ -390,11 +419,11 @@ wizard_bind_mounts() {
         case "$stage" in
             0)
                 if [ "${#EXTRA_BINDS[@]}" -eq 0 ]; then
-                    if wizard_confirm 'Bind mounts: none. Add a bind mount?' 0; then stage=1
+                    if wizard_confirm '追加の bind mount: なし。追加しますか？' 0; then stage=1
                     else rc=$?; [ "$rc" -ne 1 ] || return 0; return "$rc"; fi
                     continue
                 fi
-                choice="$(wizard_select "Bind mounts: ${EXTRA_BINDS[*]}" "$keep" "$add" "$remove_one" "$remove_all")" || return $?
+                choice="$(wizard_select "追加の bind mount: ${EXTRA_BINDS[*]}" "$keep" "$add" "$remove_one" "$remove_all")" || return $?
                 case "$choice" in
                     "$keep") return 0 ;;
                     "$add") stage=1 ;;
@@ -402,20 +431,20 @@ wizard_bind_mounts() {
                     "$remove_all") EXTRA_BINDS=() ;;
                 esac ;;
             1)
-                src="$(wizard_path_input 'Bind mount source path on host' "$src")" || rc=$?
+                src="$(wizard_path_input 'bind mount の元（ホスト側のパス）' "$src")" || rc=$?
                 [ "$rc" -ne 10 ] || { stage=0; continue; }
                 [ "$rc" -eq 0 ] || return "$rc"
                 src="$(wizard_expand_tilde "$src")"
                 if [ -e "$src" ]; then src="$(readlink -f "$src")"; stage=2
-                else wizard_banner "bind source does not exist: $src" || return $?; fi ;;
+                else wizard_banner "bind mount の元がありません: $src" || return $?; fi ;;
             2)
-                dst="$(wizard_input 'Bind mount destination (e.g. /extra:ro)' "$dst")" || rc=$?
+                dst="$(wizard_input 'コンテナ内のマウント先（例: /extra:ro。:ro で読み取り専用）' "$dst")" || rc=$?
                 [ "$rc" -ne 10 ] || { stage=1; continue; }
                 [ "$rc" -eq 0 ] || return "$rc"
                 if [[ "$dst" =~ ^/[^:,]+(:(ro|rw))?$ ]]; then EXTRA_BINDS+=("$src:$dst"); stage=0; src=''; dst=''
-                else wizard_banner 'destination must be an absolute path with optional :ro or :rw' || return $?; fi ;;
+                else wizard_banner 'マウント先は絶対パスで、末尾に :ro か :rw を付けられます' || return $?; fi ;;
             3)
-                choice="$(wizard_select 'Select a bind mount to remove' "${EXTRA_BINDS[@]}")" || rc=$?
+                choice="$(wizard_select '除く bind mount を選んでください' "${EXTRA_BINDS[@]}")" || rc=$?
                 [ "$rc" -ne 10 ] || { stage=0; continue; }
                 [ "$rc" -eq 0 ] || return "$rc"
                 local -a kept=()
@@ -428,14 +457,25 @@ wizard_bind_mounts() {
 }
 
 wizard_step() {
-    local step="$1" choice rc=0 fields preview default key
+    local step="$1" choice rc=0 fields preview default key prompt
     case "$step" in
         mode)
             local -a modes=()
             default="${mode:-${TEMPLATE_MODE:-${WIZARD_LAST[mode]:-assist}}}"
+            # dry-run only previews new launches, so resume is not offered there.
+            [ "$WIZARD_DRY_RUN" -eq 0 ] || [ "$default" != resume ] || default=assist
             if is_profile "$default" || [ "$default" = resume ]; then modes+=("$default"); fi
-            for choice in assist experiment campaign review multi-review resume; do [ "$choice" = "$default" ] || modes+=("$choice"); done
-            choice="$(wizard_select 'Select run mode' "${modes[@]}" "$WIZARD_MANAGE_TEMPLATES")" || return $?
+            for choice in assist experiment campaign review multi-review resume; do
+                [ "$choice" != "$default" ] || continue
+                [ "$WIZARD_DRY_RUN" -eq 0 ] || [ "$choice" != resume ] || continue
+                modes+=("$choice")
+            done
+            prompt='実行モードを選んでください'
+            [ "$WIZARD_DRY_RUN" -eq 0 ] || prompt+='（dry-run：起動せずに確認します）'
+            local -a labels=()
+            for choice in "${modes[@]}"; do labels+=("$(wizard_mode_label "$choice")"); done
+            choice="$(wizard_select "$prompt" "${labels[@]}" "$WIZARD_MANAGE_TEMPLATES")" || return $?
+            [ "$choice" = "$WIZARD_MANAGE_TEMPLATES" ] || choice="${choice%%（*}"
             if [ "$choice" = "$WIZARD_MANAGE_TEMPLATES" ]; then
                 wizard_template_manage || rc=$?
                 WIZARD_TEMPLATE_CACHE=''
@@ -452,7 +492,7 @@ wizard_step() {
         agent)
             local -a agents=("$AGENT")
             for choice in "${SUPPORTED_AGENTS[@]}"; do [ "$choice" = "$AGENT" ] || agents+=("$choice"); done
-            choice="$(wizard_select 'Select agent' "${agents[@]}")" || return $?
+            choice="$(wizard_select 'エージェントを選んでください' "${agents[@]}")" || return $?
             AGENT="$choice" ;;
         session)
             local choices
@@ -497,42 +537,42 @@ wizard_step() {
             else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; fi ;;
         launch)
             if [ "$mode" = assist ]; then
-                local -a launches=('Interactive session (srun --pty)' 'Batch submit (sbatch)')
-                [ "$SUBMIT" -eq 0 ] || launches=('Batch submit (sbatch)' 'Interactive session (srun --pty)')
-                choice="$(wizard_select 'Select launch style' "${launches[@]}")" || return $?
-                case "$choice" in 'Batch submit (sbatch)') SUBMIT=1 ;; *) SUBMIT=0 ;; esac
+                local -a launches=('対話で起動する（srun --pty）' 'バッチで投入する（sbatch）')
+                [ "$SUBMIT" -eq 0 ] || launches=('バッチで投入する（sbatch）' '対話で起動する（srun --pty）')
+                choice="$(wizard_select '起動方法を選んでください' "${launches[@]}")" || return $?
+                case "$choice" in 'バッチで投入する（sbatch）') SUBMIT=1 ;; *) SUBMIT=0 ;; esac
             else
-                if wizard_confirm 'Submit this job now via sbatch?' "$SUBMIT"; then SUBMIT=1
+                if wizard_confirm '今すぐ sbatch で投入しますか？（いいえ：起動に必要なファイルを準備するだけ）' "$SUBMIT"; then SUBMIT=1
                 else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; SUBMIT=0; fi
             fi ;;
-        repo) wizard_ask REPO 'Repository path' "$REPO" wizard_valid_repo ;;
-        mem) wizard_ask MEM 'Memory (e.g. 16000M, 64G)' "$(wizard_resource_default mem "$profile" "$MEM")" wizard_valid_mem ;;
-        cpus) wizard_ask CPUS 'CPU cores' "$(wizard_resource_default cpus "$profile" "$CPUS")" wizard_valid_cpus ;;
-        time) wizard_ask TIME_LIMIT 'Walltime (HH:MM:SS or D-HH:MM:SS)' "$(wizard_resource_default time "$profile" "$TIME_LIMIT")" wizard_valid_time ;;
-        partition) wizard_ask PARTITION 'Slurm partition (empty for cluster default)' "$PARTITION" ;;
-        gpus) wizard_ask GPUS 'GPU count' "$GPUS" wizard_valid_gpus ;;
+        repo) wizard_ask REPO '作業リポジトリのパス（コンテナの /workspace になります）' "$REPO" wizard_valid_repo ;;
+        mem) wizard_ask MEM 'メモリ（例: 16000M、64G）' "$(wizard_resource_default mem "$profile" "$MEM")" wizard_valid_mem ;;
+        cpus) wizard_ask CPUS 'CPU コア数' "$(wizard_resource_default cpus "$profile" "$CPUS")" wizard_valid_cpus ;;
+        time) wizard_ask TIME_LIMIT '制限時間（HH:MM:SS か D-HH:MM:SS）' "$(wizard_resource_default time "$profile" "$TIME_LIMIT")" wizard_valid_time ;;
+        partition) wizard_ask PARTITION 'Slurm のパーティション（空ならクラスタの既定）' "$PARTITION" ;;
+        gpus) wizard_ask GPUS 'GPU 数' "$GPUS" wizard_valid_gpus ;;
         fuse)
-            if wizard_confirm 'Bind /dev/fuse into the capsule?' "$ALLOW_FUSE"; then ALLOW_FUSE=1
+            if wizard_confirm '/dev/fuse をコンテナに渡しますか？（コンテナ内で apptainer や FUSE を使うとき）' "$ALLOW_FUSE"; then ALLOW_FUSE=1
             else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; ALLOW_FUSE=0; fi ;;
         secrets)
-            if wizard_confirm "Pass secrets from $secrets_candidate into the capsule?" "$(secrets_enabled && printf 1 || printf 0)"; then SECRETS_FILE="$secrets_candidate"
+            if wizard_confirm "$secrets_candidate の秘密情報を、環境変数としてコンテナに渡しますか？" "$(secrets_enabled && printf 1 || printf 0)"; then SECRETS_FILE="$secrets_candidate"
             else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; SECRETS_FILE=''; fi ;;
         binds) wizard_bind_mounts ;;
         template) wizard_template ;;
         save) wizard_template_save ;;
         overlap) wizard_overlap ;;
         broker)
-            if wizard_confirm 'Start the GitHub CLI broker? (token stays outside the agent capsule)' "$((1 - GH_BROKER_DISABLED))"; then GH_BROKER_DISABLED=0
+            if wizard_confirm 'GitHub 仲介（broker）を起動しますか？（トークンはコンテナの外に置いたまま push や gh を使えます）' "$((1 - GH_BROKER_DISABLED))"; then GH_BROKER_DISABLED=0
             else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; GH_BROKER_DISABLED=1; fi
             resolve_gh_broker ;;
-        goal) wizard_ask GOAL 'Goal file path (optional, empty to skip)' "$GOAL" wizard_valid_goal ;;
+        goal) wizard_ask GOAL '目標ファイル goal.yaml のパス（任意。空なら使わない）' "$GOAL" wizard_valid_goal ;;
         prompt)
             if [ "$mode" = assist ] && [ "$SUBMIT" -eq 0 ]; then PROMPT=''
-            else wizard_ask PROMPT 'Task prompt' "$PROMPT" wizard_valid_prompt; fi ;;
-        reviewers) wizard_ask REVIEWERS 'Reviewers (codex,claude; comma-separated)' "$REVIEWERS" validate_agent_list ;;
-        target_diff) wizard_ask TARGET_DIFF 'Target diff path' "$TARGET_DIFF" wizard_valid_path ;;
-        target_report) wizard_ask TARGET_REPORT 'Target report path' "$TARGET_REPORT" wizard_valid_path ;;
-        agents) wizard_ask REQUESTED_AGENTS 'Multi-review agents (codex,claude; comma-separated)' "$REQUESTED_AGENTS" validate_agent_list ;;
+            else wizard_ask PROMPT '作業の指示（プロンプト）' "$PROMPT" wizard_valid_prompt; fi ;;
+        reviewers) wizard_ask REVIEWERS 'レビュー担当（codex,claude をカンマ区切りで）' "$REVIEWERS" wizard_valid_agents ;;
+        target_diff) wizard_ask TARGET_DIFF 'レビューする差分ファイルのパス' "$TARGET_DIFF" wizard_valid_path ;;
+        target_report) wizard_ask TARGET_REPORT 'レビューするレポートのパス' "$TARGET_REPORT" wizard_valid_path ;;
+        agents) wizard_ask REQUESTED_AGENTS 'multi-review のエージェント（codex,claude をカンマ区切りで）' "$REQUESTED_AGENTS" wizard_valid_agents ;;
         confirm) wizard_finish ;;
     esac
 }
@@ -540,7 +580,7 @@ wizard_step() {
 wizard_finish() {
     local -a args
     if [ -n "$OVERLAP_JOB" ] && [ "$mode" != resume ] && repo_lock_busy "$(readlink -f "$REPO")"; then
-        wizard_banner "agentrun is already active on $REPO; with overlap, choose another repository or a git worktree" || return $?
+        wizard_banner "$REPO では既に agentrun が動いています。overlap するときは、別のリポジトリか git worktree を選んでください" || return $?
         return 10
     fi
     if [ "$mode" = resume ]; then args=("$source" --no-binds)
@@ -569,28 +609,29 @@ wizard_finish() {
     done
     [ -z "$prefix" ] || command_line="env $prefix$command_line"
     for arg in "${args[@]}"; do command_line+=" $(wizard_shell_quote "$arg")"; done
-    summary="mode: $mode / agent: $AGENT / profile: $profile"$'\n'"repo: $REPO"$'\n'
-    [ -z "$TEMPLATE_NAME" ] || [ "$mode" = resume ] || summary+="template: $TEMPLATE_NAME$([ "$WIZARD_TEMPLATE_KEEP" -eq 1 ] && printf '（変更なし）' || printf '（変更あり）')"$'\n'
+    summary="モード: $mode / エージェント: $AGENT / プロファイル: $profile"$'\n'"作業リポジトリ: $REPO"$'\n'
+    [ -z "$TEMPLATE_NAME" ] || [ "$mode" = resume ] || summary+="テンプレート: $TEMPLATE_NAME$([ "$WIZARD_TEMPLATE_KEEP" -eq 1 ] && printf '（変更なし）' || printf '（変更あり）')"$'\n'
     if [ -n "$OVERLAP_JOB" ]; then
-        summary+="overlap: ${WIZARD_OVERLAP_INFO:-job $OVERLAP_JOB}"$'\n'
+        summary+="overlap 先: ${WIZARD_OVERLAP_INFO:-job $OVERLAP_JOB}"$'\n'
         summary+="  CPU・メモリ・GPU・制限時間は元のジョブと共有し、元のジョブが終わるとこのコンテナも終了します"$'\n'
-    else summary+="mem/cpus/time: $MEM / $CPUS / $TIME_LIMIT"$'\n'; fi
+    else summary+="メモリ / CPU / 制限時間: $MEM / $CPUS / $TIME_LIMIT"$'\n'; fi
     [ "$mode" != resume ] || summary+="再開対象: $selected"$'\n'"$(settings_tool describe "$source")"$'\n'
-    if [ -n "$OVERLAP_JOB" ]; then summary+="FUSE: $ALLOW_FUSE"$'\n'
-    else summary+="partition: ${PARTITION:-<cluster default>} / GPU: $GPUS / FUSE: $ALLOW_FUSE"$'\n'; fi
-    summary+="secrets file: ${SECRETS_FILE:-<none>} / gh broker: ${GH_ENV_FILE:-<disabled>}"$'\n'
-    summary+="extra bind mounts:"$'\n'
-    if [ "${#EXTRA_BINDS[@]}" -eq 0 ]; then summary+="  <none>"$'\n'
+    if [ -n "$OVERLAP_JOB" ]; then summary+="FUSE: $([ "$ALLOW_FUSE" -eq 1 ] && printf 渡す || printf 渡さない)"$'\n'
+    else summary+="パーティション: ${PARTITION:-（クラスタの既定）} / GPU: $GPUS / FUSE: $([ "$ALLOW_FUSE" -eq 1 ] && printf 渡す || printf 渡さない)"$'\n'; fi
+    summary+="秘密情報ファイル: ${SECRETS_FILE:-（渡さない）} / GitHub 仲介: ${GH_ENV_FILE:-（使わない）}"$'\n'
+    summary+="追加の bind mount:"$'\n'
+    if [ "${#EXTRA_BINDS[@]}" -eq 0 ]; then summary+="  なし"$'\n'
     else for arg in "${EXTRA_BINDS[@]}"; do summary+="  $arg"$'\n'; done; fi
-    if [ -n "$OVERLAP_JOB" ]; then summary+="launch: srun --jobid=$OVERLAP_JOB --overlap --pty（実行中のジョブに重ねて$([ "$mode" = resume ] && printf '対話再開' || printf '対話起動')）"$'\n'
-    elif [ "$mode" = resume ]; then summary+="launch: srun --pty（対話再開）"$'\n'
-    else summary+="launch: $(if [ "$SUBMIT" -eq 1 ]; then printf sbatch; elif [ "$mode" = assist ]; then printf 'srun --pty'; else printf 'prepare only'; fi)"$'\n'; fi
-    summary+=$'\n'"Same run without the wizard:"$'\n'"$command_line"$'\n'
-    if wizard_confirm "${summary}Launch this run?" 1; then
+    if [ -n "$OVERLAP_JOB" ]; then summary+="起動方法: srun --jobid=$OVERLAP_JOB --overlap --pty（実行中のジョブに重ねて$([ "$mode" = resume ] && printf '対話再開' || printf '対話起動')）"$'\n'
+    elif [ "$mode" = resume ]; then summary+="起動方法: srun --pty（対話再開）"$'\n'
+    else summary+="起動方法: $(if [ "$SUBMIT" -eq 1 ]; then printf 'sbatch（バッチ投入）'; elif [ "$mode" = assist ]; then printf 'srun --pty（対話）'; else printf '準備のみ（投入しない）'; fi)"$'\n'; fi
+    summary+=$'\n'"wizard を使わずに同じ起動をするコマンド:"$'\n'"$command_line"$'\n'
+    if [ "$WIZARD_DRY_RUN" -eq 1 ]; then wizard_finish_dry_run; return; fi
+    if wizard_confirm "${summary}この設定で起動しますか？" 1; then
         wizard_save_last "$mode" "$profile" || return $?
         trap - INT TERM
-        printf '\nSame run without the wizard:\n  %s\n\n' "$command_line"
-        finished=1
+        printf '\nwizard を使わずに同じ起動をするコマンド:\n  %s\n\n' "$command_line"
+        finished=1 WIZARD_DONE=1
         # The wizard already displayed the complete configuration and obtained approval.
         local _AGENTRUN_RESUME_CONFIRMED=1
         if [ "$mode" = resume ]; then command_resume "${args[@]}"
@@ -598,16 +639,15 @@ wizard_finish() {
     else
         rc=$?
         [ "$rc" -eq 1 ] || return "$rc"
-        finished=1
+        finished=1 WIZARD_DONE=1
         trap - INT TERM
-        printf 'aborted, nothing was launched\nCommand for these settings:\n  %s\n' "$command_line"
+        printf '起動を取りやめました。何も起動していません。\nこの設定で起動するコマンド:\n  %s\n' "$command_line"
     fi
 }
 
-command_wizard() {
-    [ -t 0 ] && [ -t 1 ] || { printf 'agentrun wizard requires an interactive terminal\n' >&2; return 1; }
-    detect_wizard_ui
-    trap wizard_abort INT TERM
+# The launch part of the wizard (new runs and resume). command_wizard in wizard_tools.sh calls it.
+# Returns 10 when the user goes back from the first step to the wizard's first menu.
+wizard_launch() {
     ensure_default_secrets_file
     ensure_default_gh_env_file
     parse_run_args "$@"
@@ -660,7 +700,7 @@ command_wizard() {
     fi
     validate_agent_list "$REQUESTED_AGENTS" 2>/dev/null || REQUESTED_AGENTS=''
     validate_agent_list "$REVIEWERS" 2>/dev/null || REVIEWERS=''
-    wizard_banner 'agentrun wizard - Enter accepts the value; :back goes back; Ctrl+C / Esc / :cancel cancels' || wizard_abort
+    wizard_banner 'agentrun の起動 — Enter で決定、:back で戻る、Ctrl+C・Esc・:cancel でキャンセル' || wizard_abort
     local mode='' profile='' source='' selected='' loaded_source='' step=0 rc=0 finished=0
     [ "$same_dir" -eq 0 ] || selected="${WIZARD_LAST[resume_id]:-}"
     local -a steps
@@ -702,9 +742,25 @@ command_wizard() {
         case "$rc" in
             0) step=$((step + 1)) ;;
             11) ;;
-            10) [ "$step" -eq 0 ] || step=$((step - 1)) ;;
+            10)
+                if [ "$step" -gt 0 ]; then step=$((step - 1))
+                elif [ "$WIZARD_FROM_MENU" -eq 1 ]; then return 10; fi ;;
             130) wizard_abort ;;
             *) trap - INT TERM; return "$rc" ;;
         esac
     done
+}
+
+# Show what the launch would do (command_dry_run) and let the user launch it, change it or stop.
+wizard_finish_dry_run() {
+    local rc=0 next real='この設定で実際に起動する' change='設定を変更する（前の項目に戻る）' stop='wizard を終了する'
+    if wizard_confirm "${summary}この設定で dry-run を実行しますか？（何も起動せず、run ディレクトリも作りません）" 1; then :
+    else rc=$?; [ "$rc" -eq 1 ] && return 10; return "$rc"; fi
+    wizard_exec "dry-run: agentrun dry-run $mode" wizard_cli dry-run "$mode" --show-mounts "${args[@]}" || return $?
+    next="$(wizard_select 'dry-run の結果を確認しました。次はどうしますか？' "$real" "$change" "$stop")" || return $?
+    case "$next" in
+        "$real") WIZARD_DRY_RUN=0; return 11 ;;
+        "$change") return 10 ;;
+        *) finished=1 WIZARD_DONE=1; trap - INT TERM; printf 'dry-run だけで終了しました。起動はしていません。\n' ;;
+    esac
 }

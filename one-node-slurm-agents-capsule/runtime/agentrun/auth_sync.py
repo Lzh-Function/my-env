@@ -38,7 +38,7 @@ def running_jobs():
         output = query(["squeue", "--noheader", "--user", str(os.getuid()), "--states=RUNNING",
                         "--format=%A|%Z"])
     except (RuntimeError, OSError) as error:
-        print(f"[WARN] running jobs are unknown ({error}); only --run paths are updated", file=sys.stderr)
+        print(f"[WARN] 実行中のジョブを確認できません（{error}）。--run で指定した run だけを更新します", file=sys.stderr)
         return None
     jobs = {}
     for line in output.splitlines():
@@ -138,11 +138,11 @@ def main():
     for path in args.run:
         run = Path(path).resolve()
         if not live(run):
-            print(f"[SKIP] not a running session: {run}", file=sys.stderr)
+            print(f"[SKIP] 実行中のセッションではありません: {run}", file=sys.stderr)
         elif run not in runs:
             runs.append(run)
     if not runs:
-        print("[auth sync] no running sessions to update")
+        print("[auth sync] 更新する実行中のセッションはありません")
     rc = 0
     for run in runs:
         for agent in args.agent:

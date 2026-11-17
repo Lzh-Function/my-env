@@ -182,7 +182,7 @@ os.execv('/bin/date', ['/bin/date', *sys.argv[1:]])
             result = subprocess.run(['bash', str(run / 'submit.sbatch')], cwd=self.root,
                                     env=self.env, capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn('another agentrun', result.stderr)
+        self.assertIn('既に agentrun が動いています', result.stderr)
         self.assertFalse((self.root / 'container-args.json').exists())
         self.assertFalse((run / 'home').exists())
 

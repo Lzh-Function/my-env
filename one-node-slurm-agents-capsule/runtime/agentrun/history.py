@@ -172,8 +172,8 @@ def submit(run):
             atomic_text(control, json_text(info) + "\n")
             raise RuntimeError(f"Job {job_ref} was submitted, but its history collector could not start; "
                                f"run agentrun history --watch {run}") from error
-    print(f"Submitted batch job {job_ref.split(';', 1)[0]}")
-    print(f"Host history collector: pid={child.pid}, state={control}")
+    print(f"バッチジョブを投入しました: job {job_ref.split(';', 1)[0]}")
+    print(f"会話履歴の回収プロセスを起動しました: pid={child.pid}、状態ファイル={control}")
 
 
 def main():

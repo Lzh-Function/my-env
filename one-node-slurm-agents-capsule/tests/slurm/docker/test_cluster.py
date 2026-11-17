@@ -280,7 +280,7 @@ class ClusterTests(unittest.TestCase):
         )
         import re
 
-        job = re.search(r"Submitted batch job (\d+)", result.stdout)
+        job = re.search(r"バッチジョブを投入しました: job (\d+)", result.stdout)
         self.assertIsNotNone(job, result.stdout)
         self.addCleanup(command, ["scancel", job[1]])
 
@@ -520,7 +520,7 @@ class ClusterTests(unittest.TestCase):
                 os.write(declined.master, b"n\n")
                 self.assertEqual(declined.finish(), 0, declined.output)
                 self.assertEqual({p.name for p in original.parent.iterdir()}, before)
-                self.assertNotIn(b"launching interactive session", declined.output)
+                self.assertNotIn("対話セッションを起動します".encode(), declined.output)
                 resumed = self.session(repo, ["resume", str(original)])
                 resumed.until(("RESUME_OK:" + agent + ":").encode())
                 self.assertTrue(resumed.resume_confirmed)
@@ -591,7 +591,7 @@ class ClusterTests(unittest.TestCase):
         run = first.until(b"AGENT_READY:codex:")
         second = self.assist(repo)
         self.assertNotEqual(second.finish(seconds=20), 0)
-        self.assertIn(b"another agentrun", second.output)
+        self.assertIn("既に agentrun が動いています".encode(), second.output)
         self.assertTrue((run / "home").exists())
         job = (run / "live/slurm_job_id.txt").read_text().strip()
         self.assertEqual(command(["scancel", job]).returncode, 0)
@@ -783,7 +783,7 @@ class ClusterTests(unittest.TestCase):
             cwd=repo,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        job = re.search(r"Submitted batch job (\d+)", result.stdout)
+        job = re.search(r"バッチジョブを投入しました: job (\d+)", result.stdout)
         self.assertIsNotNone(job, result.stdout)
         self.addCleanup(command, ["scancel", job[1]])
         self.wait(
@@ -928,7 +928,7 @@ class ClusterTests(unittest.TestCase):
         self.addCleanup(stop_blocker)
         self.wait(marker.exists, 35)
         session = self.assist(repo)
-        run = session.until(b"launching interactive session")
+        run = session.until("対話セッションを起動します".encode())
 
         def pending():
             rows = command(
@@ -969,7 +969,7 @@ class ClusterTests(unittest.TestCase):
         )
         replies = ["6", "1", "y", "", "", "", "n", "y"]
         prompts = re.compile(
-            rb"#\? \(Enter=1, :back, :cancel\) |(?:\x1b\[\?2004h)?> |\(:back, :cancel\): "
+            "番号を入力 \\(Enter=1, :back=戻る, :cancel=キャンセル\\) |(?:\x1b\\[\\?2004h)?> |\\(:back=戻る, :cancel=キャンセル\\): ".encode()
         )
         sent = 0
         deadline = time.monotonic() + 70
@@ -983,7 +983,7 @@ class ClusterTests(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, session.output)
         session.run = (repo / ".agent-runs/latest").resolve()
         self.assertEqual(session.finish(seconds=60), 0, session.output)
-        self.assertIn(b"Same run without the wizard:", session.output)
+        self.assertIn("wizard を使わずに同じ起動をするコマンド:".encode(), session.output)
         self.assertNotEqual(self.ended(session), seed)
 
     def test_stuck_host_finalizer_is_bounded_and_native_history_can_resume(self):

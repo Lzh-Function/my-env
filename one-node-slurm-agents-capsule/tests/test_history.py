@@ -528,7 +528,7 @@ print('123')
         result = subprocess.run([str(LAUNCHER), "experiment", "--agent", "codex", "--submit", "--no-secrets", "task"],
                                 cwd=self.root, env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr + (self.root / "compute.log").read_text())
-        self.assertIn("Submitted batch job 123", result.stdout)
+        self.assertIn("バッチジョブを投入しました: job 123", result.stdout)
         pid = int(re.search(r"pid=(\d+)", result.stdout).group(1))
         def stop_collector():
             try:

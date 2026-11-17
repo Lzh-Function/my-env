@@ -76,7 +76,7 @@ class SupportedAgentTests(unittest.TestCase):
                 with self.subTest(agent=agent, command=prefix):
                     result = self.run_cli(*prefix, "--agent", agent)
                     self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                    self.assertIn("unknown agent:", result.stderr)
+                    self.assertIn("知らないエージェントです:", result.stderr)
                     self.assertFalse((self.root / ".agent-runs").exists())
                     self.assertTrue(marker.exists())
             if agent == "antigravity":
@@ -193,7 +193,7 @@ class SupportedAgentTests(unittest.TestCase):
         self.env["PATH"] = "/usr/bin:/bin"
         result = self.run_cli("auth", "import", "--agent", "codex")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("no running sessions", result.stdout)
+        self.assertIn("更新する実行中のセッションはありません", result.stdout)
         result = self.run_cli("auth", "import", "--agent", "codex", "--run", run)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("refusing a redirected credential path", result.stderr)
