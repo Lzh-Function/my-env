@@ -367,7 +367,7 @@ class ClusterTests(unittest.TestCase):
 
     def test_all_agents_all_profiles_real_batch_and_required_outputs(self):
         for agent in ("codex", "claude"):
-            for mode in ("assist", "experiment", "campaign", "review", "multi-review"):
+            for mode in ("assist", "experiment", "campaign"):
                 with self.subTest(agent=agent, mode=mode):
                     repo = self.repo(agent + "-" + mode)
                     self.options(repo, hooks=True)
@@ -376,15 +376,6 @@ class ClusterTests(unittest.TestCase):
                         goal = repo / "explicit goal.yaml"
                         goal.write_text("objective: fixture goal\n")
                         extra = ["--goal", str(goal)]
-                    if mode == "review":
-                        extra = [
-                            "--reviewers",
-                            "claude,codex",
-                            "--target-diff",
-                            "target.patch",
-                        ]
-                    if mode == "multi-review":
-                        extra = ["--agents", "codex,claude"]
                     run = self.batch(repo, agent, mode, extra=extra)
                     self.assertEqual(
                         json.loads((run / "live/status.json").read_text())["status"],
@@ -1129,7 +1120,7 @@ os.execv('/usr/bin/python3',['/usr/bin/python3',*sys.argv[1:]])
         for args in [("validate",), ("doctor", "--all"), ("agents",), ("init-goal",)]:
             self.cli(repo, *args)
         self.cli(repo, "init-goal", expected=2)
-        for mode in ("assist", "experiment", "campaign", "review", "multi-review"):
+        for mode in ("assist", "experiment", "campaign"):
             self.cli(repo, "dry-run", mode, "--show-mounts", "fixture")
         self.assertFalse((repo / ".agent-runs").exists())
         run = self.batch(repo)

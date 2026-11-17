@@ -46,7 +46,7 @@ class SupportedAgentTests(unittest.TestCase):
 
     def test_both_agents_prepare_every_profile_with_shared_assets(self):
         for agent in ("codex", "claude"):
-            for mode in ("assist", "experiment", "campaign", "review", "multi-review"):
+            for mode in ("assist", "experiment", "campaign"):
                 with self.subTest(agent=agent, mode=mode):
                     # Exercise planning without starting or submitting a job.
                     result = self.source('parse_run_args --no-secrets; write_plan "$1" "$2" "$PWD" "" 0 00:10:00 task "$3" "" batch',
@@ -58,8 +58,9 @@ class SupportedAgentTests(unittest.TestCase):
                     self.assertIn(f"agents/{agent}/", command)
                     self.assertIn("common/skills", command)
                     self.assertEqual(json.loads((run / "session.json").read_text())["agent"], agent)
-                    self.assertEqual({p.name for p in (run / "reviews").glob("*.md")},
-                                     {"claude.md", "codex.md", "summary.md", "final_recommendation.md"})
+                    # reviews/ holds cross-review records only; the removed review modes left no placeholders.
+                    self.assertTrue((run / "reviews").is_dir())
+                    self.assertEqual(list((run / "reviews").iterdir()), [])
                     for retired in RETIRED_AGENTS:
                         self.assertNotIn(retired, command)
                         self.assertFalse(any(retired in str(p.relative_to(run)) for p in run.rglob("*")))
@@ -89,14 +90,17 @@ class SupportedAgentTests(unittest.TestCase):
         result = self.run_cli("sync-antigravity")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
-    def test_reviewer_lists_reject_unsupported_names(self):
-        for flag in ("--agents", "--reviewers"):
-            for value in (*RETIRED_AGENTS, "claude,antigravity", "codex,", ",claude"):
-                with self.subTest(flag=flag, value=value):
-                    result = self.run_cli("dry-run", "multi-review", flag, value, "task")
-                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-            result = self.run_cli("dry-run", "multi-review", flag, "codex,claude", "task")
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    def test_removed_review_modes_and_options_are_rejected(self):
+        for mode in ("review", "multi-review"):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.run_cli(mode, "task").returncode, 2)
+                self.assertEqual(self.run_cli("dry-run", mode, "task").returncode, 2)
+        for flag in ("--agents", "--reviewers", "--target-diff", "--target-report"):
+            with self.subTest(flag=flag):
+                result = self.run_cli("dry-run", "experiment", flag, "codex", "task")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("知らないオプションです", result.stderr)
+        self.assertFalse((self.root / ".agent-runs").exists())
 
     def test_auth_all_and_doctor_all_visit_only_supported_agents(self):
         # Login --all opens only worker CLIs; import and status also cover the Antigravity reviewer.

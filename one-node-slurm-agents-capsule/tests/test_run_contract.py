@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "runtime/agentrun/agentrun"
-MODES = ("assist", "experiment", "campaign", "review", "multi-review")
+MODES = ("assist", "experiment", "campaign")
 
 
 def declared_outputs(mode):

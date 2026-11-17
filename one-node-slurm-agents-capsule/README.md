@@ -9,7 +9,7 @@ Claude Code / Codex を Slurm compute node 上の Apptainer sandbox 内で実行
 ```text
 common/AGENTS.md          全 agent 共通ルール
 agents/                   Claude Code, Codex 固有の設定・shim
-profiles/                 assist / experiment / campaign / review / multi-review の runtime profile
+profiles/                 assist / experiment / campaign の runtime profile
 runtime/agentrun/         login-node-safe agentrun shell launcher
 runtime/apptainer/        Apptainer definition templates
 tests/fixtures/           smoke-test goal ファイルおよびダミー repository

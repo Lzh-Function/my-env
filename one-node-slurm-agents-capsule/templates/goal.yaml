@@ -7,7 +7,7 @@
 
 project: my-project
 
-# Mode this goal targets. One of: assist, experiment, campaign, review, multi-review
+# Mode this goal targets. One of: assist, experiment, campaign
 mode: experiment
 
 goal:

@@ -218,7 +218,7 @@ class OverlapLaunchTests(OverlapBase):
 
     def test_overlap_is_only_for_interactive_launches(self):
         for args in (["assist", "--submit", "--overlap", JOB, "task"], ["experiment", "--overlap", JOB, "task"],
-                     ["dry-run", "review", "--overlap", JOB, "task"]):
+                     ["dry-run", "campaign", "--overlap", JOB, "task"]):
             with self.subTest(args=args):
                 self.assertIn("対話式の assist と resume だけ", self.launcher(*args, expected=2).stderr)
         self.assertIn("numeric", self.launcher("assist", "--overlap", "abc", expected=2).stderr)
@@ -267,7 +267,7 @@ class OverlapResumeTests(OverlapBase):
 
     def test_wizard_resume_offers_running_job(self):
         # mode=resume, run=1, preview=no, overlap=job, binds=no, launch=yes
-        rc, output = self.execute(["wizard"], ["1", "6", "1", "n", "2", "n", "y"])
+        rc, output = self.execute(["wizard"], ["1", "4", "1", "n", "2", "n", "y"])
         self.assertEqual(rc, 0, output)
         self.assertIn("このジョブに overlap して", output)
         self.assertIn(f"--overlap {JOB}", output)

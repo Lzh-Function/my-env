@@ -34,11 +34,9 @@ VALUE_OPTIONS = (
     "partition",
     "gpus",
     "goal",
-    "reviewers",
-    "target-diff",
-    "target-report",
-    "agents",
 )
+# Old launch.json files may also hold reviewers / target-diff / target-report / agents
+# from the removed review modes; args() replays only the options listed above.
 MAX_SIZE = 2 * 1024 * 1024
 
 
@@ -215,15 +213,6 @@ def legacy(run):
     prompt = run / "prompt.txt"
     if prompt.is_file():
         text = read(prompt).decode()
-        for label, key in (
-            ("Reviewers", "reviewers"),
-            ("Target diff", "target-diff"),
-            ("Target report", "target-report"),
-            ("Requested agents", "agents"),
-        ):
-            match = re.search(rf"^{label}: (.*)$", text, re.MULTILINE)
-            if match:
-                options[key] = match[1]
         if "Goal file: /runs/goal.yaml" in text and (run / "goal.yaml").is_file():
             options["goal"] = str(run / "goal.yaml")
     return result
@@ -380,7 +369,7 @@ def main():
     if options.action == "save":
         cwd = Path.cwd()
         values = {key: getattr(options, key.replace("-", "_")) for key in VALUE_OPTIONS}
-        for key in ("repo", "goal", "target-diff", "target-report"):
+        for key in ("repo", "goal"):
             if values[key]:
                 values[key] = absolute(values[key], cwd)
         data = {

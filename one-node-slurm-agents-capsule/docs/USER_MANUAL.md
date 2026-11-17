@@ -23,7 +23,7 @@
   - [実行中のジョブに重ねて起動する](#実行中のジョブに重ねて起動する)
   - [起動設定のテンプレート](#起動設定のテンプレート)
   - [目標ファイルの作成と指定](#目標ファイルの作成と指定)
-  - [実験・継続作業・レビューの実行](#実験継続作業レビューの実行)
+  - [実験・継続作業の実行](#実験継続作業の実行)
   - [ウィザードで起動する・ほかの機能を使う](#wizard-mode)
   - [セッションの再開と入力補完](#セッションの再開と入力補完)
 - [作業領域と出力](#作業領域と出力)
@@ -196,8 +196,6 @@ agentrun assist --agent codex
 
 ```text
 assist        01:00:00
-review        01:00:00
-multi-review  02:00:00
 experiment    08:00:00
 campaign      08:00:00
 smoke-test    00:10:00
@@ -221,7 +219,7 @@ agentrun agents
 
 利用可能なエージェント CLI を表示します。対応するエージェントは `codex` と `claude` で、省略時は `claude`（Claude Code）を使います。
 
-`--agent`、`--reviewers`、`--agents` はこの2種類だけを受け付けます。未対応の名前はエラーになります。ウィザードに保存されたエージェントが未対応なら `claude` に戻し、未対応の名前を含む保存済み監査担当・エージェントの一覧は空に戻します。
+`--agent` はこの2種類だけを受け付けます。未対応の名前はエラーになります。ウィザードに保存されたエージェントが未対応なら `claude` に戻します。
 
 例:
 
@@ -443,7 +441,7 @@ agentrun init-goal
 
 ```yaml
 project: my-project          # 実行の識別名
-mode: experiment             # assist / experiment / campaign / レビュー / multi-review
+mode: experiment             # assist / experiment / campaign
 goal:
   objective: |               # エージェントへの目標説明（自由記述）
     ...
@@ -474,25 +472,21 @@ agentrun init-goal
 agentrun experiment --submit --agent codex --partition <partition> --goal goal.yaml "目標ファイルに従って作業してください"
 ```
 
-<a id="experiment--campaign--review--multi-review"></a>
+<a id="experiment--campaign"></a>
 
-### 実験・継続作業・レビューの実行
+### 実験・継続作業の実行
 
 これらは、実行プロファイルごとに目標と必要な成果物を定めたバッチ実行です。一回の投入で起動する作業エージェントは一つです。
 
 ```bash
 agentrun experiment --submit --agent codex --partition <partition> --goal tests/fixtures/goal_smoke.yaml --repo . "目標ファイルに従って作業してください"
 agentrun campaign --submit --agent codex --partition <partition> --goal path/to/goal.yaml --repo . "目標に沿って継続的に実験してください"
-agentrun review --submit --agent claude --partition <partition> --target-diff path/to/diff.patch --repo . "この差分をレビューしてください"
-agentrun multi-review --submit --agent codex --partition <partition> --agents claude,codex --repo . "レビュー結果を整理してください"
 ```
 
 重要:
 
 - `--submit` を省略すると準備だけを行い、ジョブは投入しません。
-- `review` / `multi-review` は名前上レビュー用ですが、現状は 1 エージェントだけを起動します。
-- `--agents` の一覧はプロンプトに追記するだけです。
-- 複数エージェントを自動起動して比較・集約する機能は未実装です。
+- 作業の監査は、どのモードでも使える[相互監査](#対話による相互監査)で行います。以前の `review` / `multi-review` モードは、相互監査と重なるため廃止しました。これらのモードで起動した過去の run は再開できません。
 
 すべての実行プロファイルで、次のファイルが必要です。パスは `/runs` からの相対パスです。
 
@@ -513,9 +507,6 @@ artifacts/metrics.json     artifacts/run_title.txt
 assist        追加ファイルなし
 experiment    artifacts/proposed_next.yaml
 campaign      artifacts/proposed_next.yaml, artifacts/proposed_train.sbatch
-review        reviews/review_findings.json
-multi-review  reviews/{claude,codex}.md, reviews/summary.md,
-              reviews/disagreements.json, reviews/final_recommendation.md
 ```
 
 <a id="wizard-mode"></a>
@@ -553,7 +544,7 @@ agentrun wizard --agent codex    # 起動用のオプションを付けると、
 3. 対話実行（`assist` の対話式と `resume`）では、`squeue` で自分の実行中のジョブを確認します。ジョブがあれば、そのジョブに [overlap して起動するか](#実行中のジョブに重ねて起動する) を尋ねます。各項目には、ジョブ ID、ジョブ名、パーティション、ノード、CPU 数、経過時間と制限時間を表示します。このプロジェクトの `agentrun` 実行に対応するジョブには、run ID も表示します。既定は「新しい Slurm ジョブを起動する（overlap しない）」です。ジョブがない場合や `squeue` を使えない場合は質問しません。
 4. 作業リポジトリ、パーティション、GPU 数、メモリ、CPU 数、制限時間を指定します。overlap を選んだ場合、資源の項目は尋ねずに元のジョブのものを使います。リポジトリには、元のセッションと別のものを指定します。
 5. 追加マウント、FUSE の使用、秘密情報の環境変数、GitHub 操作の仲介を設定します。秘密情報と仲介の質問は、設定がある場合だけ表示します。overlap の場合も、元のジョブとは別に指定します。
-6. 目標ファイルと作業指示を指定します。レビュー用のモードでは、対象ファイルや担当の一覧も指定します。
+6. 目標ファイルと作業指示を指定します。
 7. 「この設定をテンプレートとして保存しますか？」と尋ねます。既定は保存しないです。保存する場合は名前を入力し、既存の名前なら上書きするか確認します。テンプレートから始めて値を変えた場合は、「保存しない」「そのテンプレートを上書きする」「新しい名前で保存する」から選びます。保存は起動の確認より前に行うため、最後に起動を取りやめてもテンプレートは残ります。
 8. 設定の要約と CLI コマンドを確認します。テンプレートを使った場合は、その名前と変更の有無も表示します。overlap の場合は、重ねる先のジョブと `--overlap JOBID` を含むコマンドを表示します。最後の起動確認で 「はい」を選ぶと実行し、「いいえ」を選ぶと起動せずに終了します。
 
@@ -604,9 +595,9 @@ agentrun wizard --agent codex    # 起動用のオプションを付けると、
 
 起動した実行の回答は `~/.agentrun/wizard-last` に保存し、次回の既定値に使います。
 
-- モード、エージェント、起動方法、パーティション、GPU 数、追加マウント、FUSE、秘密情報・仲介サービスの有無、`multi-review` のエージェント一覧は、前回の値を使います。
+- モード、エージェント、起動方法、パーティション、GPU 数、追加マウント、FUSE、秘密情報・仲介サービスの有無は、前回の値を使います。
 - メモリ、CPU 数、制限時間は、前回と同じモードを選んだ場合だけ使います。
-- リポジトリ、目標ファイル、作業指示、レビュー対象は、前回と同じディレクトリで起動した場合だけ使います。別のプロジェクトで前回の作業対象を引き継ぐことを防ぐためです。
+- リポジトリ、目標ファイル、作業指示は、前回と同じディレクトリで起動した場合だけ使います。別のプロジェクトで前回の作業対象を引き継ぐことを防ぐためです。
 - `agentrun wizard --agent claude` のように指定した値は、保存済みの値より優先します。質問は省略せず、既定値として表示します。
 - 中止した場合や、起動確認で「いいえ」を選んだ場合は保存しません。
 - overlap の選択は保存しません。ジョブは毎回 `squeue` で確認します。
@@ -619,7 +610,7 @@ agentrun wizard --agent codex    # 起動用のオプションを付けると、
 
 ### セッションの再開と入力補完
 
-ウィザードの各ステップで「← 戻る」または `:back` を使うと前の入力へ戻れます。`:cancel`、Esc、Ctrl+C はキャンセルです。パス入力には案内を別行で表示し、`Alt+←` で前へ戻る、`Ctrl+G` でキャンセルの操作もできます。これらのキーは入力済みの既定値を消さずに使えます。リポジトリ、目標ファイル、追加マウントのホスト側パス、レビュー対象のパスは Tab で補完できます。
+ウィザードの各ステップで「← 戻る」または `:back` を使うと前の入力へ戻れます。`:cancel`、Esc、Ctrl+C はキャンセルです。パス入力には案内を別行で表示し、`Alt+←` で前へ戻る、`Ctrl+G` でキャンセルの操作もできます。これらのキーは入力済みの既定値を消さずに使えます。リポジトリ、目標ファイル、追加マウントのホスト側パスは Tab で補完できます。
 CLI の Bash 補完は `install.sh --apply` で登録されます。現在のシェルでは `source runtime/agentrun/agentrun.bash` で有効にできます（`--bind` のマウント元、`--repo`、`--goal`）。
 
 ```bash
@@ -638,7 +629,7 @@ agentrun resume  # 対話的に選択
 
 | 対象 | 引き継ぐ内容 |
 | --- | --- |
-| 作業対象 | エージェント種別、モード、リポジトリ、目標ファイル、レビュー対象・担当エージェント |
+| 作業対象 | エージェント種別、モード、リポジトリ、目標ファイル |
 | 計算資源 | メモリ、CPU、制限時間、GPU 数、パーティション |
 | マウント | 追加 `--bind` のマウント元・マウント先・読み書き権限、FUSE の有無 |
 | 外部サービス | 秘密情報ファイルの参照先、GitHub 仲介サービスの有無と設定ファイルの参照先 |
@@ -686,7 +677,7 @@ agentrun resume  # 対話的に選択
 
 `dry-run` は `host_run_directory` を表示しますが、実際のディレクトリは作成しません。副作用なしで実行計画を確認するためのコマンドです。
 
-`assist` は例外的に `--submit` なしで対話式実行します。`experiment` / `campaign` / `review` / `multi-review` は `--submit` なしでは起動に必要なファイルを準備するだけで、ジョブは投入しません。
+`assist` は例外的に `--submit` なしで対話式実行します。`experiment` / `campaign` は `--submit` なしでは起動に必要なファイルを準備するだけで、ジョブは投入しません。
 
 <a id="任意ディレクトリで実行した場合の挙動"></a>
 
@@ -798,16 +789,7 @@ agentrun assist --agent codex --partition <partition> --repo /path/to/my-project
 | `artifacts/proposed_next.yaml` | experiment / campaign での次の作業の提案 |
 | `artifacts/proposed_train.sbatch` | campaign での学習ジョブの提案 |
 
-`reviews/` はレビュー系実行プロファイルの出力置き場です。
-
-| パス | 内容 |
-| --- | --- |
-| `reviews/review_findings.json` | review の指摘を構造化した結果。初期値は `{}` |
-| `reviews/claude.md` | Claude によるレビューの記入先 |
-| `reviews/codex.md` | Codex によるレビューの記入先 |
-| `reviews/summary.md` | レビューの要約 |
-| `reviews/disagreements.json` | エージェント間で意見が異なる点。初期値は `{}` |
-| `reviews/final_recommendation.md` | 最終的な提案 |
+`reviews/` は相互監査の記録置き場です。ラウンドごとに `reviews/THREAD_ID/REVIEW_ID/` を作ります（[相互監査](#対話による相互監査)を参照）。
 
 `home/` はコンテナの `/home/sandbox` です。認証ファイルや書き込み可能設定はここに一時配置されます。`submit.sbatch` には終了時の後片付け処理があり、ジョブ終了時に `<run_dir>/home/` は削除されます。
 
@@ -1581,7 +1563,7 @@ URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれ
 | `uv` | Python プロジェクト・パッケージ・スクリプトの管理に使う `uv` コマンドのガイドです。`uv add`/`uv run`/`uvx` の使い分けや、仮想環境の作成・管理方法を説明します。 |
 | `agentrun-contract` | agentrun コンテナ内でエージェントが書くべき出力ファイル・フォーマット・書き込みタイミングの一覧です。`live/status.json`・`artifacts/report.md` などの必須ファイルとモード別の追加要件、`verify-run` が何をチェックするかを記述します。 |
 | `ruff` | Python ファイルを編集した後の静的検査・整形手順です。`post_edit_format.py` フックはフォーマッタを自動実行しないため、`uvx ruff check --fix` と `uvx ruff format` を手動実行する必要があることを説明します。 |
-| `experiment-report` | `experiment`・`campaign`・`review`・`multi-review` 各モードで書くべきモード固有ファイルのスキーマです。`artifacts/proposed_next.yaml`・`artifacts/proposed_train.sbatch`・`reviews/review_findings.json`・`reviews/disagreements.json` などのフォーマットを記述します。 |
+| `experiment-report` | `experiment`・`campaign` の各モードで書くべきモード固有ファイルのスキーマです。`artifacts/proposed_next.yaml`・`artifacts/proposed_train.sbatch` のフォーマットを記述します。 |
 | `pytest` | `uv run pytest` によるテスト実行と、結果を `/runs/live/stdout.log`、`artifacts/metrics.json` に記録する方法を説明します。プロジェクトのテストには uv を使い、システム Python はコンテナの起動やフックなどの基盤処理に使います。 |
 | `research-latex` | 学術論文・技術報告書・モノグラフのテンプレートを使い、日英の研究文書を PDF にします。LuaLaTeX、Biber、構造検証、目視確認用のページ画像生成に対応します。付属の例は架空のデータです。 |
 | `personal-slides` | 自分のテンプレートと過去に手作りしたスライドを「スライド置き場」に取り込み、作り方（構成・タイトルの書き方・情報量・配色・図の置き方）を学んだうえで、似た過去スライドを複製・差し替えして新しい資料を作ります。 |
@@ -1798,8 +1780,6 @@ agentrun validate
 - 単一エージェントによる `assist --submit`
 - 単一エージェントによる `experiment --submit`
 - 単一エージェントによる `campaign --submit`
-- 単一エージェントによる `review --submit`
-- 単一エージェントによる `multi-review --submit`
 - `dry-run`
 - `validate`
 - `doctor`
@@ -1816,10 +1796,7 @@ agentrun validate
 
 - 複数の作業エージェントの一括起動と自動管理（`--overlap` による手動の追加起動は実装済み）
 - すべての作業に対する相互監査の強制実行（依頼に基づく対話監査は実装済み）
-- `multi-review` で複数 `sbatch` を発行して結果を自動集約する処理
 - `campaign` の提案を実際の学習ジョブに接続する自動制御
-
-`--reviewers`, `--target-diff`, `--target-report`, `--agents` は現状ではプロンプトに追記されるだけです。複数エージェントの起動や出力集約は行いません。
 
 <a id="runtime-fixes-from-agent-capsule"></a>
 
@@ -2001,7 +1978,7 @@ agentrun dry-run MODE [options] PROMPT
 agentrun assist [options] [PROMPT]
 agentrun assist --submit [options] PROMPT
 agentrun assist --overlap JOBID [options]
-agentrun experiment|campaign|review|multi-review [options] PROMPT
+agentrun experiment|campaign [options] PROMPT
 agentrun wizard [options] [PROMPT]
 agentrun resume [RUN_ID|RUN_DIR] [起動オプション] [--no-binds] [--fresh-config] [--overlap JOBID]
 agentrun resume --list
@@ -2043,9 +2020,5 @@ agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]
 | `--no-secrets` | 秘密情報の環境変数を渡さない |
 | `--no-gh-broker` | `secrets/gh.env` に `GH_TOKEN` があっても GitHub 操作の仲介サービスを起動しない |
 | `--gh-broker` | 保存済みの無効設定を上書きし、認証設定がある場合に仲介サービスを有効化 |
-| `--reviewers LIST` | プロンプトに追記するレビュー担当の一覧 |
-| `--target-diff PATH` | プロンプトに追記するレビュー対象の差分ファイル |
-| `--target-report PATH` | プロンプトに追記するレビュー対象の報告書 |
-| `--agents LIST` | プロンプトに追記するエージェントの一覧。複数起動の指定ではない |
 | `--show-mounts` | `dry-run` でエージェント固有のマウントも表示 |
 | `--submit` | 準備後に `sbatch` でジョブを投入 |

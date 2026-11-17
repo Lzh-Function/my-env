@@ -18,10 +18,12 @@ import run_settings
 import sessions
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-MODES = ("assist", "experiment", "campaign", "review", "multi-review")
+MODES = ("assist", "experiment", "campaign")
 # テンプレートに入れてよい起動オプション。値を取るものと取らないもの。
 VALUE_OPTIONS = {"--repo", "--goal", "--gpus", "--mem", "--cpus", "--time", "--partition", "--bind",
-                 "--secrets-file", "--reviewers", "--target-diff", "--target-report", "--agents"}
+                 "--secrets-file"}
+# Options of the removed review modes; templates saved before keep them but they are dropped on load.
+REMOVED_OPTIONS = {"--reviewers", "--target-diff", "--target-report", "--agents"}
 FLAG_OPTIONS = {"--allow-fuse", "--no-allow-fuse", "--no-secrets", "--gh-broker", "--no-gh-broker"}
 
 
@@ -49,6 +51,17 @@ def check_args(args):
         raise ValueError("設定に NUL 文字は使えません")
 
 
+def without_removed(args):
+    kept, index = [], 0
+    while index < len(args):
+        if args[index] in REMOVED_OPTIONS and index + 1 < len(args):
+            index += 2
+            continue
+        kept.append(args[index])
+        index += 1
+    return kept
+
+
 def load(name):
     path = path_of(name)
     try:
@@ -61,6 +74,7 @@ def load(name):
             or not isinstance(data.get("env"), dict)
             or any(k not in run_settings.REVIEW_ENV or not isinstance(v, str) for k, v in data["env"].items())):
         raise ValueError("テンプレートの形式が不正です: " + str(path))
+    data["args"] = without_removed(data["args"])
     check_args(data["args"])
     return data
 

@@ -1,12 +1,12 @@
 ---
 name: experiment-report
 description:
-  Formats and conventions for experiment, campaign, review, and multi-review
-  output files. Use this when writing proposed_next.yaml, proposed_train.sbatch,
-  review_findings.json, or any mode-specific artifact.
+  Formats and conventions for experiment and campaign output files. Use this
+  when writing proposed_next.yaml, proposed_train.sbatch, or any mode-specific
+  artifact.
 ---
 
-# experiment and review output formats
+# experiment and campaign output formats
 
 This skill covers mode-specific output files beyond the base contract. See the
 `agentrun-contract` skill for the full list of required files per mode.
@@ -20,7 +20,7 @@ Propose the next action for the operator to take. Follow the same schema as
 
 ```yaml
 project: my-project
-mode: experiment        # or campaign, review, etc.
+mode: experiment        # or campaign
 goal:
   objective: |
     What should happen next, based on findings from this run.
@@ -65,109 +65,3 @@ source /path/to/.venv/bin/activate
 python train.py --config config.yaml
 ```
 
-## review mode
-
-### `reviews/review_findings.json`
-
-Structured review findings. Use this schema:
-
-```json
-{
-  "summary": "One-sentence overall assessment.",
-  "verdict": "approve | request_changes | comment",
-  "findings": [
-    {
-      "severity": "critical | major | minor | nit",
-      "file": "path/to/file.py",
-      "line": 42,
-      "message": "Description of the issue.",
-      "suggestion": "How to fix it (optional)."
-    }
-  ],
-  "praise": [
-    "What was done well."
-  ]
-}
-```
-
-`verdict` values:
-- `approve` — no blocking issues
-- `request_changes` — blocking issues must be resolved before merge
-- `comment` — non-blocking observations only
-
-## multi-review mode
-
-### `reviews/<agent>.md` (claude.md, codex.md)
-
-Each agent writes its own review as a markdown document:
-
-```markdown
-# Review by <Agent>
-
-## Overall Assessment
-approve / request_changes / comment
-
-## Critical Issues
-- ...
-
-## Minor Issues
-- ...
-
-## Positive Observations
-- ...
-```
-
-### `reviews/disagreements.json`
-
-Document where agents disagreed:
-
-```json
-{
-  "disagreements": [
-    {
-      "file": "src/model.py",
-      "line": 88,
-      "topic": "Whether to use dropout here.",
-      "positions": {
-        "claude": "Dropout is not needed; the model is already regularized.",
-        "codex": "Dropout at 0.1 would help generalization."
-      }
-    }
-  ]
-}
-```
-
-### `reviews/final_recommendation.md`
-
-Synthesis of all agent reviews:
-
-```markdown
-# Final Recommendation
-
-**Verdict:** approve | request_changes | comment
-
-## Consensus Findings
-Issues all agents agreed on.
-
-## Resolved Disagreements
-How disagreements were resolved.
-
-## Action Items
-- [ ] Fix X before merge.
-- [ ] Consider Y in a follow-up.
-```
-
-### `reviews/summary.md`
-
-One-page summary for the operator:
-
-```markdown
-# Review Summary
-
-Reviewed: <description of what was reviewed>
-Agents: claude, codex
-Verdict: approve / request_changes / comment
-
-## Key Findings
-- ...
-```

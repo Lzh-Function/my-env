@@ -149,17 +149,9 @@ wizard_mode_label() {
         assist) printf 'assist（対話で作業する。バッチ投入もできます）' ;;
         experiment) printf 'experiment（目標に沿って実験し、次の作業を提案する）' ;;
         campaign) printf 'campaign（長時間の継続実験。学習ジョブの提案も書く）' ;;
-        review) printf 'review（差分やレポートをレビューする）' ;;
-        multi-review) printf 'multi-review（複数の観点のレビューを整理する）' ;;
         resume) printf 'resume（保存した会話を再開する）' ;;
         *) printf '%s' "$1" ;;
     esac
-}
-
-wizard_valid_agents() {
-    local list="${1// /}"
-    if validate_agent_list "$list" >/dev/null 2>&1; then printf '%s\n' "$list"
-    else printf 'エージェントは codex と claude から選び、カンマで区切って入力してください: %s\n' "$1"; return 1; fi
 }
 
 wizard_valid_repo() {
@@ -229,7 +221,7 @@ wizard_save_last() {
     local mode="$1" profile="$2" bind
     local -a state=(cwd "$PWD" mode "$mode" profile "$profile" agent "$AGENT" repo "$REPO" submit "$SUBMIT"
         mem "$MEM" cpus "$CPUS" time "$TIME_LIMIT" gh_broker "$((1 - GH_BROKER_DISABLED))"
-        goal "$GOAL" prompt "$PROMPT" reviewers "$REVIEWERS" target_diff "$TARGET_DIFF" target_report "$TARGET_REPORT" agents "$REQUESTED_AGENTS"
+        goal "$GOAL" prompt "$PROMPT"
         partition "$PARTITION" gpus "$GPUS" allow_fuse "$ALLOW_FUSE" secrets "$(secrets_enabled && printf 1 || printf 0)"
         resume_id "${selected%% *}")
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do state+=(bind "$bind"); done
@@ -465,7 +457,7 @@ wizard_step() {
             # dry-run only previews new launches, so resume is not offered there.
             [ "$WIZARD_DRY_RUN" -eq 0 ] || [ "$default" != resume ] || default=assist
             if is_profile "$default" || [ "$default" = resume ]; then modes+=("$default"); fi
-            for choice in assist experiment campaign review multi-review resume; do
+            for choice in assist experiment campaign resume; do
                 [ "$choice" != "$default" ] || continue
                 [ "$WIZARD_DRY_RUN" -eq 0 ] || [ "$choice" != resume ] || continue
                 modes+=("$choice")
@@ -569,10 +561,6 @@ wizard_step() {
         prompt)
             if [ "$mode" = assist ] && [ "$SUBMIT" -eq 0 ]; then PROMPT=''
             else wizard_ask PROMPT '作業の指示（プロンプト）' "$PROMPT" wizard_valid_prompt; fi ;;
-        reviewers) wizard_ask REVIEWERS 'レビュー担当（codex,claude をカンマ区切りで）' "$REVIEWERS" wizard_valid_agents ;;
-        target_diff) wizard_ask TARGET_DIFF 'レビューする差分ファイルのパス' "$TARGET_DIFF" wizard_valid_path ;;
-        target_report) wizard_ask TARGET_REPORT 'レビューするレポートのパス' "$TARGET_REPORT" wizard_valid_path ;;
-        agents) wizard_ask REQUESTED_AGENTS 'multi-review のエージェント（codex,claude をカンマ区切りで）' "$REQUESTED_AGENTS" wizard_valid_agents ;;
         confirm) wizard_finish ;;
     esac
 }
@@ -594,10 +582,6 @@ wizard_finish() {
     if [ "$ALLOW_FUSE" -eq 1 ]; then args+=(--allow-fuse); else args+=(--no-allow-fuse); fi
     if secrets_enabled; then args+=(--secrets-file "$SECRETS_FILE"); else args+=(--no-secrets); fi
     [ -z "$GOAL" ] || args+=(--goal "$GOAL")
-    [ -z "$REVIEWERS" ] || args+=(--reviewers "$REVIEWERS")
-    [ -z "$TARGET_DIFF" ] || args+=(--target-diff "$TARGET_DIFF")
-    [ -z "$TARGET_REPORT" ] || args+=(--target-report "$TARGET_REPORT")
-    [ -z "$REQUESTED_AGENTS" ] || args+=(--agents "$REQUESTED_AGENTS")
     if [ "$mode" != resume ]; then
         [ "$SUBMIT" -eq 0 ] || args+=(--submit)
         [ -z "$PROMPT" ] || args+=(-- "$PROMPT")
@@ -661,7 +645,7 @@ wizard_launch() {
     for ((option_index=0; option_index<${#wizard_original_args[@]}; option_index++)); do
         option="${wizard_original_args[option_index]}"
         case "$option" in
-            --mem|--cpus|--time|--partition|--gpus|--repo|--goal|--secrets-file|--bind|--reviewers|--agents|--target-diff|--target-report)
+            --mem|--cpus|--time|--partition|--gpus|--repo|--goal|--secrets-file|--bind)
                 wizard_resume_overrides+=("$option" "${wizard_original_args[option_index+1]}"); option_index=$((option_index+1)) ;;
             --no-binds|--allow-fuse|--no-allow-fuse|--no-secrets|--no-gh-broker|--gh-broker)
                 wizard_resume_overrides+=("$option") ;;
@@ -678,9 +662,9 @@ wizard_launch() {
     wizard_load_last
     local same_dir=0
     [ "${WIZARD_LAST[cwd]:-}" != "$PWD" ] || same_dir=1
-    for key in agent submit agents; do
+    for key in agent submit; do
         [ -n "${WIZARD_EXPLICIT[$key]:-}" ] && continue
-        case "$key" in agent) AGENT="${WIZARD_LAST[agent]:-$AGENT}" ;; submit) SUBMIT="${WIZARD_LAST[submit]:-$SUBMIT}" ;; agents) REQUESTED_AGENTS="${WIZARD_LAST[agents]:-$REQUESTED_AGENTS}" ;; esac
+        case "$key" in agent) AGENT="${WIZARD_LAST[agent]:-$AGENT}" ;; submit) SUBMIT="${WIZARD_LAST[submit]:-$SUBMIT}" ;; esac
     done
     [[ "$SUBMIT" =~ ^[01]$ ]] || SUBMIT=0
     is_supported_agent "$AGENT" || AGENT="$DEFAULT_AGENT"
@@ -694,12 +678,7 @@ wizard_launch() {
         [ -n "${WIZARD_EXPLICIT[repo]:-}" ] || REPO="${WIZARD_LAST[repo]:-$REPO}"
         [ -n "${WIZARD_EXPLICIT[goal]:-}" ] || GOAL="${WIZARD_LAST[goal]:-$GOAL}"
         [ -n "$PROMPT" ] || PROMPT="${WIZARD_LAST[prompt]:-}"
-        [ -n "${WIZARD_EXPLICIT[reviewers]:-}" ] || REVIEWERS="${WIZARD_LAST[reviewers]:-}"
-        [ -n "${WIZARD_EXPLICIT[target-diff]:-}" ] || TARGET_DIFF="${WIZARD_LAST[target_diff]:-}"
-        [ -n "${WIZARD_EXPLICIT[target-report]:-}" ] || TARGET_REPORT="${WIZARD_LAST[target_report]:-}"
     fi
-    validate_agent_list "$REQUESTED_AGENTS" 2>/dev/null || REQUESTED_AGENTS=''
-    validate_agent_list "$REVIEWERS" 2>/dev/null || REVIEWERS=''
     wizard_banner 'agentrun の起動 — Enter で決定、:back で戻る、Ctrl+C・Esc・:cancel でキャンセル' || wizard_abort
     local mode='' profile='' source='' selected='' loaded_source='' step=0 rc=0 finished=0
     [ "$same_dir" -eq 0 ] || selected="${WIZARD_LAST[resume_id]:-}"
@@ -732,7 +711,6 @@ wizard_launch() {
             [ -z "$secrets_candidate" ] || steps+=(secrets)
             steps+=(goal)
             if [ "$mode" != assist ] || [ "$SUBMIT" -eq 1 ]; then steps+=(prompt); else PROMPT=''; fi
-            case "$mode" in review) steps+=(reviewers target_diff target_report) ;; multi-review) steps+=(agents) ;; esac
             steps+=(save)
         fi
         steps+=(confirm)

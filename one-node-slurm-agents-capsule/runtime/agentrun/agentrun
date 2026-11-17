@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
 source "$ROOT_DIR/runtime/agentrun/process-cleanup.sh"
 DEFAULT_AGENT="claude"
 SUPPORTED_AGENTS=(codex claude)
-PROFILES="assist experiment campaign review multi-review"
+PROFILES="assist experiment campaign"
 
 usage() {
     cat <<'USAGE'
@@ -19,7 +19,7 @@ Usage:
   agentrun assist [options] [PROMPT]        # interactive PTY session via srun --pty; PROMPT ignored if given
   agentrun assist --submit [options] PROMPT # batch via sbatch (non-interactive)
   agentrun assist --overlap JOBID [options]  # interactive, inside a running Slurm job of yours
-  agentrun experiment|campaign|review|multi-review [options] PROMPT  # prepare, or batch with --submit
+  agentrun experiment|campaign [options] PROMPT  # prepare, or batch with --submit
   agentrun resume [RUN_ID|RUN_DIR] [run options] [--no-binds] [--fresh-config] [--overlap JOBID]
   agentrun resume --list
   agentrun resume RUN_ID --preview
@@ -73,10 +73,6 @@ Options:
   --no-secrets        do not pass any secrets file
   --no-gh-broker      do not start the GitHub CLI broker even if secrets/gh.env sets GH_TOKEN
   --gh-broker         enable the GitHub CLI broker when credentials are configured
-  --reviewers LIST    reviewer agents
-  --target-diff PATH  review target diff
-  --target-report PATH review target report
-  --agents LIST       multi-review agents
   --show-mounts       print mount plan in dry-run
   --submit            submit prepared run with sbatch
 USAGE
@@ -112,17 +108,6 @@ require_auth_agent() {
         codex|claude|antigravity) return 0 ;;
         *) printf '知らないエージェントです: %s（使えるのは codex、claude、antigravity）\n' "$1" >&2; return 2 ;;
     esac
-}
-
-validate_agent_list() {
-    local remaining="$1" agent
-    [ -n "$remaining" ] || return 0
-    while :; do
-        agent="${remaining%%,*}"
-        require_supported_agent "$agent" || return $?
-        [[ "$remaining" == *,* ]] || break
-        remaining="${remaining#*,}"
-    done
 }
 
 first_available() {
@@ -193,7 +178,6 @@ profile_cpus() {
 profile_mem() {
     case "$1" in
         experiment|campaign) printf '64000M\n' ;;
-        review) printf '16000M\n' ;;
         *) printf '32000M\n' ;;
     esac
 }
@@ -202,14 +186,13 @@ profile_time() {
     case "$1" in
         experiment) printf '08:00:00\n' ;;
         campaign) printf '08:00:00\n' ;;
-        multi-review) printf '02:00:00\n' ;;
         *) printf '01:00:00\n' ;;
     esac
 }
 
 profile_required_outputs() {
     case "$1" in
-        assist|experiment|campaign|review|multi-review|smoke-test) ;;
+        assist|experiment|campaign|smoke-test) ;;
         *) return 1 ;;
     esac
     printf '%s\n' \
@@ -229,15 +212,6 @@ profile_required_outputs() {
             printf '%s\n' artifacts/proposed_next.yaml ;;
         campaign)
             printf '%s\n' artifacts/proposed_next.yaml artifacts/proposed_train.sbatch ;;
-        review)
-            printf '%s\n' reviews/review_findings.json ;;
-        multi-review)
-            printf '%s\n' \
-                reviews/claude.md \
-                reviews/codex.md \
-                reviews/summary.md \
-                reviews/disagreements.json \
-                reviews/final_recommendation.md ;;
     esac
 }
 
@@ -309,12 +283,6 @@ make_layout() {
     : > "$run_dir/artifacts/proposed_next.yaml"
     : > "$run_dir/artifacts/proposed_train.sbatch"
     : > "$run_dir/artifacts/run_title.txt"
-    : > "$run_dir/reviews/claude.md"
-    : > "$run_dir/reviews/codex.md"
-    printf '{}\n' > "$run_dir/reviews/review_findings.json"
-    : > "$run_dir/reviews/summary.md"
-    printf '{}\n' > "$run_dir/reviews/disagreements.json"
-    : > "$run_dir/reviews/final_recommendation.md"
     ln -sfn "$(basename "$run_dir")" "$(dirname "$run_dir")/latest"
 }
 
@@ -500,18 +468,6 @@ Host repo: $repo
 EOF
     if [ -n "${GOAL:-}" ]; then
         printf '\nGoal file: /runs/goal.yaml\n' >> "$path"
-    fi
-    if [ -n "${REVIEWERS:-}" ]; then
-        printf '\nReviewers: %s\n' "$REVIEWERS" >> "$path"
-    fi
-    if [ -n "${TARGET_DIFF:-}" ]; then
-        printf '\nTarget diff: %s\n' "$TARGET_DIFF" >> "$path"
-    fi
-    if [ -n "${TARGET_REPORT:-}" ]; then
-        printf '\nTarget report: %s\n' "$TARGET_REPORT" >> "$path"
-    fi
-    if [ -n "${REQUESTED_AGENTS:-}" ]; then
-        printf '\nRequested agents: %s\n' "$REQUESTED_AGENTS" >> "$path"
     fi
     append_gh_broker_note "$path"
 }
@@ -725,10 +681,6 @@ template_state_args() {
     if secrets_enabled; then TEMPLATE_STATE+=(--secrets-file "$SECRETS_FILE"); else TEMPLATE_STATE+=(--no-secrets); fi
     if [ "$GH_BROKER_DISABLED" -eq 1 ]; then TEMPLATE_STATE+=(--no-gh-broker); else TEMPLATE_STATE+=(--gh-broker); fi
     [ -z "$GOAL" ] || TEMPLATE_STATE+=(--goal "$(readlink -f "$GOAL")")
-    [ -z "$REVIEWERS" ] || TEMPLATE_STATE+=(--reviewers "$REVIEWERS")
-    [ -z "$TARGET_DIFF" ] || TEMPLATE_STATE+=(--target-diff "$(readlink -f "$TARGET_DIFF")")
-    [ -z "$TARGET_REPORT" ] || TEMPLATE_STATE+=(--target-report "$(readlink -f "$TARGET_REPORT")")
-    [ -z "$REQUESTED_AGENTS" ] || TEMPLATE_STATE+=(--agents "$REQUESTED_AGENTS")
 }
 
 command_template() {
@@ -1100,8 +1052,6 @@ EOF
     chmod +x "$run_dir/apptainer_exec.sh" "$run_dir/submit.sbatch"
     local -a saved_options=(save "$run_dir" "--repo=$repo" "--mem=$mem" "--cpus=$cpus"
         "--time=$time_limit" "--partition=$partition" "--gpus=$gpus" "--goal=$goal"
-        "--reviewers=${REVIEWERS:-}" "--target-diff=${TARGET_DIFF:-}"
-        "--target-report=${TARGET_REPORT:-}" "--agents=${REQUESTED_AGENTS:-}"
         "--secrets-file=${SECRETS_FILE:-}" "--gh-env-file=${GH_ENV_FILE:-}" "--overlap-job=${OVERLAP_JOB:-}")
     local saved_bind
     for saved_bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do saved_options+=("--bind=$saved_bind"); done
@@ -1645,7 +1595,7 @@ command_validate() {
             missing=1
         fi
     done
-    for profile in assist experiment campaign review multi-review; do
+    for profile in $PROFILES; do
         local profile_path="$ROOT_DIR/profiles/$profile.yaml"
         if [ -e "$profile_path" ]; then
             printf '[OK] profiles/%s.yaml\n' "$profile"
@@ -1867,10 +1817,6 @@ parse_run_args() {
     PARTITION="${AGENTRUN_SLURM_PARTITION:-}"
     SHOW_MOUNTS=0
     SUBMIT=0
-    REVIEWERS=""
-    TARGET_DIFF=""
-    TARGET_REPORT=""
-    REQUESTED_AGENTS=""
     PROMPT=""
     OVERLAP_JOB=""
     OVERLAP_SUMMARY=""
@@ -1912,10 +1858,6 @@ parse_run_args() {
             --no-gh-broker) no_gh_broker=1; shift ;;
             --gh-broker) no_gh_broker=0; shift ;;
             --show-mounts) SHOW_MOUNTS=1; shift ;;
-            --reviewers) validate_agent_list "$2" || return $?; REVIEWERS="$2"; shift 2 ;;
-            --target-diff) TARGET_DIFF="$2"; shift 2 ;;
-            --target-report) TARGET_REPORT="$2"; shift 2 ;;
-            --agents) validate_agent_list "$2" || return $?; REQUESTED_AGENTS="$2"; shift 2 ;;
             --submit) SUBMIT=1; shift ;;
             --) shift; PROMPT="$*"; break ;;
             --*) printf '知らないオプションです: %s\n' "$1" >&2; exit 2 ;;
@@ -2399,7 +2341,7 @@ resume_summary() {
     printf '  追加の bind mount:\n' >&2
     for bind in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do printf '    %q\n' "$bind" >&2; done
     [ "${#EXTRA_BINDS[@]}" -ne 0 ] || printf '    なし\n' >&2
-    printf '  目標ファイル: %q\n  レビュー担当: %q / multi-review のエージェント: %q\n  レビューする差分 / レポート: %q / %q\n' "$GOAL" "$REVIEWERS" "$REQUESTED_AGENTS" "$TARGET_DIFF" "$TARGET_REPORT" >&2
+    printf '  目標ファイル: %q\n' "$GOAL" >&2
     if [ "${RESUME_FRESH_CONFIG:-0}" -eq 1 ]; then printf '  エージェント設定: 現在のリポジトリから生成\n' >&2
     else settings_tool describe "$source" >&2 || return $?; fi
     for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ANTIGRAVITY_MODEL AGENT_REVIEW_ANTIGRAVITY_EFFORT \
@@ -2426,7 +2368,7 @@ command_resume() {
             --list) list=1; shift ;;
             --preview) preview=1; shift ;;
             --fresh-config) RESUME_FRESH_CONFIG=1; shift ;;
-            --time|--mem|--cpus|--bind|--partition|--gpus|--repo|--goal|--secrets-file|--reviewers|--agents|--target-diff|--target-report|--overlap)
+            --time|--mem|--cpus|--bind|--partition|--gpus|--repo|--goal|--secrets-file|--overlap)
                 [ "$#" -ge 2 ] || { printf '%s には値が必要です\n' "$1" >&2; return 2; }
                 overrides+=("$1" "$2"); shift 2 ;;
             --no-binds|--allow-fuse|--no-allow-fuse|--no-secrets|--no-gh-broker|--gh-broker)
@@ -2448,6 +2390,7 @@ command_resume() {
     local -a values
     mapfile -t values <<< "$fields"
     mode="${values[2]}"
+    case "$mode" in review|multi-review) printf 'review / multi-review モードは廃止したので、この run は再開できません\n' >&2; return 2 ;; esac
     is_profile "$mode" || { printf '保存された profile が不正です\n' >&2; return 2; }
     [ -t 0 ] || { printf 'resume には端末が必要です。会話の確認は --preview を使ってください\n' >&2; return 2; }
     load_resume_settings "$source" "${overrides[@]}" || return $?
@@ -2787,7 +2730,7 @@ main() {
             local mode="$1"; shift
             command_dry_run "$mode" "$@"
             ;;
-        assist|experiment|campaign|review|multi-review) command_prepare "$command" "$@" ;;
+        assist|experiment|campaign) command_prepare "$command" "$@" ;;
         resume) command_resume "$@" ;;
         history) command_history "$@" ;;
         ps) python3 "$ROOT_DIR/runtime/agentrun/active.py" "$@" ;;

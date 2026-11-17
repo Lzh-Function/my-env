@@ -124,7 +124,7 @@ class WizardTests(unittest.TestCase):
         extra = self.root / "extra mount"
         extra.mkdir()
         # mode=resume, run=1, preview=yes, defaults, add a bind, launch=yes
-        answers = f"6\n1\ny\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
+        answers = f"4\n1\ny\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("wizard-run  codex", output)
@@ -142,7 +142,7 @@ class WizardTests(unittest.TestCase):
     def test_bind_source_tab_completion_keeps_spaces_in_path(self):
         extra = self.root / "extra mount"
         extra.mkdir()
-        answers = "6\n1\nn\n\n\n\ny\nextr\t\n/extra:ro\n1\ny\n"
+        answers = "4\n1\nn\n\n\n\ny\nextr\t\n/extra:ro\n1\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("Tab=パス補完", output)
@@ -154,7 +154,7 @@ class WizardTests(unittest.TestCase):
         first.mkdir()
         second.mkdir()
         # add first, add second, remove one (first), remove all, decline adding, launch
-        answers = f"6\n1\nn\n\n\n\ny\n{first}\n/first:ro\n2\n{second}\n/second:ro\n3\n1\n4\nn\ny\n"
+        answers = f"4\n1\nn\n\n\n\ny\n{first}\n/first:ro\n2\n{second}\n/second:ro\n3\n1\n4\nn\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("bind を1つ除く（一覧から選択）", output)
@@ -218,7 +218,7 @@ class WizardTests(unittest.TestCase):
 
     def test_declining_resume_creates_nothing(self):
         before = (self.original / "session.json").read_text()
-        rc, output = self.execute(self.args, "6\n1\nn\n\n\n\nn\nn\n")
+        rc, output = self.execute(self.args, "4\n1\nn\n\n\n\nn\nn\n")
         self.assertEqual(rc, 0, output)
         self.assertIn("起動を取りやめました", output)
         self.assertFalse((self.parent / "latest").exists())
@@ -229,7 +229,7 @@ class WizardTests(unittest.TestCase):
         store = sessions.state_dir(self.original, sessions.manifest(self.original))
         for path in store.rglob("*.jsonl"):
             path.unlink()
-        rc, output = self.execute(self.args, "6\n")
+        rc, output = self.execute(self.args, "4\n")
         self.assertEqual(rc, 2, output)
         self.assertIn("再開可能な run がありません", output)
         self.assertFalse((self.parent / "latest").exists())
@@ -260,7 +260,7 @@ class WizardTests(unittest.TestCase):
         self.assertFalse((self.parent / "latest/home").exists())
 
     def test_back_from_resource_keeps_editable_values(self):
-        answers = "6\n1\nn\n16000M\n:back\n12000M\n\n\nn\ny\n"
+        answers = "4\n1\nn\n16000M\n:back\n12000M\n\n\nn\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("> 16000M", output)
@@ -273,16 +273,18 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(rc, 0, output)
         self.assertIn("PREPARE_AGENT=codex", output)
 
-    def test_stale_agent_defaults_reset_to_claude_and_clear_reviewer_lists(self):
+    def test_stale_agent_defaults_reset_to_claude_and_ignore_removed_review_lists(self):
         state_file = Path(self.env["HOME"]) / ".agentrun/wizard-last"
         state_file.parent.mkdir()
         state_file.write_text(json.dumps({"cwd": str(self.root), "agent": "unsupported",
                                           "agents": "claude,unsupported", "reviewers": "unsupported"}))
-        script = 'source "$1"; command_prepare() { printf "SELECTED=%s AGENTS=%s REVIEWERS=%s\\n" "$AGENT" "$REQUESTED_AGENTS" "$REVIEWERS"; }; command_wizard'
+        script = 'source "$1"; command_prepare() { printf "SELECTED=%s ARGS=%s\\n" "$AGENT" "$*"; }; command_wizard'
         answers = "1\n1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n"
         rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
-        self.assertIn("SELECTED=claude AGENTS= REVIEWERS=", output)
+        self.assertIn("SELECTED=claude ARGS=assist", output)
+        self.assertNotIn("--reviewers", output)
+        self.assertNotIn("--agents", output)
         self.assertNotIn("unsupported", output)
         menu = output.split("エージェントを選んでください", 1)[1].split("起動方法を選んでください", 1)[0]
         self.assertIn("1) claude", menu)
@@ -306,7 +308,7 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(values, ["12000M", "2", "02:00:00"])
 
     def test_cancel_at_menu_or_input_creates_no_run_or_defaults(self):
-        for answers in (":cancel\n", "6\n1\nn\n:cancel\n", "6\n1\nn\n\x04\n", "6\n1\nn\n\x1b\n", "6\n1\nn\n\x03\n"):
+        for answers in (":cancel\n", "4\n1\nn\n:cancel\n", "4\n1\nn\n\x04\n", "4\n1\nn\n\x1b\n", "4\n1\nn\n\x03\n"):
             with self.subTest(answers=repr(answers)):
                 rc, output = self.execute(self.args, answers)
                 self.assertEqual(rc, 130, output)
@@ -325,7 +327,7 @@ class WizardTests(unittest.TestCase):
     def test_previous_defaults_and_bind_paths_are_restored(self):
         extra = self.root / "extra mount"
         extra.mkdir()
-        answers = f"6\n1\nn\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
+        answers = f"4\n1\nn\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         state_file = Path(self.env["HOME"]) / ".agentrun/wizard-last"
@@ -408,14 +410,14 @@ command_wizard "$@"
                         f"--repo={self.root}", "--mem=4G", "--cpus=3", f"--bind={bind}:/data:ro"],
                        cwd=self.root, env=self.env, check=True, capture_output=True)
         template = Path(self.env["HOME"]) / ".agentrun/templates/from-run.json"
-        rc, output = self.execute(self.args, "7\n1\n1\nfrom-run\n:back\n:cancel\n")
+        rc, output = self.execute(self.args, "5\n1\n1\nfrom-run\n:back\n:cancel\n")
         self.assertEqual(rc, 130, output)
         self.assertIn("wizard-run_title", output)
         saved = json.loads(template.read_text())
         self.assertEqual((saved["mode"], saved["agent"]), ("assist", "codex"))
         self.assertIn(f"{bind}:/data:ro", saved["args"])
         self.assertIn("3", saved["args"])
-        rc, output = self.execute(self.args, "7\n2\n1\ny\n:back\n:cancel\n")
+        rc, output = self.execute(self.args, "5\n2\n1\ny\n:back\n:cancel\n")
         self.assertEqual(rc, 130, output)
         self.assertFalse(template.exists())
         self.assertFalse(any(self.parent.glob("*_assist_*")))
