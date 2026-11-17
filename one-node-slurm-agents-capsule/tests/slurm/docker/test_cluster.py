@@ -958,7 +958,7 @@ class ClusterTests(unittest.TestCase):
             ],
             env,
         )
-        replies = ["6", "1", "y", "", "", "", "n", "y"]
+        replies = ["4", "1", "y", "", "", "", "n", "y"]  # mode 4 = resume
         prompts = re.compile(
             "番号を入力 \\(Enter=1, :back=戻る, :cancel=キャンセル\\) |(?:\x1b\\[\\?2004h)?> |\\(:back=戻る, :cancel=キャンセル\\): ".encode()
         )
