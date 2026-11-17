@@ -69,7 +69,7 @@ def review_models(reviewers: list[str] | None = None, refresh: bool = False) -> 
 
 @mcp.tool()
 def review_reply(review_id: str, request_id: str, reply_to: str, message: dict) -> dict:
-    """Answer the pending message. message: answers[{question_id,answer,evidence}], questions[], include[]."""
+    """Answer the pending questions. Minimal message: {"answers":[{"question_id":"q1","answer":"..."}]}. Optional: each answer's "evidence" (snapshot paths from manifest.json), "include" (extra original files to capture) and "questions" (your own questions); omitted lists are empty. Answer every question ID exactly once. A rejected call changed nothing: fix it and call again."""
     return client.call(
         "reply",
         {
@@ -95,7 +95,7 @@ def review_recheck(
     effort: str | None = None,
     model_source: str | None = None,
 ) -> dict:
-    """Start the next round after fixes/rebuttal, or ask the same reviewer about new work with a new brief/include. response: responses[{finding_id,action,reason,evidence}] for every previous finding. model/effort default to the previous round's choice."""
+    """Start the next round after fixes/rebuttal, or ask the same reviewer about new work with a new brief/include. response: {"responses":[{"finding_id":"f1","action":"fixed|disputed|deferred","reason":"..."}]} with one entry per previous finding; "evidence" (snapshot paths) is optional. model/effort default to the previous round's choice. A rejected call changed nothing: fix it and call again."""
     params = {"review_id": review_id, "request_id": request_id, "response": response}
     for key, value in (("brief", brief), ("base", base), ("include", include), ("exclude", exclude),
                        ("model", model), ("effort", effort), ("model_source", model_source)):

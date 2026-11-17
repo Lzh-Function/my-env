@@ -39,15 +39,15 @@ Pass the brief's **file path**, such as `/runs/artifacts/review-brief.md`, to `r
 
 After starting a review, tell the user in one sentence that they can follow the dialogue live from another host terminal by running `agentrun reviews --follow` in the directory where they launched this run (`--reviewer NAME` narrows it to one reviewer).
 
-Start with `review_start`, retaining the review ID and event cursor. Use a fresh `request_id` for every new operation, and reuse that ID only to retry the identical operation. Poll `review_events` (maximum wait: 20 seconds) until a question or terminal state arrives. Do not finish the task while a requested review is still running.
+Start with `review_start`, retaining the review ID and event cursor. Use a fresh `request_id` for every new operation. If a call is rejected with an error, nothing was recorded: read the error (it names the field or ID at fault), fix the call and send it again; the same `request_id` may be reused. Reuse an ID with identical content only to retry an operation whose result you did not receive. Poll `review_events` (maximum wait: 20 seconds) until a question or terminal state arrives. Do not finish the task while a requested review is still running.
 
-When `waiting_reply` arrives, call `review_reply` with its message ID and answers to all question IDs. Use this shape:
+When `waiting_reply` arrives, call `review_reply` with its message ID and one answer per question ID. Only `answers` is required:
 
 ```json
-{"answers":[{"question_id":"q1","answer":"Explanation or unavailable","evidence":[]}],"questions":[],"include":[]}
+{"answers":[{"question_id":"q1","answer":"Explanation or unavailable"}]}
 ```
 
-`evidence` references paths in the snapshot manifest; `include` explicitly names additional original files to capture. Explanations are claims; provide inspectable evidence. Keep the reviewed files unchanged during this dialogue. If the snapshot must change, cancel this round before modifying it and start a new round to review the changed snapshot.
+Optional fields: an answer's `evidence` (paths exactly as listed in the snapshot `manifest.json`, such as `source/train.py`), `include` (additional original files to capture, then usable as evidence) and `questions` (your own questions to the reviewer). Omitted lists are empty. Explanations are claims; provide inspectable evidence. Keep the reviewed files unchanged during this dialogue. If the snapshot must change, cancel this round before modifying it and start a new round to review the changed snapshot.
 
 If a review fails with `error_kind` `authentication` or `missing_authentication`, stop and ask the user to log in on the host (`agentrun auth login --agent NAME`, for Antigravity sign in to `agy` then `/exit`); this also updates the running session. Afterwards continue the same round with `review_retry(review_id, request_id)`; do not start a new review. `review_retry` also resumes a round after `rate_limit`, `timeout`, `provider_failed` and `input_reader_unavailable`; such a failed round carries `recovery` with the reason and the retry command. Other failures (for example an input error found while capturing) need a corrected request instead. Never run login commands or read credential files inside the capsule.
 
@@ -58,6 +58,8 @@ After a result, inspect its applicability and every finding. Fix valid problems 
 ```json
 {"responses":[{"finding_id":"f1","action":"disputed","reason":"Explanation","evidence":["source/evaluation.py"]}]}
 ```
+
+`evidence` is optional. The error for a missing response lists the expected finding IDs.
 
 Actions are `fixed`, `disputed`, or `deferred`. Recheck captures current files and continues the reviewer's conversation with the previous findings, dialogue and your response. The runtime preserves finding IDs and requires a disposition for each prior finding. Your own `fixed` response does not resolve a finding.
 

@@ -1056,7 +1056,7 @@ agent-review status REVIEW_ID
 
 `--brief` / MCP の `brief` は、本文ではなく既存の UTF-8 ファイルのパスです。本文を渡した場合、存在しないパス、空ファイル、文字コードやサイズの不適合は、レビュワー起動前に検証して理由を返します。
 
-イベント取得で返された `cursor` を、次回の `--after` に指定します。新しい操作には新しい `request_id` を使い、同じ操作を再送する場合だけ同じ ID を使います。MCP で開始した監査に CLI で回答することもできます。MCP の接続が切れても、実行管理サービスが動いていれば CLI から同じ会話を続けられます。
+イベント取得で返された `cursor` を、次回の `--after` に指定します。新しい操作には新しい `request_id` を使い、同じ操作を再送する場合だけ同じ ID を使います。形式や中身の誤りで弾かれた操作は記録に残らないので、直して同じ ID のまま送り直せます。エラーには、どの項目（例: `message.answers[0]: missing field(s) answer`）やどの ID・パスが悪いかが入ります。回答（`review_reply`）で必須なのは `answers` の `question_id` と `answer` だけで、`evidence`・`include`・`questions` は省略できます。再監査（`review_recheck`）の各応答の `evidence` も省略できます。MCP で開始した監査に CLI で回答することもできます。MCP の接続が切れても、実行管理サービスが動いていれば CLI から同じ会話を続けられます。
 
 回答ファイルの例です。`evidence` には、進行中のラウンドの `/runs/reviews/workspace/<監査担当>/manifest.json` に記録されたコピー内の相対パスを指定します。新しい証拠を追加する場合は、`include` に元のファイルを明示します。取得したパスとハッシュは、追加の取得対象一覧に記録します。
 

@@ -133,6 +133,11 @@ if mode=='line-evidence':
         'confidence':'high','basis':'observed','evidence_method':'static_source',
         'file':'source/code.py','line':1,'message':'A defect','suggestion':'Fix it',
         'evidence':['source/code.py:1','source/code.py:1-1','diff.patch']}])
+if mode=='dot-paths':
+    result.update(verdict='request_changes', findings=[{'finding_id':'f1','severity':'major',
+        'confidence':'high','basis':'observed','evidence_method':'static_source',
+        'file':'./source/code.py','line':1,'message':'A defect','suggestion':'Fix it',
+        'evidence':['./source/code.py:1',str(Path.cwd()/'source/code.py')]}])
 if mode=='unknown-line-evidence':
     result.update(verdict='request_changes', findings=[{'finding_id':'f1','severity':'major',
         'confidence':'high','basis':'observed','evidence_method':'static_source',
@@ -378,7 +383,7 @@ class CrossReviewTests(unittest.TestCase):
                                                reviewers=["antigravity"]))
         self.reviews.tick()
         state = self.wait(result["review_id"], review.TERMINAL)
-        self.assertEqual(state["error"], "Invalid evidence reference", state)
+        self.assertIn('evidence lists paths that are not in this snapshot: ["source/missing.py:1"]', state["error"])
 
     def test_antigravity_result_is_read_from_the_first_json_in_its_response(self):
         ident = self.start("agy-response", reviewers=["antigravity"], one_shot=True)
@@ -1052,18 +1057,48 @@ class CrossReviewTests(unittest.TestCase):
         self.assertIsNone(restarted["remaining_rounds"])
         self.assertIsNone(restarted["remaining_exchanges"])
 
-    def test_compatibility_output_keeps_existing_findings_contract(self):
-        self.reviews.config["mode"] = "review"
+    def test_reply_needs_only_answers_and_a_rejected_reply_can_be_resent(self):
+        ident = self.start("question")
+        state = self.wait(ident)
+        self.assertEqual(state["status"], "waiting_reply", state)
+        message_id = state["question"]["message_id"]
+        request = {"review_id": ident, "request_id": "answer", "reply_to": message_id}
+        with self.assertRaises(ValueError) as rejected:
+            self.reviews.call("reply", dict(request, message={"answers": [{"question_id": "q1"}]}))
+        self.assertIn("message.answers[0]: missing field(s) answer", str(rejected.exception))
+        with self.assertRaises(ValueError) as rejected:
+            self.reviews.call("reply", dict(request, message={"answers": [{"question_id": "q2", "answer": "x"}]}))
+        self.assertIn('expected ["q1"], got ["q2"]', str(rejected.exception))
+        # The same request_id works once the reply is fixed; questions, include and evidence may be omitted.
+        self.reviews.call("reply", dict(request, message={"answers": [{"question_id": "q1", "answer": "subject-wise split"}]}))
+        self.assertEqual(self.wait(ident, review.TERMINAL)["status"], "success")
+
+    def test_recheck_response_may_omit_evidence_and_names_missing_findings(self):
         ident = self.start("finding")
-        self.wait(ident)
-        findings = json.loads((self.run / "reviews/review_findings.json").read_text())
-        finding = findings["findings"][0]
-        self.assertEqual(finding["severity"], "major")
-        self.assertEqual(finding["file"], "code.py")
-        self.assertEqual(finding["snapshot_file"], "source/code.py")
-        self.assertIn("message", finding)
-        self.assertIn("suggestion", finding)
-        self.assertEqual(findings["praise"], [])
+        self.assertEqual(self.wait(ident)["verdict"], "request_changes")
+        request = {"review_id": ident, "request_id": "recheck"}
+        with self.assertRaises(ValueError) as rejected:
+            self.reviews.call("recheck", dict(request, response={"responses": []}))
+        self.assertIn('expected ["f1"], got []', str(rejected.exception))
+        self.brief.write_text("approve")
+        again = self.reviews.call("recheck", dict(request, response={"responses": [
+            {"finding_id": "f1", "action": "fixed", "reason": "Guarded the split"}]}))
+        self.assertEqual(self.wait(again["review_id"])["verdict"], "approve")
+
+    def test_reviewer_paths_with_dot_or_input_prefix_are_accepted(self):
+        state = self.wait(self.start("dot-paths"))
+        self.assertEqual(state["status"], "success", state)
+        findings = json.loads(Path(state["findings_path"]).read_text())["findings"]
+        self.assertEqual((findings[0]["file"], findings[0]["evidence"]), ("source/code.py", ["source/code.py"]))
+
+    def test_schema_errors_name_the_field_and_allowed_values(self):
+        with self.assertRaises(ValueError) as error:
+            review.validate({"kind": "verdict"}, review.MESSAGE_SCHEMA)
+        self.assertIn("message: missing field(s) target_id", str(error.exception))
+        with self.assertRaises(ValueError) as error:
+            review.validate({"responses": [{"finding_id": "f1", "action": "done", "reason": "x", "evidence": []}]},
+                            review.RESPONSE_SCHEMA, "response")
+        self.assertEqual(str(error.exception), "response.responses[0].action: 'done' is not one of fixed, disputed, deferred")
 
     def test_worker_hooks_remain_inert_for_reviewer(self):
         hook = ROOT / "common/hooks/worker_hook.py"

@@ -33,7 +33,7 @@ from review_snapshot import (
 
 TERMINAL = {"success", "failed", "cancelled", "timeout"}
 # Rejected reviewer output is returned to the same conversation this many times before failing.
-REPAIR_TURNS = 2
+REPAIR_TURNS = 3
 # Failures the reviewer may recover from in the same round with review_retry, so a new round
 # (and its directory) is not needed after, for example, a login on the host.
 RETRYABLE_FAILURES = {"invalid_model", "authentication", "missing_authentication", "rate_limit",
@@ -177,25 +177,48 @@ RESPONSE_SCHEMA = object_schema(
 
 
 def validate(value, schema, location="message"):
+    """Check a wire value; each error names the exact place and what was expected there."""
     types = {"object": dict, "array": list, "string": str, "integer": int}
     if not isinstance(value, types[schema["type"]]) or isinstance(value, bool):
-        raise ValueError(location + ": invalid type")  # noqa: TRY004 -- invalid wire-schema values
+        raise ValueError(f"{location}: expected {schema['type']}, got {type(value).__name__}")  # noqa: TRY004 -- invalid wire-schema values
     if "enum" in schema and value not in schema["enum"]:
-        raise ValueError(location + ": invalid value")
+        raise ValueError(f"{location}: {value!r} is not one of {', '.join(schema['enum'])}")
     if schema["type"] == "object":
-        if set(value) != set(schema["required"]):
-            raise ValueError(location + ": unexpected or missing fields")
+        missing = [key for key in schema["required"] if key not in value]
+        unexpected = sorted(set(value) - set(schema["required"]))
+        if missing or unexpected:
+            parts = ([f"missing field(s) {', '.join(missing)}"] if missing else []) + (
+                [f"unknown field(s) {', '.join(unexpected)}"] if unexpected else [])
+            raise ValueError(f"{location}: {'; '.join(parts)} (fields: {', '.join(schema['required'])})")
         for key, child in value.items():
             validate(child, schema["properties"][key], location + "." + key)
     elif schema["type"] == "array":
         if len(value) > 1000:
             raise ValueError(location + ": too many elements")
-        for child in value:
-            validate(child, schema["items"], location)
+        for index, child in enumerate(value):
+            validate(child, schema["items"], f"{location}[{index}]")
     elif schema["type"] == "string" and len(value) > 100000:
         raise ValueError(location + ": string too long")
     elif schema["type"] == "integer" and value < schema.get("minimum", value):
         raise ValueError(location + ": out of range")
+
+
+def reply_defaults(message):
+    """Only the answers are required in a worker reply; empty lists may be omitted."""
+    if not isinstance(message, dict):
+        return message
+    message = {"questions": [], "include": [], **message}
+    if isinstance(message.get("answers"), list):
+        message["answers"] = [{"evidence": [], **a} if isinstance(a, dict) else a for a in message["answers"]]
+    return message
+
+
+def response_defaults(response):
+    """A response to a finding may omit its evidence list."""
+    if isinstance(response, dict) and isinstance(response.get("responses"), list):
+        response = dict(response, responses=[{"evidence": [], **r} if isinstance(r, dict) else r
+                                             for r in response["responses"]])
+    return response
 
 
 def load(path):
@@ -496,160 +519,174 @@ class Reviews:
             # After a crash an uncommitted request is never silently replayed.
             self.requests[ident] = {"fingerprint": fingerprint, "result": None}
             atomic_json(self.root / "requests.json", self.requests)
-            if action == "extend":
-                state = self.get(params["review_id"])
-                # Legacy clients may still call extend; no extension is needed.
-                result = self.public(state)
-            elif action == "run":
-                if "model" in params or "effort" in params:
-                    raise ValueError("Pass run choices as models/efforts mappings, e.g. models={\"codex\": \"<id>\"}")
-                selected = params.get("reviewers")
-                choices = {key: params.pop(key, None) or {} for key in ("models", "efforts")}
-                targets = [params.get("reviewer") or DEFAULT_REVIEWER[self.config["primary_agent"]]] \
-                    if selected is None else selected
-                for key, values in choices.items():
-                    if not isinstance(values, dict) or values and (
-                            not isinstance(targets, list) or any(provider not in targets for provider in values)):
-                        raise ValueError(key + " must map requested reviewer names to values")
-                if selected is None:
-                    result = self.start(dict(params, model=choices["models"].get(targets[0]),
-                                             effort=choices["efforts"].get(targets[0])))
-                else:
-                    if (not isinstance(selected, list) or not selected
-                            or any(not isinstance(p, str) or p not in PROVIDERS
-                                   or p == self.config["primary_agent"] for p in selected)):
-                        raise ValueError("reviewers must name other providers: codex, claude, antigravity")
-                    selected = list(dict.fromkeys(selected))
-                    for provider in selected:
-                        self.require_available(provider)
-                    created = []
-                    try:
+            try:
+                if action == "extend":
+                    state = self.get(params["review_id"])
+                    # Legacy clients may still call extend; no extension is needed.
+                    result = self.public(state)
+                elif action == "run":
+                    if "model" in params or "effort" in params:
+                        raise ValueError("Pass run choices as models/efforts mappings, e.g. models={\"codex\": \"<id>\"}")
+                    selected = params.get("reviewers")
+                    choices = {key: params.pop(key, None) or {} for key in ("models", "efforts")}
+                    targets = [params.get("reviewer") or DEFAULT_REVIEWER[self.config["primary_agent"]]] \
+                        if selected is None else selected
+                    for key, values in choices.items():
+                        if not isinstance(values, dict) or values and (
+                                not isinstance(targets, list) or any(provider not in targets for provider in values)):
+                            raise ValueError(key + " must map requested reviewer names to values")
+                    if selected is None:
+                        result = self.start(dict(params, model=choices["models"].get(targets[0]),
+                                                 effort=choices["efforts"].get(targets[0])))
+                    else:
+                        if (not isinstance(selected, list) or not selected
+                                or any(not isinstance(p, str) or p not in PROVIDERS
+                                       or p == self.config["primary_agent"] for p in selected)):
+                            raise ValueError("reviewers must name other providers: codex, claude, antigravity")
+                        selected = list(dict.fromkeys(selected))
                         for provider in selected:
-                            request = {k: v for k, v in params.items() if k != "reviewers"}
-                            created.append(self.start(dict(request, reviewer=provider,
-                                                           model=choices["models"].get(provider),
-                                                           effort=choices["efforts"].get(provider))))
-                    except Exception:
-                        # No CLI has run before tick(); do not leave partially created requests behind.
-                        for item in created:
-                            state = self.rounds[item["review_id"]]
-                            state.update(status="cancelled", error="Multiple-review request did not complete")
-                            self.event(state, "cancelled", request_id=ident)
-                        raise
-                    result = created[0] if len(created) == 1 else {"reviews": created}
-            elif action == "retry":
-                state = retry_state
-                self.jobs.pop(state["review_id"], None)
-                for key in ("error", "error_kind", "exit_code", "ended_at", "recovery"):
-                    state.pop(key, None)
-                # The same round keeps its snapshot and any answer that was not delivered.
-                state.update(status="prepared", model_selection=retry_selection)
-                self.event(state, "model_retry", request_id=ident, payload=retry_selection)
-                result = self.public(state)
-            elif action == "recheck":
-                old = self.get(params["review_id"])
-                if old["status"] not in TERMINAL:
-                    raise ValueError("Previous round is still active")
-                response = params.get("response", {})
-                validate(response, RESPONSE_SCHEMA)
-                findings = old.get("result", {}).get("findings", [])
-                if len(response["responses"]) != len(findings) or {
-                    r["finding_id"] for r in response["responses"]
-                } != {f["finding_id"] for f in findings}:
-                    raise ValueError("Respond to every previous finding")
-                result = self.start(
-                    dict(
-                        old["request"],
-                        **{
-                            k: v
-                            for k, v in params.items()
-                            if k
-                            in ("include", "exclude", "brief", "base", "request_id",
-                                "model", "effort", "model_source")
-                        },
-                    ),
-                    old,
-                )
-                atomic_json(self.round_dir(old) / "response.json", response)
-                state = self.rounds[result["review_id"]]
-                state["prior_response"] = response
-                self.persist(state)
-                self.event(
-                    old,
-                    "response",
-                    sender="worker",
-                    recipient="reviewer",
-                    payload=response,
-                    request_id=ident,
-                )
-            elif action == "reply":
-                state = self.get(params["review_id"])
-                if (
-                    state["status"] != "waiting_reply"
-                    or params.get("reply_to") != state["question"]["message_id"]
-                ):
-                    raise ValueError("No matching unanswered question")
-                answer = params.get("message", {})
-                validate(answer, ANSWER_SCHEMA)
-                expected = {
-                    q["question_id"] for q in state["question"]["payload"]["questions"]
-                }
-                if (
-                    len(answer["answers"]) != len(expected)
-                    or {a["question_id"] for a in answer["answers"]} != expected
-                ):
-                    raise ValueError("Answer every outstanding question")
-                additions = supplement(
-                    answer["include"],
-                    self.repo,
-                    self.run,
-                    self.input_dir(state),
-                )
-                combined = state["supplements"] + additions
-                allowed = {
-                    e["path"]
-                    for e in state["manifest"]["files"] + combined
-                    if e.get("path")
-                }
-                if any(
-                    p not in allowed for a in answer["answers"] for p in a["evidence"]
-                ):
-                    raise ValueError("Answer contains an invalid evidence reference")
-                if (
-                    sum(e.get("size", 0) for e in state["manifest"]["files"] + combined)
-                    > 32 * 1024 * 1024
-                ):
-                    raise ValueError("Total additional evidence exceeds size limit")
-                state["supplements"] = combined
-                atomic_json(
-                    self.input_dir(state) / "supplements/manifest.json",
-                    state["supplements"],
-                )
-                self.record_context(state, "supplements/manifest.json")
-                state.update(
-                    status="running", question=None, exchanges=state["exchanges"] + 1
-                )
-                self.event(
-                    state,
-                    "answer",
-                    "worker",
-                    "reviewer",
-                    answer,
-                    params["reply_to"],
-                    ident,
-                )
-                result = self.public(state)
-                state["pending_message"] = {"answer": answer}
-                self.persist(state)
-            else:
-                state = self.get(params["review_id"])
-                if state["status"] not in TERMINAL:
-                    state.update(status="cancelled", question=None)
-                    job = self.jobs.get(state["review_id"])
-                    if job:
-                        job[1].set()
-                    self.event(state, "cancelled", request_id=ident)
-                result = self.public(state)
+                            self.require_available(provider)
+                        created = []
+                        try:
+                            for provider in selected:
+                                request = {k: v for k, v in params.items() if k != "reviewers"}
+                                created.append(self.start(dict(request, reviewer=provider,
+                                                               model=choices["models"].get(provider),
+                                                               effort=choices["efforts"].get(provider))))
+                        except Exception:
+                            # No CLI has run before tick(); do not leave partially created requests behind.
+                            for item in created:
+                                state = self.rounds[item["review_id"]]
+                                state.update(status="cancelled", error="Multiple-review request did not complete")
+                                self.event(state, "cancelled", request_id=ident)
+                            raise
+                        result = created[0] if len(created) == 1 else {"reviews": created}
+                elif action == "retry":
+                    state = retry_state
+                    self.jobs.pop(state["review_id"], None)
+                    for key in ("error", "error_kind", "exit_code", "ended_at", "recovery"):
+                        state.pop(key, None)
+                    # The same round keeps its snapshot and any answer that was not delivered.
+                    state.update(status="prepared", model_selection=retry_selection)
+                    self.event(state, "model_retry", request_id=ident, payload=retry_selection)
+                    result = self.public(state)
+                elif action == "recheck":
+                    old = self.get(params["review_id"])
+                    if old["status"] not in TERMINAL:
+                        raise ValueError("Previous round is still active")
+                    response = response_defaults(params.get("response", {}))
+                    validate(response, RESPONSE_SCHEMA, "response")
+                    findings = old.get("result", {}).get("findings", [])
+                    if len(response["responses"]) != len(findings) or {
+                        r["finding_id"] for r in response["responses"]
+                    } != {f["finding_id"] for f in findings}:
+                        raise ValueError("Respond to every previous finding exactly once: expected "
+                                         + json.dumps([f["finding_id"] for f in findings]) + ", got "
+                                         + json.dumps([r["finding_id"] for r in response["responses"]]))
+                    result = self.start(
+                        dict(
+                            old["request"],
+                            **{
+                                k: v
+                                for k, v in params.items()
+                                if k
+                                in ("include", "exclude", "brief", "base", "request_id",
+                                    "model", "effort", "model_source")
+                            },
+                        ),
+                        old,
+                    )
+                    atomic_json(self.round_dir(old) / "response.json", response)
+                    state = self.rounds[result["review_id"]]
+                    state["prior_response"] = response
+                    self.persist(state)
+                    self.event(
+                        old,
+                        "response",
+                        sender="worker",
+                        recipient="reviewer",
+                        payload=response,
+                        request_id=ident,
+                    )
+                elif action == "reply":
+                    state = self.get(params["review_id"])
+                    if (
+                        state["status"] != "waiting_reply"
+                        or params.get("reply_to") != state["question"]["message_id"]
+                    ):
+                        raise ValueError("No matching unanswered question")
+                    answer = reply_defaults(params.get("message", {}))
+                    validate(answer, ANSWER_SCHEMA)
+                    expected = {
+                        q["question_id"] for q in state["question"]["payload"]["questions"]
+                    }
+                    if (
+                        len(answer["answers"]) != len(expected)
+                        or {a["question_id"] for a in answer["answers"]} != expected
+                    ):
+                        raise ValueError("Answer every outstanding question exactly once: expected "
+                                         + json.dumps(sorted(expected)) + ", got "
+                                         + json.dumps([a["question_id"] for a in answer["answers"]]))
+                    additions = supplement(
+                        answer["include"],
+                        self.repo,
+                        self.run,
+                        self.input_dir(state),
+                    )
+                    combined = state["supplements"] + additions
+                    allowed = {
+                        e["path"]
+                        for e in state["manifest"]["files"] + combined
+                        if e.get("path")
+                    }
+                    if any(
+                        p not in allowed for a in answer["answers"] for p in a["evidence"]
+                    ):
+                        unknown = sorted({p for a in answer["answers"] for p in a["evidence"] if p not in allowed})
+                        raise ValueError("Answer evidence must be snapshot paths listed in manifest.json (or added with "
+                                         "include); unknown: " + json.dumps(unknown))
+                    if (
+                        sum(e.get("size", 0) for e in state["manifest"]["files"] + combined)
+                        > 32 * 1024 * 1024
+                    ):
+                        raise ValueError("Total additional evidence exceeds size limit")
+                    state["supplements"] = combined
+                    atomic_json(
+                        self.input_dir(state) / "supplements/manifest.json",
+                        state["supplements"],
+                    )
+                    self.record_context(state, "supplements/manifest.json")
+                    state.update(
+                        status="running", question=None, exchanges=state["exchanges"] + 1
+                    )
+                    self.event(
+                        state,
+                        "answer",
+                        "worker",
+                        "reviewer",
+                        answer,
+                        params["reply_to"],
+                        ident,
+                    )
+                    result = self.public(state)
+                    state["pending_message"] = {"answer": answer}
+                    self.persist(state)
+                else:
+                    state = self.get(params["review_id"])
+                    if state["status"] not in TERMINAL:
+                        state.update(status="cancelled", question=None)
+                        job = self.jobs.get(state["review_id"])
+                        if job:
+                            job[1].set()
+                        self.event(state, "cancelled", request_id=ident)
+                    result = self.public(state)
+            except ValueError:
+                # A rejected request (bad arguments, wrong state) is not an operation in
+                # doubt: forget it so the caller can fix the request and send it again,
+                # with the same request_id or a new one.
+                self.requests.pop(ident, None)
+                atomic_json(self.root / "requests.json", self.requests)
+                raise
             self.requests[ident] = {"fingerprint": fingerprint, "result": result}
             atomic_json(self.root / "requests.json", self.requests)
             return result
@@ -682,13 +719,6 @@ class Reviews:
             thread = self.threads[previous["review_thread_id"]]
             if thread["rounds"][-1] != previous["review_id"]:
                 raise ValueError("Recheck must follow the latest round in this thread")
-        else:
-            ident = "thread-" + uuid.uuid4().hex
-            thread = {
-                "review_thread_id": ident,
-                "rounds": [],
-            }
-            self.threads[ident] = thread
         if params.get("kind", "research") not in ("code", "research"):
             raise ValueError("Review kind must be code or research")
         if not params.get("brief"):
@@ -712,6 +742,10 @@ class Reviews:
         params["base"] = self.resolve_base(params.get("base"))
         for name in params.get("include", []):
             check_include(name, self.repo, self.run)
+        if not previous:
+            # Created only after the request passed every check, so a rejected start leaves no thread.
+            thread = {"review_thread_id": "thread-" + uuid.uuid4().hex, "rounds": []}
+            self.threads[thread["review_thread_id"]] = thread
         ident = "review-" + uuid.uuid4().hex
         # Continue the reviewer's latest conversation, even from another thread, instead of
         # opening a new native session for every round.
@@ -755,8 +789,6 @@ class Reviews:
                 previous=state["previous"],
             ),
         )
-        if self.config.get("mode") == "review":
-            (self.root / "review_findings.json").unlink(missing_ok=True)
         self.event(state, "prepared", request_id=params["request_id"])
         # spawn is deferred until call() has persisted the idempotency record.
         return self.public(state)
@@ -1021,24 +1053,6 @@ class Reviews:
                         report_path=str(directory / "report.md"),
                     )
                     self.event(state, "review_result", "reviewer", "worker", findings)
-                    if self.config.get("mode") == "review":
-                        compatibility = dict(
-                            findings, findings=[dict(f) for f in findings["findings"]]
-                        )
-                        originals = {
-                            e["path"]: e["original"]
-                            for e in state["manifest"]["files"] + state["supplements"]
-                            if e.get("path")
-                        }
-                        for finding in compatibility["findings"]:
-                            original = Path(originals[finding["file"]])
-                            finding["snapshot_file"] = finding["file"]
-                            finding["file"] = (
-                                str(original.relative_to(self.repo))
-                                if original.is_relative_to(self.repo)
-                                else str(original)
-                            )
-                        atomic_json(self.root / "review_findings.json", compatibility)
         except Exception as error:  # noqa: BLE001 -- persist unexpected background failures for the caller
             with self.lock:
                 if state["status"] not in ("failed", "cancelled", "timeout"):
@@ -1074,8 +1088,6 @@ class Reviews:
                             "retry_command": f"cd /workspace && agent-review retry {ident} --request-id retry-{uuid.uuid4().hex} --model MODEL",
                             "message": "review_modelsで利用可能なモデルを確認し、review_retryでmodel（必要ならeffort）を指定して同じラウンドを再試行してください。",
                         }
-                    if self.config.get("mode") == "review":
-                        (self.root / "review_findings.json").unlink(missing_ok=True)
                     self.event(state, status, payload={"error": str(error)})
 
     def resolve_base(self, base):
@@ -1234,19 +1246,34 @@ class Reviews:
         state.setdefault("context_files", {})[name] = digest(path.read_bytes())
 
     def normalize_evidence(self, state, result):
-        """Reduce `path:12` or `path:3-8` evidence to a listed path; other forms still fail validation."""
+        """Map common spellings of a listed path to that path; anything else still fails validation."""
         if not isinstance(result, dict):
             return  # validate_result reports malformed results.
         allowed = ({e["path"] for e in state["manifest"]["files"] + state["supplements"] if e.get("path")}
                    | set(state.get("context_files", {})) | {"diff.patch"})
+        root = str(self.input_dir(state)).rstrip("/") + "/"
+
+        def listed(path):
+            """`./x`, `<input dir>/x`, `x:12` and `x:3-8` name the listed path x."""
+            if not isinstance(path, str) or path in allowed:
+                return path
+            candidate = path.removeprefix(root).removeprefix("./")
+            match = re.fullmatch(r"(.+):\d+(?:-\d+)?", candidate)
+            if candidate not in allowed and match:
+                candidate = match.group(1)
+            return candidate if candidate in allowed else path
+
         for key in ("findings", "questions", "prior_dispositions"):
             for item in result.get(key) or []:
-                if not isinstance(item, dict) or not isinstance(item.get("evidence"), list):
+                if not isinstance(item, dict):
+                    continue
+                if key == "findings" and isinstance(item.get("file"), str):
+                    item["file"] = listed(item["file"])
+                if not isinstance(item.get("evidence"), list):
                     continue
                 normalized = []
                 for path in item["evidence"]:
-                    match = re.fullmatch(r"(.+):\d+(?:-\d+)?", path) if isinstance(path, str) else None
-                    path = match.group(1) if match and path not in allowed and match.group(1) in allowed else path
+                    path = listed(path)
                     if path not in normalized:
                         normalized.append(path)
                 item["evidence"] = normalized
@@ -1262,25 +1289,29 @@ class Reviews:
             for e in state["manifest"]["files"] + state["supplements"]
             if e.get("path")
         }
-        for item in (
-            result["findings"] + result["questions"] + result["prior_dispositions"]
-        ):
-            evidence_paths = (
-                set(allowed) | set(state.get("context_files", {})) | {"diff.patch"}
-            )
-            if any(p not in evidence_paths for p in item["evidence"]):
-                raise ValueError("Invalid evidence reference")
-        for finding in result["findings"]:
-            path = finding["file"]
-            if (
-                path not in allowed
-                or not finding["evidence"]
-                or not IDENT.fullmatch(finding["finding_id"])
-            ):
-                raise ValueError("Invalid finding reference or ID")
-            content = (self.input_dir(state) / path).read_bytes()
-            if finding["line"] > max(1, len(content.splitlines())):
-                raise ValueError("Finding line is outside the reviewed file")
+        evidence_paths = set(allowed) | set(state.get("context_files", {})) | {"diff.patch"}
+        for key in ("findings", "questions", "prior_dispositions"):
+            for index, item in enumerate(result[key]):
+                unknown = [p for p in item["evidence"] if p not in evidence_paths]
+                if unknown:
+                    raise ValueError(
+                        f"{key}[{index}].evidence lists paths that are not in this snapshot: {json.dumps(unknown)}. "
+                        "Use exact paths from manifest.json (e.g. source/...), diff.patch, or [] with the "
+                        "problem described in text"
+                    )
+        for index, finding in enumerate(result["findings"]):
+            where = f"findings[{index}] ({finding['finding_id']!r})"
+            if not IDENT.fullmatch(finding["finding_id"]):
+                raise ValueError(f"{where}: finding_id must match {IDENT.pattern}")
+            if finding["file"] not in allowed:
+                raise ValueError(f"{where}: file {finding['file']!r} is not a reviewed file in manifest.json; "
+                                 "use its exact listed path, e.g. source/...")
+            if not finding["evidence"]:
+                raise ValueError(f"{where}: evidence must name at least one snapshot path")
+            content = (self.input_dir(state) / finding["file"]).read_bytes()
+            lines = max(1, len(content.splitlines()))
+            if finding["line"] > lines:
+                raise ValueError(f"{where}: line {finding['line']} is outside {finding['file']} ({lines} lines)")
         ids = [f["finding_id"] for f in result["findings"]]
         if len(ids) != len(set(ids)):
             raise ValueError("Duplicate finding IDs")
