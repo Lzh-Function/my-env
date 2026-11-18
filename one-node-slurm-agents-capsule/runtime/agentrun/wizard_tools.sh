@@ -148,7 +148,8 @@ wizard_run_actions() {
     local run="$1" choice rc summary
     local logs='ログを見る' status='status.json を見る' verify='成果物を点検する（verify-run）'
     local reviews='相互監査の一覧と対話を見る' follow='相互監査を追いかけて表示する（Ctrl+C で戻る）'
-    local export='会話履歴を保存し直す' watch='バッチの会話履歴の回収を再開する（終了まで待つ）'
+    local export='会話履歴を今すぐ保存し直す（保存に失敗したときや、最新の内容で上書きしたいとき）'
+    local watch='バッチジョブの終了を待って会話履歴を回収する（回収がまだ終わっていないバッチ run）'
     local template='この run の設定をテンプレートとして保存する'
     local resume='この run の会話を再開する（設定を確認してから新しいジョブで対話再開）'
     while :; do

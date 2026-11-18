@@ -2054,6 +2054,23 @@ command_dry_run() {
     profile_required_outputs "$mode"
 }
 
+# One line per shutdown step, so a slow step reads as "working on X", not as a hang.
+_post_step_begin() {
+    _post_step_started="$(date +%s%N)"
+    printf '  %s…' "$1" >&2
+}
+
+_post_step_end() {
+    local took=$(( ($(date +%s%N) - _post_step_started) / 100000000 ))
+    if [ "$1" -eq 0 ]; then
+        printf ' 完了（%d.%d 秒）\n' "$((took / 10))" "$((took % 10))" >&2
+    elif [ "$1" -eq 124 ] || [ "$1" -eq 137 ]; then
+        printf ' 時間切れで打ち切りました\n' >&2
+    else
+        printf ' 失敗（exit=%s）\n' "$1" >&2
+    fi
+}
+
 run_interactive_session() {
     local run_dir="$1" repo_abs="$2"; shift 2
     local history_rc=0
@@ -2068,7 +2085,10 @@ run_interactive_session() {
             timeout --foreground --kill-after=1s 3s bash -c '
                 stty "$1" <&0 2>/dev/null || true
                 printf "\033[?9l\033[?1000l\033[?1001l\033[?1002l\033[?1003l\033[?1004l\033[?1005l\033[?1006l\033[?1015l\033[?1016l\033[?2004l\033[?1l\033>" >&0
-                printf "\033[<u\033[=0u\033[>4;0m\033[?1049l\033[?1047l\033[?47l\033[<u\033[=0u\033[>4;0m\033[0m\033[?25h" >&0
+                # Enter, then leave the alternate screen: leaving restores the cursor saved on entry.
+                # A bare ?1049l after the CLI already left would jump back to where the CLI started,
+                # and the shell prompt would then overwrite the last lines the CLI printed (e.g. its resume hint).
+                printf "\033[<u\033[=0u\033[>4;0m\033[?1049h\033[?1049l\033[?1047l\033[?47l\033[<u\033[=0u\033[>4;0m\033[0m\033[?25h" >&0
             ' bash "$terminal_state" <&"$terminal_fd" 200>&- || true
             session_started=0
         fi
@@ -2076,13 +2096,22 @@ run_interactive_session() {
             exec {terminal_fd}>&-
             terminal_fd=""
         fi
+        local announce="$agent_started" step_rc
+        [ "$announce" -eq 0 ] || printf '\n' >&2
         if [ "$agent_started" -eq 1 ] && [ -f "$run_dir/session.json" ]; then
-            timeout --kill-after=2s 10s python3 "$ROOT_DIR/runtime/agentrun/sessions.py" finalize "$run_dir" --exit-code "$rc" 200>&- || \
-                printf 'セッションの終了記録を完了できませんでした。保存済みの会話はresume時に再検出します。\n' >&2
+            _post_step_begin "会話の終了を記録しています（最大 10 秒）"
+            step_rc=0
+            timeout --kill-after=2s 10s python3 "$ROOT_DIR/runtime/agentrun/sessions.py" finalize "$run_dir" --exit-code "$rc" 200>&- \
+                2>>"$run_dir/live/post_exit.log" || step_rc=$?
+            _post_step_end "$step_rc"
+            [ "$step_rc" -eq 0 ] || \
+                printf 'セッションの終了記録を完了できませんでした。保存済みの会話はresume時に再検出します（詳細: %s）。\n' "$run_dir/live/post_exit.log" >&2
             # Archiving must not hold the repository lock after the agent exits.
             exec 200>&-
             history_rc=0
-            timeout --kill-after=2s 120s python3 "$ROOT_DIR/runtime/agentrun/history.py" export "$run_dir" 200>&- >> "$run_dir/live/history_export.log" 2>&1 || history_rc=$?
+            _post_step_begin "会話履歴を保存しています（最大 10 分）"
+            timeout --kill-after=2s 600s python3 "$ROOT_DIR/runtime/agentrun/history.py" export "$run_dir" 200>&- >> "$run_dir/live/history_export.log" 2>&1 || history_rc=$?
+            _post_step_end "$history_rc"
             if [ "$history_rc" -ne 0 ]; then
                 case "$history_rc" in
                     124|137) timeout --kill-after=2s 5s python3 "$ROOT_DIR/runtime/agentrun/history.py" failure "$run_dir" "Conversation export timed out (exit=$history_rc); retry with agentrun history" 200>&- || true ;;
@@ -2092,8 +2121,13 @@ run_interactive_session() {
             agent_started=0
         fi
         # 会話の保存後に一時HOMEを削除する。子processにはロックFDを渡さない。
-        timeout --kill-after=2s 15s bash -c 'source "$1"; _agentrun_cleanup_home "$2"' bash "$ROOT_DIR/runtime/agentrun/process-cleanup.sh" "$run_dir" 200>&- || \
-            printf '一時homeの削除を完了できませんでした: %s/home（exit=%s、詳細: live/home_cleanup.log）\n' "$run_dir" "$?" >&2
+        [ "$announce" -eq 0 ] || _post_step_begin "一時 home を削除しています（最大 15 秒）"
+        step_rc=0
+        timeout --kill-after=2s 15s bash -c 'source "$1"; _agentrun_cleanup_home "$2"' bash "$ROOT_DIR/runtime/agentrun/process-cleanup.sh" "$run_dir" \
+            200>&- 2>>"$run_dir/live/home_cleanup.log" || step_rc=$?
+        [ "$announce" -eq 0 ] || _post_step_end "$step_rc"
+        [ "$step_rc" -eq 0 ] || \
+            printf '一時homeの削除を完了できませんでした: %s/home（exit=%s、詳細: live/home_cleanup.log）\n' "$run_dir" "$step_rc" >&2
         exec 200>&-
     }
 
@@ -2144,7 +2178,7 @@ run_interactive_session() {
     fi
     _cleanup_interactive_session
     trap - EXIT HUP INT TERM
-    printf 'agentrun: 対話セッション終了（exit=%s）。実行記録: %s\n' "$rc" "$run_dir" >&2
+    printf 'agentrun: 後片付けが終わりました。対話セッション終了（exit=%s）。実行記録: %s\n' "$rc" "$run_dir" >&2
     return "$rc"
 }
 

@@ -20,6 +20,17 @@ from agent_cli import CREDENTIALS, PROVIDERS
 from run_settings import REVIEW_ENV
 
 
+def progress(text, end="\n"):
+    """A shutdown step for the person at the terminal; never fail the exit over it."""
+    if not sys.stderr.isatty():
+        return  # batch runs: nobody is watching, keep stderr.log free of it
+    try:
+        sys.stderr.write(text + end)
+        sys.stderr.flush()
+    except OSError:
+        pass
+
+
 def update_codex_mcp_environment(path, environment):
     """Replace per-allocation connection settings without duplicating TOML tables."""
     text = path.read_text()
@@ -252,6 +263,15 @@ def main():
             time.sleep(0.05)
         return worker.returncode if worker.returncode >= 0 else 128 - worker.returncode
     finally:
+        started = time.monotonic()
+        if worker is not None:
+            # The host side waits for this marker to tell "container is closing" from "agent still running".
+            try:
+                (run / "live/agent_exited.txt").write_text(time.strftime("%Y-%m-%dT%H:%M:%S%z\n"))
+            except OSError:
+                pass
+            progress("\r\nagentrun: エージェントが終了しました。後片付けをしています（Ctrl+C は効きません。数十秒お待ちください）")
+            progress("  相互監査サービスを停止しています（最大 15 秒）…", end="")
         service.terminate()
         try:
             service.wait(timeout=10)
@@ -262,6 +282,9 @@ def main():
         # was SIGKILLed and could not run its own finally block.
         Reviews(config).close()
         shutil.rmtree(runtime, ignore_errors=True)
+        if worker is not None:
+            progress(f" 完了（{time.monotonic() - started:.1f} 秒）")
+            progress("  コンテナと Slurm のジョブを閉じています…")
 
 
 if __name__ == "__main__":

@@ -13,8 +13,10 @@ import time
 
 
 POLL_SECONDS = 30
+CLOSING_POLL_SECONDS = 5
 QUERY_TIMEOUT = 5
 EXIT_GRACE = 2
+WAIT_NOTICE = 15
 STOP_GRACE = 2
 TERMINAL = {'COMPLETED', 'CANCELLED', 'FAILED', 'TIMEOUT', 'NODE_FAIL',
             'OUT_OF_MEMORY', 'BOOT_FAIL', 'DEADLINE'}
@@ -26,6 +28,7 @@ class SlurmMonitor:
         self.job_id = None
         self.missing = 0
         self.unavailable = False
+        self.last = None
         self.cancelled = lambda: False
 
     def query(self, command):
@@ -77,6 +80,7 @@ class SlurmMonitor:
             ident = re.search(r'\bJobId=([0-9]+)\b', result)
             state = re.search(r'\bJobState=([A-Z_+]+)', result)
             if ident and ident[1] == self.job_id and state:
+                self.last = state[1]
                 self.missing = 0
                 self.unavailable = False
                 # COMPLETING等のflag付き状態は終了済みと扱わない。
@@ -147,6 +151,11 @@ def supervise(run_dir, command):
 
     for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, stop)
+    exited_marker = run_dir / 'live/agent_exited.txt'
+    try:
+        exited_marker.unlink()
+    except OSError:
+        pass
     try:
         # 同じTTY/sessionを使う。repoロック等のFDはsrunへ引き継がない。
         process = subprocess.Popen(command, close_fds=True)
@@ -158,10 +167,26 @@ def supervise(run_dir, command):
     next_poll = 0
     ended_at = None
     state = None
+    closing_since = None
+    next_notice = 0
     while True:
         code = process.poll()
         if code is not None:
+            if closing_since is not None:
+                waited = time.monotonic() - closing_since
+                print(f'  Slurm のジョブが閉じました（エージェント終了から {waited:.0f} 秒）', file=sys.stderr)
             return code if code >= 0 else 128 - code
+        if closing_since is None and exited_marker.exists():
+            # コンテナ内でエージェントが終わった。ここから先はsrun/Slurm側の後片付け。
+            closing_since = time.monotonic()
+            next_notice = closing_since + WAIT_NOTICE
+            next_poll = 0  # 次のループで job の状態を一度確認する
+        if closing_since is not None and time.monotonic() >= next_notice:
+            waited = time.monotonic() - closing_since
+            # overlap先のjobはRUNNINGのままなので、それ以外の状態だけ添える。
+            detail = f'、job の状態: {monitor.last}' if monitor.last and monitor.last != 'RUNNING' else ''
+            print(f'  …Slurm のジョブが閉じるのを待っています（{waited:.0f} 秒経過{detail}）', file=sys.stderr)
+            next_notice += WAIT_NOTICE
         if stopped:
             stop_client(process)
             return stopped
@@ -176,7 +201,8 @@ def supervise(run_dir, command):
             if state:
                 ended_at = time.monotonic()
             # job IDはcompute nodeの開始時に書かれる。記録前はRPCを送らない。
-            next_poll = time.monotonic() + (POLL_SECONDS if monitor.job_id else 0.2)
+            interval = CLOSING_POLL_SECONDS if closing_since is not None else POLL_SECONDS
+            next_poll = time.monotonic() + (interval if monitor.job_id else 0.2)
         time.sleep(0.1)
 
 

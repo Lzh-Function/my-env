@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import sessions
+from history_export import archive_key, history_root
 from auth_sync import live, registry
 from overlap import JOB_ID, query
 
@@ -114,8 +115,15 @@ def main():
         _data, session, _label = sessions.describe(path)
         return 0 if session and not live(path) else 1
     elif options.action == "batch":
-        # A batch run was submitted with sbatch and has a job ID to collect history for.
-        return 0 if (path / "submit.sbatch").is_file() and JOB_ID.fullmatch(first_line(path / "live/slurm_job_id.txt")) else 1
+        # Only `--submit` registers a host-side collector; interactive runs also have submit.sbatch
+        # and a job ID, so those alone do not tell them apart. Archived runs need no collector.
+        data = sessions.manifest(path)
+        control = history_root() / "jobs" / (archive_key(path.parent, data["run_id"]) + ".json")
+        try:
+            status = json.loads(control.read_text(encoding="utf-8")).get("status")
+        except (OSError, ValueError):
+            return 1
+        return 0 if status != "archived" else 1
     return 0
 
 

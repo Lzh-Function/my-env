@@ -142,7 +142,7 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
             limiter.write_text(f'''#!{sys.executable}
 import os,sys
 args=sys.argv[1:]
-if args[:2]==['--kill-after=2s','120s']:
+if args[:2]==['--kill-after=2s','600s']:
     args[:2]=['--kill-after=0.2s','0.3s']
 os.execv({real_timeout!r}, [{real_timeout!r}, *args])
 ''')
@@ -201,9 +201,14 @@ command_prepare assist --agent codex
         self.assertTrue((runs[0] / "apptainer_exec.sh").exists())
         if not host_signal:
             self.assertIn(
-                f"agentrun: 対話セッション終了（exit={proc.returncode}）".encode(),
+                f"対話セッション終了（exit={proc.returncode}）".encode(),
                 output,
             )
+            # Each host-side shutdown step says what it is doing and how it ended.
+            text = bytes(output).decode("utf-8", "replace")
+            self.assertRegex(text, r"会話の終了を記録しています（最大 10 秒）… (完了（\d+\.\d 秒）|時間切れで打ち切りました)")
+            self.assertRegex(text, r"一時 home を削除しています（最大 15 秒）… 完了（\d+\.\d 秒）")
+            self.assertIn("会話履歴を保存しています（最大 10 分）… ", text)
         # Verify that the actual emulator modes the mock enabled are disabled
         # AFTER its last output, separately from restoring kernel termios.
         cleanup = bytes(output).split(b"MOCK_READY")[-1]
@@ -211,6 +216,8 @@ command_prepare assist --agent codex
             self.assertIn(f"\x1b[?{mode_number}l".encode(), cleanup)
         for sequence in (b"\x1b>", b"\x1b[>4;0m", b"\x1b[?1049l", b"\x1b[?25h"):
             self.assertIn(sequence, cleanup)
+        # Entering first makes leaving restore the current cursor, not where the CLI started.
+        self.assertIn(b"\x1b[?1049h\x1b[?1049l", cleanup)
         alternate, main = cleanup.split(b"\x1b[?1049l", 1)
         self.assertIn(b"\x1b[=0u", alternate)
         self.assertIn(b"\x1b[=0u", main)

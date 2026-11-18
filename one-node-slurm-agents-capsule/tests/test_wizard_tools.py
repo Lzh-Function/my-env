@@ -84,6 +84,30 @@ class WizardToolTests(unittest.TestCase):
         self.assertIn('"status": "success"', output)
         self.assertIn("[OK] run directory", output)
 
+    def test_batch_collection_is_offered_only_for_a_pending_batch_run(self):
+        import subprocess
+        import sys
+        run = self.make_run()
+        # Interactive runs have these too, so they must not count as a batch run.
+        (run / "submit.sbatch").write_text("#!/bin/bash\n")
+        (run / "live/slurm_job_id.txt").write_text("4242\n")
+
+        def offered():
+            menu = Path(__file__).resolve().parents[1] / "runtime/agentrun/run_menu.py"
+            return subprocess.run([sys.executable, str(menu), "batch", str(run)], env=self.env,
+                                  capture_output=True, check=False).returncode == 0
+
+        self.assertFalse(offered())
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime/agentrun"))
+        from history_export import archive_key
+        jobs = self.root / "central-history/jobs"
+        jobs.mkdir(parents=True)
+        control = jobs / (archive_key(run.parent, sessions.manifest(run)["run_id"]) + ".json")
+        control.write_text(json.dumps({"status": "watching", "job_ref": "4242"}))
+        self.assertTrue(offered())
+        control.write_text(json.dumps({"status": "archived", "job_ref": "4242"}))
+        self.assertFalse(offered())
+
     def test_history_menu_reports_an_empty_archive(self):
         output = self.wizard(["2", "3", "1", "", "", ":cancel"], expected=130)
         self.assertIn("保存された会話はまだありません", output)

@@ -135,5 +135,34 @@ else:
         self.assertLess(time.monotonic() - start, 1)
 
 
+class ShutdownProgressTests(unittest.TestCase):
+    def test_wait_for_slurm_after_agent_exit_is_reported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run = Path(temp)
+            (run / 'live').mkdir()
+            marker = run / 'live/agent_exited.txt'
+            marker.write_text('stale from an earlier launch\n')
+            # The fake srun: the agent exits at once, then the "job" takes a while to close.
+            script = f'import pathlib, time; pathlib.Path({str(marker)!r}).write_text("x"); time.sleep(1.3)'
+            with patch.object(runner, 'WAIT_NOTICE', 0.5), \
+                    patch.object(runner.SlurmMonitor, 'state', return_value=None), \
+                    patch('sys.stderr', new_callable=__import__('io').StringIO) as err:
+                self.assertEqual(runner.supervise(run, [sys.executable, '-c', script]), 0)
+            output = err.getvalue()
+            self.assertIn('…Slurm のジョブが閉じるのを待っています（', output)
+            self.assertIn('Slurm のジョブが閉じました（エージェント終了から ', output)
+
+    def test_no_wait_notice_while_the_agent_is_running(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run = Path(temp)
+            (run / 'live').mkdir()
+            (run / 'live/agent_exited.txt').write_text('stale from an earlier launch\n')
+            with patch.object(runner, 'WAIT_NOTICE', 0.2), \
+                    patch.object(runner.SlurmMonitor, 'state', return_value=None), \
+                    patch('sys.stderr', new_callable=__import__('io').StringIO) as err:
+                self.assertEqual(runner.supervise(run, [sys.executable, '-c', 'import time; time.sleep(0.8)']), 0)
+            self.assertEqual(err.getvalue(), '')
+
+
 if __name__ == '__main__':
     unittest.main()
