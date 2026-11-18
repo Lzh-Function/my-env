@@ -12,6 +12,7 @@ import re
 import sqlite3
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from history_export import archive_key, history_root
@@ -33,6 +34,7 @@ HOUSEKEEPING = {"exit", "quit", "clear", "model", "effort", "config", "status", 
                 "login", "logout", "resume", "theme", "permissions", "statusline", "context", "mcp",
                 "memory", "doctor", "vim", "terminal-setup", "privacy-settings", "release-notes"}
 TITLES = "titles.json"
+TURN_TIME = re.compile(r"^### (?:User|Assistant) · (\S+)$", re.MULTILINE)
 
 
 def spoken(text):
@@ -158,6 +160,25 @@ class Conversation:
         return len(self.runs) - 1
 
     @property
+    def last_active(self):
+        """When the conversation last moved: its newest message, else when its newest run started."""
+        if not hasattr(self, "_last_active"):
+            newest = None
+            for stamp in TURN_TIME.findall(self.latest["markdown"]):
+                try:
+                    moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if moment.tzinfo is not None and (newest is None or moment > newest):
+                    newest = moment
+            if newest is None:
+                stamp = RUN_TIME.match(self.latest["run_id"])
+                # Run IDs are the launch host's clock; show them as they are, like the start time.
+                newest = datetime(*map(int, stamp.groups()), tzinfo=zone()) if stamp else None
+            self._last_active = newest.astimezone(zone()) if newest else None
+        return self._last_active
+
+    @property
     def noise(self):
         """No one ever asked anything: only agentrun's own interactive start prompt (or nothing)."""
         return not any(spoken(text) for row in self.runs for text in worker_turns(row["markdown"]))
@@ -195,7 +216,9 @@ def conversations(db, words, agent, repo, noise=False):
     found = [conversation for conversation in map(Conversation, groups.values())
              if conversation.noise == noise and conversation.contains(words)]
     # Run IDs start with the launch time: most recently used conversation first.
-    return sorted(found, key=lambda c: (c.latest["run_id"], c.latest["archive_id"]), reverse=True)
+    # Most recently active first; run IDs (launch times) break ties and cover missing times.
+    return sorted(found, key=lambda c: (c.last_active.timestamp() if c.last_active else 0,
+                                        c.latest["run_id"], c.latest["archive_id"]), reverse=True)
 
 
 def show(found, words, limit):
@@ -209,8 +232,9 @@ def show(found, words, limit):
             started(conversation.first["run_id"]), latest["agent"], conversation.metadata.get("mode", ""),
             Path(latest["repo"]).name or latest["repo"], one_line(conversation.label(titles), 50)) if part)
         print(safe_text(heading))
-        if conversation.resumes:
-            print(f"    resume {conversation.resumes} 回・最終 {started(latest['run_id'])}")
+        when = conversation.last_active.strftime("%Y-%m-%d %H:%M") if conversation.last_active else "不明"
+        resumed = f"（resume {conversation.resumes} 回）" if conversation.resumes else ""
+        print(f"    最終更新: {when}{resumed}")
         request = first_request(latest["markdown"])
         if request:
             print("    最初の依頼: " + one_line(request, 70))
@@ -245,7 +269,7 @@ def frontmatter(conversation, label):
     first, latest = conversation.first, conversation.latest
     fields = {
         "date": iso_time(first["run_id"]),
-        "last_active": iso_time(latest["run_id"]) if conversation.resumes else None,
+        "last_active": conversation.last_active.strftime("%Y-%m-%dT%H:%M:%S") if conversation.last_active else None,
         "agent": latest["agent"], "mode": conversation.metadata.get("mode"), "repo": latest["repo"],
         "title": label, "run_id": first["run_id"],
         "runs": [row["run_id"] for row in conversation.runs] if conversation.resumes else None,
@@ -365,8 +389,9 @@ def choices(found, limit):
         current = one_line(conversation.label(titles), 200)
         label = current or one_line(first_request(conversation.latest["markdown"]), 40) or "（名前なし）"
         resumed = f"（resume {conversation.resumes} 回）" if conversation.resumes else ""
+        when = f"  最終更新 {conversation.last_active:%m-%d %H:%M}" if conversation.last_active else ""
         print(f"{conversation.first['run_id']}\t{started(conversation.first['run_id'])}  "
-              f"{Path(conversation.latest['repo']).name}  {one_line(label, 50)}{resumed}\t{current}")
+              f"{Path(conversation.latest['repo']).name}  {one_line(label, 50)}{resumed}{when}\t{current}")
 
 
 def main():

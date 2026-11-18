@@ -12,7 +12,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 # Bump when the note layout changes so export-md rewrites notes it wrote earlier.
-FORMAT = 3
+FORMAT = 4
 
 TURN = re.compile(r"### (User|Assistant) · (.*)")
 SESSION = re.compile(r"## Session: (.*) \((worker|reviewer), (codex|claude)\)")
@@ -142,7 +142,8 @@ def readable(lines):
     for line in lines:
         opening = TEXT_FENCE.match(line)
         if fence:
-            out.append(line)
+            # Code is kept as is, except a line that would read as a block marker gets one leading space.
+            out.append(" " + line if line.startswith("%% agentrun:") else line)
             closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
             if closing and closing.group(1)[0] == fence[0] and len(closing.group(1)) >= len(fence):
                 fence = None
@@ -199,10 +200,27 @@ def detail(label, fence, tz):
     return callout(kind, title + suffix, code(mark, language, content))
 
 
+# Each folded block sits between these lines, so tools can drop them without parsing callouts.
+# They are Obsidian comments (hidden when reading), and messages cannot contain them: plain()
+# escapes "%%" in message text. Keep the wording stable; agents and scripts match on it.
+BEGIN = "%% agentrun:begin {} %%"
+END = "%% agentrun:end %%"
+# An HTML comment (hidden in Obsidian, unlike %% it may contain "%%") telling a reader how to skip them.
+GUIDE = ("<!-- agentrun: このノートの会話以外の部分（ツールの呼び出しと結果、コマンド出力、セッション情報、"
+         "自動で挿入されたメッセージ、相互監査の詳細）は、行頭の \"%% agentrun:begin <種類> %%\" の行から "
+         "\"%% agentrun:end %%\" の行までに入っています。種類は tool, session, injected, review です。"
+         "会話だけを読むときは次で除けます: sed '/^%% agentrun:begin /,/^%% agentrun:end %%$/d' NOTE.md -->")
+
+
+def folded(kind, block):
+    """A collapsed block wrapped in markers; blank lines keep the markers out of the callout."""
+    return [[BEGIN.format(kind)], block, [END]]
+
+
 def obsidian_body(markdown, tz=None):
     tz = tz or zone()
     items = list(tokens(markdown))
-    out, provider, index = [], "claude", 0
+    out, provider, index = [[GUIDE]], "claude", 0
     while index < len(items):
         item = items[index]
         kind = item[0]
@@ -210,15 +228,15 @@ def obsidian_body(markdown, tz=None):
         if kind == "session":
             (_stem, role, provider), fence = item[1], item[2]
             out.append([f"## {ROLES[role]}のセッション（{NAMES[provider]}）"])
-            out.append(callout("info", "セッション情報", code(*fence[:3])))
+            out += folded("session", callout("info", "セッション情報", code(*fence[:3])))
         elif kind == "review":
             out.append([f"## 相互監査: {item[1][0]}"])
-            out.append(callout("info", "監査の状態", code(*item[2][:3])))
+            out += folded("review", callout("info", "監査の状態", code(*item[2][:3])))
         elif kind == "review-file":
             name, (mark, language, content, _) = item[1][0], item[2]
             style, label = REVIEW_FILES[name]
             body = readable(trimmed(content)) if language == "markdown" else code(mark, language, content)
-            out.append(callout(style, f"{label}（{name}）", body))
+            out += folded("review", callout(style, f"{label}（{name}）", body))
         elif kind == "turn":
             role, stamp = item[1], item[2]
             when = short_time(stamp, tz)
@@ -227,14 +245,14 @@ def obsidian_body(markdown, tz=None):
             if body and following:
                 index += 1
             if role == "User" and body and INJECTED.match("\n".join(body)):
-                out.append(callout("note", "⚙️ 自動で挿入されたメッセージ" + suffix, readable(body)))
+                out += folded("injected", callout("note", "⚙️ 自動で挿入されたメッセージ" + suffix, readable(body)))
             else:
                 name = "🧑 ユーザー" if role == "User" else "🤖 " + NAMES[provider]
                 out.append([f"### {name}{suffix}"])
                 if body:
                     out.append(readable(body))
         elif kind == "detail":
-            out.append(detail(item[1], item[2], tz))
+            out += folded("tool", detail(item[1], item[2], tz))
         elif kind == "heading":
             out.append([item[1]])
         elif kind == "compacted":

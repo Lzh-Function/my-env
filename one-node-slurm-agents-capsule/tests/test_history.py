@@ -186,7 +186,8 @@ class HistoryTests(unittest.TestCase):
         (vault / "2026-11-14 0930 発表スライドを直して.md").write_text("my own note\n")
         self.assertIn("新規 2 件、更新 0 件、変更なし 0 件", export())
         note = (vault / "2026-11-13 1200 retrained chem model.md").read_text()
-        self.assertTrue(note.startswith('---\ndate: "2026-11-13T12:00:00"\nagent: "codex"\nmode: "assist"\n'))
+        self.assertTrue(note.startswith('---\ndate: "2026-11-13T12:00:00"\nlast_active: "2026-11-13T12:00:00"\n'
+                                        'agent: "codex"\nmode: "assist"\n'), note[:200])
         self.assertIn('title: "retrained: chem/model"\n', note)
         self.assertIn("tags: [agentrun]\n---\n", note)
         self.assertNotIn("# Conversation archive", note)
@@ -245,7 +246,7 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(listing.count("最初の依頼: 図を直して"), 1, listing)
         self.assertIn("2026-10-21 17:03  codex  assist", listing)
         self.assertIn("fixed figures", listing)
-        self.assertIn("resume 1 回・最終 2026-11-05 15:14", listing)
+        self.assertIn("最終更新: 2026-11-05 15:14（resume 1 回）", listing)
         self.assertIn("一致: ", agentrun("search", "表も直した"))
         self.assertIn("新規 1 件、更新 0 件、変更なし 0 件、resume 前の重複ノートを 1 件まとめました", agentrun("export-md", str(vault)))
         self.assertEqual(sorted(p.name for p in vault.iterdir()), [".agentrun-export.json", "2026-10-21 1703 fixed figures.md"])
@@ -345,6 +346,26 @@ class HistoryTests(unittest.TestCase):
         self.assertNotIn("20261101_100000", listing)
         self.assertIn("最初の依頼: train the baseline with two seeds", listing)
 
+    def test_last_activity_is_the_newest_message_and_orders_the_list(self):
+        def timed(role, text, stamp):
+            return {**message(role, text), "timestamp": stamp}
+
+        # Started earlier but still in use: its newest message (UTC) decides, shown in Japan time.
+        self.archived_run("20261101_100000_assist_codex", [
+            timed("user", "長い作業", "2026-11-01T01:00:00Z"), timed("assistant", "続けます", "2026-11-17T13:40:00Z")])
+        self.archived_run("20261110_100000_assist_codex", [
+            timed("user", "短い作業", "2026-11-10T01:00:00Z"), timed("assistant", "済み", "2026-11-10T01:05:00Z")])
+        listing = self.history_cli("list")
+        self.assertIn("最終更新: 2026-11-17 22:40\n", listing)
+        self.assertIn("最終更新: 2026-11-10 10:05\n", listing)
+        self.assertLess(listing.index("長い作業"), listing.index("短い作業"))
+        vault = self.root / "vault"
+        self.history_cli("export-md", str(vault))
+        self.assertIn('last_active: "2026-11-17T22:40:00"', (vault / "2026-11-01 1000 長い作業.md").read_text())
+        choices = subprocess.run([sys.executable, str(ROOT / "runtime/agentrun/history_index.py"), "choices"],
+                                 capture_output=True, text=True, timeout=10, check=True).stdout
+        self.assertIn("最終更新 11-17 22:40", choices)
+
     def test_rename_names_the_conversation_until_cleared(self):
         self.archived_run("20261103_100000_assist_codex", [message("user", "図を直して"), message("assistant", "直した")],
                           title="fixed figures")
@@ -374,7 +395,7 @@ class HistoryTests(unittest.TestCase):
             + history_export.detail("Tool result: Bash · t1 · 2026-11-18T05:31:06Z", "is_error: True\n\nboom ```x```")
             + "\n_Context compacted; original records above remain part of this archive._\n")
         note = obsidian_note.obsidian_body(archive, timezone.utc)
-        self.assertIn("## 作業担当のセッション（Claude）\n\n> [!info]- セッション情報\n> ```json\n", note)
+        self.assertIn("## 作業担当のセッション（Claude）\n\n%% agentrun:begin session %%\n\n> [!info]- セッション情報\n> ```json\n", note)
         self.assertIn("> [!note]- ⚙️ 自動で挿入されたメッセージ · 11/18 05:30\n> <environment_context>", note)
         self.assertIn("### 🧑 ユーザー · 11/18 05:30\n\nfix \\[\\[slides]]", note)
         self.assertIn("### 🤖 Claude · 11/18 05:31\n\n**Result**\n\n\\#include and `#keep`", note)
@@ -384,6 +405,30 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("> [!info] ここで文脈が圧縮されました", note)
         self.assertNotIn("<details>", note)
         self.assertIn("11/18 14:30", obsidian_note.obsidian_body(archive))  # Japan time by default
+        # Everything folded sits between marker lines, so a reader can keep only the conversation.
+        self.assertTrue(note.startswith("<!-- agentrun: "))
+        self.assertIn("%% agentrun:begin tool %%\n\n> [!example]- 🔧 Bash", note)
+        self.assertIn("```\n\n%% agentrun:end %%", note)
+        kept, inside = [], False
+        for line in note.splitlines():
+            if line.startswith("%% agentrun:begin "):
+                inside = True
+            elif line == "%% agentrun:end %%":
+                inside = False
+            elif not inside:
+                kept.append(line)
+        conversation = "\n".join(kept)
+        for gone in ("[!info]- セッション情報", "🔧 Bash", "boom", "environment_context"):
+            self.assertNotIn(gone, conversation)
+        for kept_text in ("fix \\[\\[slides]]", "\\#include", "```sh\n# comment"):
+            self.assertIn(kept_text, conversation)
+        # A message cannot start a marker line, in prose or in a code block.
+        spoof = ("\n### Assistant · 2026-11-18T05:31:00Z\n\n%% agentrun:begin tool %%\n\n"
+                 "```text\n%% agentrun:begin tool %%\n```\n")
+        rendered = obsidian_note.obsidian_body(spoof, timezone.utc)
+        self.assertNotIn("\n%% agentrun:begin", rendered)
+        self.assertIn("\\%\\% agentrun:begin tool \\%\\%", rendered)
+        self.assertIn("```text\n %% agentrun:begin tool %%\n```", rendered)
 
     def test_default_root_and_override(self):
         with patch.dict(os.environ, HOME=str(self.root / "host-home")):
