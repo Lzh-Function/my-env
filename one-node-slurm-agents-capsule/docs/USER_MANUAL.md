@@ -994,10 +994,13 @@ agentrun history search 学習率 loss         # すべての語を含む会話�
 agentrun history search OOM --agent codex
 ```
 
-1 件ごとに、起動日時・エージェント・モード・作業リポジトリ名・run のタイトル（`run_title.txt`）、最初の依頼、検索語の前後の文、Markdown のパスを表示します。
+1 件が 1 つの会話です。resume した run は元の run と同じ会話の続きなので、何回 resume しても 1 件にまとめます。中身は最後の run で保存したもの（それまでの全文を含みます）を使います。
+
+1 件ごとに、会話を始めた日時・エージェント・モード・作業リポジトリ名・タイトル、resume の回数と最後に使った日時、最初の依頼、検索語の前後の文、Markdown のパスを表示します。タイトルは、最後の run から順にさかのぼって、最初に見つかった `run_title.txt` を使います（resume ではタイトルが書かれないことがあるためです）。どの run にもタイトルがない場合は、一覧では空欄にし、書き出すノートの名前には最初の依頼を使います。
 
 ```text
 2026-11-13 12:00  codex  assist  chem-model  retrained chem model
+    resume 2 回・最終 2026-11-17 09:30
     最初の依頼: 学習率を下げて再学習して
     一致: …### Assistant · loss は 0.31 まで下がった
     ~/.agentrun/history/runs/20261113_120000_assist_codex-58327cfed3fda308/conversation.md
@@ -1014,8 +1017,9 @@ agentrun history export-md ~/vault/agent-history            # 全プロジェク
 agentrun history export-md ~/vault/agent-history --repo chem # 作業リポジトリで絞り込み
 ```
 
-- ファイル名は `2026-11-13 1200 retrained chem model.md` のように、起動日時と run のタイトルにします。タイトルがない場合は最初の依頼を使います。Obsidian やファイル同期で使えない文字（`/ : # [ ]` など）は空白に置き換えます。
-- 冒頭は Obsidian のプロパティ（YAML フロントマター）で、`date`、`agent`、`mode`、`repo`、`title`、`run_id`、`archive_id`、`archived_at`、`tags: [agentrun]` を持ちます。
+- ファイル名は `2026-11-13 1200 retrained chem model.md` のように、会話を始めた日時とタイトル（一覧と同じ決め方）にします。Obsidian やファイル同期で使えない文字（`/ : # [ ]` など）は空白に置き換えます。
+- 冒頭は Obsidian のプロパティ（YAML フロントマター）で、`date`（会話を始めた日時）、`agent`、`mode`、`repo`、`title`、`run_id`（最初の run）、`archive_id`、`archived_at`、`tags: [agentrun]` を持ちます。resume した会話には、`last_active`（最後に使った日時）、`runs`（経由した run の一覧）、`resumes`（回数）も入ります。
+- resume しても同じノートを更新します。ファイル名の日時は会話を始めた日時のままです。以前の版が resume ごとに書き出した重複ノートは、次の書き出しで削除して 1 つにまとめます。
 - 本文は保存済みの `conversation.md` を Obsidian で読みやすい形に直したものです。
   - 発言の見出しは `### 🧑 ユーザー · 11/18 14:30`、`### 🤖 Claude · 11/18 14:31` のように、日本時間の短い時刻を付けます（`AGENTRUN_TIMEZONE` で変えられます）。
   - ツールの呼び出しと結果、コマンドの実行、ファイルの変更、セッション情報、CLI が自動で挿入したメッセージは、閉じた状態の callout（`> [!example]-` など）に入れます。エラーになったツール結果は `[!failure]` で表示します。

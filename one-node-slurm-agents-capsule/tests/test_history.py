@@ -209,6 +209,57 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("新規 0 件、更新 2 件、変更なし 0 件", export())
         self.assertIn("新規 0 件、更新 0 件、変更なし 2 件", export())
 
+    def test_resumed_runs_are_one_conversation_named_by_the_newest_title(self):
+        def agentrun(*args):
+            result = subprocess.run([str(LAUNCHER), "history", *args], cwd=self.root,
+                                    capture_output=True, text=True, timeout=10, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout
+
+        first = self.parent / "20261021_170331_assist_codex"
+        first.mkdir()
+        sessions.init(first, "codex", str(self.root), "assist")
+        rollout = sessions.state_dir(first, sessions.manifest(first)) / ".codex/sessions/rollout.jsonl"
+        meta = {"type": "session_meta", "payload": {"id": ID}}
+        write_jsonl(rollout, [meta, message("user", "図を直して"), message("assistant", "直した")])
+        (first / "artifacts").mkdir()
+        (first / "artifacts/run_title.txt").write_text("fixed figures\n")
+        collector.archive(first)
+        vault = self.root / "vault"
+        # An export from before grouping wrote one note per run; fake that for the resumed run below.
+        resumed = self.parent / "20261105_151417_resume-assist_codex_X"
+        resumed.mkdir()
+        sessions.init(resumed, "codex", str(self.root), "assist", first)
+        write_jsonl(rollout, [meta, message("user", "図を直して"), message("assistant", "直した"),
+                              message("user", "続き: 表も"), message("assistant", "表も直した")])
+        (resumed / "artifacts").mkdir()
+        (resumed / "artifacts/run_title.txt").write_text("")  # resumes often write no title
+        collector.archive(resumed)
+        vault.mkdir()
+        old_id = history_export.archive_key(self.parent, resumed.name)
+        (vault / "2026-11-05 1514 図を直して.md").write_text("old per-run note\n")
+        (vault / ".agentrun-export.json").write_text(json.dumps(
+            {old_id: {"file": "2026-11-05 1514 図を直して.md", "updated_at": "x"}}))
+
+        listing = agentrun("list")
+        self.assertEqual(listing.count("最初の依頼: 図を直して"), 1, listing)
+        self.assertIn("2026-10-21 17:03  codex  assist", listing)
+        self.assertIn("fixed figures", listing)
+        self.assertIn("resume 1 回・最終 2026-11-05 15:14", listing)
+        self.assertIn("一致: ", agentrun("search", "表も直した"))
+        self.assertIn("新規 1 件、更新 0 件、変更なし 0 件、resume 前の重複ノートを 1 件まとめました", agentrun("export-md", str(vault)))
+        self.assertEqual(sorted(p.name for p in vault.iterdir()), [".agentrun-export.json", "2026-10-21 1703 fixed figures.md"])
+        note = (vault / "2026-10-21 1703 fixed figures.md").read_text()
+        self.assertIn('last_active: "2026-11-05T15:14:17"\n', note)
+        self.assertIn('runs: ["20261021_170331_assist_codex", "20261105_151417_resume-assist_codex_X"]\nresumes: 1\n', note)
+        self.assertIn("表も直した", note)
+        # A newer title from a later resume replaces the name, and the note follows it.
+        (resumed / "artifacts/run_title.txt").write_text("fixed figures and tables\n")
+        collector.archive(resumed)
+        self.assertIn("更新 1 件", agentrun("export-md", str(vault)))
+        self.assertTrue((vault / "2026-10-21 1703 fixed figures and tables.md").is_file())
+        self.assertFalse((vault / "2026-10-21 1703 fixed figures.md").exists())
+
     def test_obsidian_note_folds_tools_and_keeps_messages_out_of_the_outline(self):
         archive = (
             f"\n## Session: abc (worker, claude)\n\n{history_export.fence(history_export.json_text({'cwd': '/workspace'}), 'json')}"

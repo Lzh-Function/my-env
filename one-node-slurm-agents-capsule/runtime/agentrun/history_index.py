@@ -12,7 +12,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from history_export import history_root
+from history_export import archive_key, history_root
 from obsidian_note import FORMAT, obsidian_body, zone
 from sessions import safe_text
 
@@ -84,39 +84,76 @@ def snippets(markdown, words, limit=2, width=48):
     return found[:limit]
 
 
-def rows(db, words, agent, repo):
-    query = ("SELECT archive_id, run_id, run_parent, agent, repo, markdown_path, metadata_json, markdown, updated_at "
-             "FROM conversations WHERE 1=1")
+class Conversation:
+    """All archived runs of one conversation: the original run and every resume of it.
+
+    Resumed runs share the original run's session store, so the newest run's archive holds
+    the whole conversation; the older archives are earlier, shorter copies of it.
+    """
+
+    def __init__(self, runs):
+        self.runs = sorted(runs, key=lambda row: row["run_id"])
+        self.first, self.latest = self.runs[0], self.runs[-1]
+        self.metadata = json.loads(self.latest["metadata_json"])
+
+    @property
+    def key(self):
+        # Equals the original run's archive ID, so notes exported before grouping keep their entry.
+        return archive_key(Path(self.latest["run_parent"]), self.latest["session_key"])
+
+    @property
+    def resumes(self):
+        return len(self.runs) - 1
+
+    def label(self):
+        """The newest title any of its runs wrote; a resume often writes none."""
+        for row in reversed(self.runs):
+            text = title(row["run_parent"], row["run_id"], json.loads(row["metadata_json"]))
+            if text:
+                return text
+        return ""
+
+    def contains(self, words):
+        return all(any(word.lower() in row["markdown"].lower() for row in self.runs) for word in words)
+
+
+def conversations(db, words, agent, repo):
+    query = ("SELECT archive_id, run_id, run_parent, agent, repo, session_key, markdown_path, metadata_json, "
+             "markdown, updated_at FROM conversations WHERE 1=1")
     params = []
-    for word in words:
-        query += " AND instr(lower(markdown), lower(?)) > 0"
-        params.append(word)
     if agent:
         query += " AND agent = ?"
         params.append(agent)
     if repo:
         query += " AND instr(repo, ?) > 0"
         params.append(repo)
-    # Run IDs start with the launch time, so this is newest first.
-    return db.execute(query + " ORDER BY run_id DESC, archive_id", params).fetchall()
+    db.row_factory = sqlite3.Row
+    groups = {}
+    for row in db.execute(query, params):
+        groups.setdefault((row["run_parent"], row["session_key"]), []).append(row)
+    found = [conversation for conversation in map(Conversation, groups.values()) if conversation.contains(words)]
+    # Run IDs start with the launch time: most recently used conversation first.
+    return sorted(found, key=lambda c: (c.latest["run_id"], c.latest["archive_id"]), reverse=True)
 
 
 def show(found, words, limit):
     if not found:
         print("該当する会話はありません。" if words else "保存された会話はまだありません。")
         return
-    for _archive_id, run_id, run_parent, agent, repo, markdown_path, metadata_json, markdown, _updated in found[:limit]:
-        metadata = json.loads(metadata_json)
+    for conversation in found[:limit]:
+        latest = conversation.latest
         heading = "  ".join(part for part in (
-            started(run_id), agent, metadata.get("mode", ""), Path(repo).name or repo,
-            one_line(title(run_parent, run_id, metadata), 50)) if part)
+            started(conversation.first["run_id"]), latest["agent"], conversation.metadata.get("mode", ""),
+            Path(latest["repo"]).name or latest["repo"], one_line(conversation.label(), 50)) if part)
         print(safe_text(heading))
-        request = first_request(markdown)
+        if conversation.resumes:
+            print(f"    resume {conversation.resumes} 回・最終 {started(latest['run_id'])}")
+        request = first_request(latest["markdown"])
         if request:
             print("    最初の依頼: " + one_line(request, 70))
-        for text in snippets(markdown, words):
+        for text in snippets(latest["markdown"], words):
             print("    一致: " + one_line(text, 110))
-        print("    " + safe_text(short_path(markdown_path)))
+        print("    " + safe_text(short_path(latest["markdown_path"])))
     if len(found) > limit:
         print(f"（ほかに {len(found) - limit} 件。--limit で増やせます）")
 
@@ -136,14 +173,23 @@ def note_name(run_id, label):
     return f"{prefix} {label}".strip()
 
 
-def frontmatter(run_id, agent, repo, metadata, label, updated):
+def iso_time(run_id):
     stamp = RUN_TIME.match(run_id)
+    return "{}-{}-{}T{}:{}:{}".format(*stamp.groups()) if stamp else None
+
+
+def frontmatter(conversation, label):
+    first, latest = conversation.first, conversation.latest
     fields = {
-        "date": "{}-{}-{}T{}:{}:{}".format(*stamp.groups()) if stamp else None,
-        "agent": agent, "mode": metadata.get("mode"), "repo": repo, "title": label,
-        "run_id": run_id, "archive_id": metadata.get("archive_id"), "archived_at": updated,
+        "date": iso_time(first["run_id"]),
+        "last_active": iso_time(latest["run_id"]) if conversation.resumes else None,
+        "agent": latest["agent"], "mode": conversation.metadata.get("mode"), "repo": latest["repo"],
+        "title": label, "run_id": first["run_id"],
+        "runs": [row["run_id"] for row in conversation.runs] if conversation.resumes else None,
+        "resumes": conversation.resumes or None,
+        "archive_id": latest["archive_id"], "archived_at": latest["updated_at"],
     }
-    # JSON strings are valid YAML double-quoted scalars, so any text is safe here.
+    # JSON values are valid YAML flow scalars and sequences, so any text is safe here.
     lines = [f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in fields.items() if value]
     return "---\n" + "\n".join(lines) + "\ntags: [agentrun]\n---\n"
 
@@ -161,18 +207,27 @@ def export_markdown(found, directory):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_path = directory / EXPORT_STATE
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+    # Earlier exports wrote one note per resumed run; those notes now belong to their conversation.
+    merged = 0
+    for conversation in found:
+        for row in conversation.runs:
+            entry = state.get(row["archive_id"]) if row["archive_id"] != conversation.key else None
+            if entry:
+                (directory / entry["file"]).unlink(missing_ok=True)
+                del state[row["archive_id"]]
+                merged += 1
     taken = {entry["file"] for entry in state.values()}
     counts = {"new": 0, "updated": 0, "same": 0}
     tz = zone()
-    for archive_id, run_id, run_parent, agent, repo, _path, metadata_json, markdown, updated in reversed(found):
-        metadata = json.loads(metadata_json)
-        label = title(run_parent, run_id, metadata) or one_line(first_request(markdown), 60) or agent
-        name = note_name(run_id, label) + ".md"
-        previous = state.get(archive_id)
+    for conversation in reversed(found):
+        latest = conversation.latest
+        label = conversation.label() or one_line(first_request(latest["markdown"]), 60) or latest["agent"]
+        name = note_name(conversation.first["run_id"], label) + ".md"
+        previous = state.get(conversation.key)
         if previous and re.fullmatch(re.escape(name[:-3]) + r" \(\d+\)\.md", previous["file"]):
             name = previous["file"]  # keeps the suffix it got for a name clash earlier
-        if previous and previous["updated_at"] == updated and previous["file"] == name \
-                and previous.get("format") == FORMAT \
+        version = {"updated_at": latest["updated_at"], "source": latest["archive_id"], "format": FORMAT}
+        if previous and previous["file"] == name and all(previous.get(k) == v for k, v in version.items()) \
                 and (directory / name).is_file():
             counts["same"] += 1
             continue
@@ -181,19 +236,20 @@ def export_markdown(found, directory):
             stem, number = name[:-3], 2
             while name in taken or ((directory / name).exists() and not (previous and previous["file"] == name)):
                 name, number = f"{stem} ({number}).md", number + 1
-        header = ARCHIVE_HEADER.match(markdown)
+        header = ARCHIVE_HEADER.match(latest["markdown"])
         if not header:
-            raise ValueError(f"unexpected archive layout: {archive_id}")
-        write_private(directory / name, frontmatter(run_id, agent, repo, metadata, label, updated)
-                      + "\n" + obsidian_body(markdown[header.end():], tz))
+            raise ValueError(f"unexpected archive layout: {latest['archive_id']}")
+        write_private(directory / name, frontmatter(conversation, label)
+                      + "\n" + obsidian_body(latest["markdown"][header.end():], tz))
         if previous and previous["file"] != name:
             (directory / previous["file"]).unlink(missing_ok=True)  # the title changed
             taken.discard(previous["file"])
         taken.add(name)
-        state[archive_id] = {"file": name, "updated_at": updated, "format": FORMAT}
+        state[conversation.key] = {"file": name, **version}
         counts["updated" if previous else "new"] += 1
     write_private(state_path, json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
-    print(f"書き出しました: 新規 {counts['new']} 件、更新 {counts['updated']} 件、変更なし {counts['same']} 件 → {directory}")
+    note = f"、resume 前の重複ノートを {merged} 件まとめました" if merged else ""
+    print(f"書き出しました: 新規 {counts['new']} 件、更新 {counts['updated']} 件、変更なし {counts['same']} 件{note} → {directory}")
 
 
 def main():
@@ -218,7 +274,7 @@ def main():
         return 0
     words = [] if options.action == "export-md" else options.words
     try:
-        found = rows(db, words, options.agent, options.repo)
+        found = conversations(db, words, options.agent, options.repo)
     finally:
         db.close()
     if options.action == "export-md":
