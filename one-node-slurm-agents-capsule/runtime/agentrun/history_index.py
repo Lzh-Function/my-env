@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from history_export import archive_key, history_root
+from history_export import archive_key, chronological, history_root
 from obsidian_note import FORMAT, obsidian_body, zone
 from sessions import safe_text
 
@@ -212,6 +212,8 @@ def conversations(db, words, agent, repo, noise=False):
     db.row_factory = sqlite3.Row
     groups = {}
     for row in db.execute(query, params):
+        # Archives saved before sessions were put in time order are reordered as they are read.
+        row = {**dict(row), "markdown": chronological(row["markdown"])}
         groups.setdefault((row["run_parent"], row["session_key"]), []).append(row)
     found = [conversation for conversation in map(Conversation, groups.values())
              if conversation.noise == noise and conversation.contains(words)]

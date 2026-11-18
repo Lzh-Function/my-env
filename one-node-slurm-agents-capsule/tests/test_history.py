@@ -503,6 +503,49 @@ class HistoryTests(unittest.TestCase):
         for value in ("legacy request", "legacy answer", "legacy result", "exec_command"):
             self.assertIn(value, self.markdown())
 
+    def test_resumed_sessions_read_oldest_first_whatever_their_file_names(self):
+        self.initialize("claude")
+        project = self.store / ".claude/projects/-workspace"
+
+        def session(name, request, answer, day):
+            base = {"sessionId": name, "cwd": "/workspace"}
+            write_jsonl(project / f"{name}.jsonl", [
+                {**base, "type": "user", "uuid": f"{name}-u", "timestamp": f"2026-11-{day}T01:00:00Z",
+                 "message": {"role": "user", "content": request}},
+                {**base, "type": "assistant", "uuid": f"{name}-a", "timestamp": f"2026-11-{day}T01:05:00Z",
+                 "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}}])
+
+        # UUID file names sort the newest resume first, then the first resume, then the start.
+        session("aaaa", "二回目の再開", "応答3", "12")
+        session("bbbb", "一回目の再開", "応答2", "05")
+        session("cccc", "最初の依頼です", "応答1", "01")
+        write_jsonl(self.store / "reviewers/codex/.codex/sessions/rollout.jsonl", [
+            {"type": "session_meta", "payload": {"id": ID}},
+            {**message("user", "監査してください"), "timestamp": "2026-10-01T00:00:00Z"}])
+        order = ["最初の依頼です", "一回目の再開", "二回目の再開", "監査してください"]
+
+        # Archives saved before the fix kept file-name order; they are reordered when read.
+        with patch.object(history_export, "chronological", lambda markdown: markdown):
+            collector.archive(self.run)
+        legacy = self.database_rows()[0][2]
+        self.assertGreater(legacy.index("最初の依頼です"), legacy.index("二回目の再開"))
+        self.assertIn("最初の依頼: 最初の依頼です", self.history_cli("list"))
+        vault = self.root / "vault"
+        self.history_cli("export-md", str(vault))
+        note = next(vault.glob("*.md")).read_text()
+        self.assertEqual(sorted(order, key=note.index), order)
+
+        # New archives are written in time order.
+        collector.archive(self.run)
+        archived = self.markdown()
+        self.assertEqual(sorted(order, key=archived.index), order)
+        self.assertEqual(history_export.chronological(archived), archived)
+
+        # A message line that looks like a section heading leaves the archive untouched.
+        odd = "# Conversation archive\n\n## Session: b (worker, claude)\n\n### User · 2026-11-02T00:00:00Z\n\nlater\n" \
+              "## Review: quoted\n\n## Session: a (worker, claude)\n\n### User · 2026-11-01T00:00:00Z\n\nearlier\n"
+        self.assertEqual(history_export.chronological(odd), odd)
+
     def test_claude_results_subagents_and_spilled_output(self):
         self.initialize("claude")
         project = self.store / ".claude/projects/-workspace"

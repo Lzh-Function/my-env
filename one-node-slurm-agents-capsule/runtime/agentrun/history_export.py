@@ -16,6 +16,9 @@ import tempfile
 
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+SECTION_HEAD = re.compile(r"^## (?:Session: |Review: |Archive notes$)", re.MULTILINE)
+SESSION_ROLE = re.compile(r"## Session: .* \((worker|reviewer), (?:codex|claude)\)\n")
+TURN_STAMP = re.compile(r"^### (?:User|Assistant) · (\S+)$", re.MULTILINE)
 
 
 def history_root():
@@ -264,6 +267,46 @@ def archive_lock(directory):
         yield
 
 
+def started(section):
+    """The earliest message time in an archived session section (None if it has none)."""
+    moments = []
+    for stamp in TURN_STAMP.findall(section):
+        try:
+            moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        moments.append(moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc))
+    return min(moments) if moments else None
+
+
+def chronological(markdown):
+    """Put the session sections of an archive in the order they started.
+
+    Transcript files are found by name (Claude names them with random UUIDs), so a resumed
+    conversation could read newest session first. Worker sessions stay before reviewer
+    sessions; sessions without any message time keep their place at the end of their group.
+    """
+    heads = [m.start() for m in SECTION_HEAD.finditer(markdown)]
+    sessions = []
+    for index, start in enumerate(heads):
+        role = SESSION_ROLE.match(markdown, start)
+        if not role:
+            break  # reviews and notes follow all sessions
+        end = heads[index + 1] if index + 1 < len(heads) else len(markdown)
+        sessions.append((role.group(1), markdown[start:end]))
+    later = (SESSION_ROLE.match(markdown, start) for start in heads[len(sessions):])
+    if len(sessions) < 2 or any(later):
+        return markdown  # a message line looked like a heading: leave the archive as it is
+    never = datetime.max.replace(tzinfo=timezone.utc)
+    ordered = sorted(enumerate(sessions), key=lambda item: (
+        item[1][0] != "worker", started(item[1][1]) or never, item[0]))
+    if [index for index, _ in ordered] == list(range(len(sessions))):
+        return markdown
+    begin, end = heads[0], heads[0] + sum(len(text) for _, text in sessions)
+    body = "".join(text if text.endswith("\n") else text + "\n" for _, (_, text) in ordered)
+    return markdown[:begin] + body + markdown[end:]
+
+
 def export_run(run, data, store):
     """Archive all native sessions, including subagents and /new sessions in a run."""
     archive_id = archive_key(run.parent, data["run_id"])
@@ -322,6 +365,7 @@ def export_run(run, data, store):
                     transcripts=transcript_metadata, reviews=reviews, warnings=sorted(warnings))
         markdown = "# Conversation archive\n\n" + fence(json_text({k: v for k, v in info.items() if k != "transcripts"}), "json")
         markdown += "".join(parts) if parts else "\nNo persisted conversation records were found.\n"
+        markdown = chronological(markdown)
         if warnings:
             markdown += "\n## Archive notes\n\n" + "".join(f"- {clean(w)}\n" for w in sorted(warnings))
         markdown_path = target / "conversation.md"
