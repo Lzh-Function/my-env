@@ -223,10 +223,11 @@ wizard_run_template() {
 
 wizard_history() {
     local list='一覧を見る（新しい順）' search='キーワードで検索する' export='Markdown として書き出す（Obsidian など向け）'
+    local rename='会話の名前を変える'
     local choice rc filter words directory
     while :; do
         rc=0
-        choice="$(wizard_select '会話履歴 — 保存した全プロジェクトの会話が対象です' "$list" "$search" "$export")" || rc=$?
+        choice="$(wizard_select '会話履歴 — 保存した全プロジェクトの会話が対象です' "$list" "$search" "$rename" "$export")" || rc=$?
         [ "$rc" -eq 0 ] || { [ "$rc" -eq 10 ] && return 0; return "$rc"; }
         case "$choice" in
             "$list")
@@ -242,6 +243,7 @@ wizard_history() {
                 read -r -a terms <<< "$words"
                 if [ "${#terms[@]}" -eq 0 ]; then wizard_banner '検索する語を入力してください。' || rc=$?
                 else wizard_exec "会話履歴の検索: $words" wizard_python history_index.py search "${terms[@]}" --limit 30 || rc=$?; fi ;;
+            "$rename") wizard_history_rename || rc=$? ;;
             "$export")
                 directory="$(cat "$WIZARD_EXPORT_DIR_FILE" 2>/dev/null || true)"
                 directory="$(wizard_path_input '書き出し先のフォルダ（Obsidian の保管庫の中のフォルダなど）' "${directory:-$HOME/agent-history}")" || rc=$?
@@ -256,6 +258,35 @@ wizard_history() {
         esac
         wizard_menu_rc "$rc" || return $?
     done
+}
+
+wizard_history_rename() {
+    local id label current choice name rc=0 index
+    local -a ids=() labels=() names=()
+    while IFS=$'\t' read -r id label current; do
+        [ -n "$id" ] || continue
+        ids+=("$id") labels+=("$label") names+=("$current")
+    done < <(wizard_python history_index.py choices --limit 40 2>/dev/null)
+    if [ "${#ids[@]}" -eq 0 ]; then
+        wizard_banner '保存された会話はまだありません。'
+        return $?
+    fi
+    choice="$(wizard_select '名前を変える会話を選んでください（新しい順に 40 件）' "${labels[@]}")" || rc=$?
+    [ "$rc" -eq 0 ] || { [ "$rc" -eq 10 ] && return 0; return "$rc"; }
+    for index in "${!labels[@]}"; do
+        [ "${labels[$index]}" != "$choice" ] || { id="${ids[$index]}"; current="${names[$index]}"; }
+    done
+    name="$(wizard_input '新しい名前（空にすると、エージェントが付けた名前に戻します）' "$current")" || rc=$?
+    [ "$rc" -ne 10 ] || return 0
+    [ "$rc" -eq 0 ] || return "$rc"
+    if [ -n "$name" ]; then
+        wizard_exec '会話の名前の変更' wizard_python history_index.py rename "$id" "$name"
+    elif wizard_confirm '名前が空です。自分で付けた名前を消して、エージェントが付けた名前に戻しますか？' 0; then
+        wizard_exec '会話の名前を元に戻す' wizard_python history_index.py rename "$id" --clear
+    else
+        rc=$?
+        [ "$rc" -eq 1 ] || return "$rc"
+    fi
 }
 
 # ---------------------------------------------------------------------------

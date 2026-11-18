@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import test_wizard
 from test_sessions import codex_history, sessions
@@ -133,7 +134,8 @@ class WizardToolTests(unittest.TestCase):
         answers = [
             "2",
             "3", "2", "loss", "",                    # history → search
-            "3", str(export), "y", "", ":back",      # history → export (nothing archived yet)
+            "3",                                     # history → rename (nothing archived yet)
+            "4", str(export), "y", "", ":back",      # history → export (nothing archived yet)
             "4", "3", ":back",                        # templates → show (none yet) → back
             "5", "3", "1", "", ":back",               # auth → import → claude
             "7", "1", "1", "",                        # checks → doctor → claude
@@ -143,6 +145,7 @@ class WizardToolTests(unittest.TestCase):
         output = self.wizard(answers, expected=130)
         self.assertIn("会話履歴の検索: loss", output)
         self.assertIn("保存された会話はまだありません", output)
+        self.assertIn("会話履歴の書き出し", output)
         self.assertIn("テンプレートはまだありません", output)
         self.assertIn("== 認証の取り込み ==", output)
         self.assertIn("ホストにありません", output)
@@ -150,6 +153,20 @@ class WizardToolTests(unittest.TestCase):
         self.assertIn("smoke-test の準備をしました", output)
         self.assertIn("== validate ==", output)
         self.assertTrue(any((self.root / ".agent-runs").glob("*smoke-test*")))
+
+    def test_rename_a_conversation_from_the_history_menu(self):
+        import history
+        run = self.make_run()
+        codex_history(sessions.state_dir(run, sessions.manifest(run)))
+        with patch.dict(os.environ, AGENTRUN_HISTORY_DIR=self.env["AGENTRUN_HISTORY_DIR"]):
+            history.archive(run)
+        # tools → history → rename → the only conversation → replace the prefilled name → Enter → cancel.
+        output = self.wizard(["2", "3", "3", "1", "\x15発表の図の修正", "", ":cancel"], expected=130)
+        self.assertIn("名前を変える会話を選んでください", output)
+        self.assertIn("trained baseline model", output)
+        self.assertIn("名前を変えました: trained baseline model → 発表の図の修正", output)
+        titles = json.loads((self.root / "central-history/titles.json").read_text())
+        self.assertEqual([entry["title"] for entry in titles.values()], ["発表の図の修正"])
 
     def test_dry_run_previews_without_creating_a_run(self):
         # tools → dry-run → assist / claude / interactive → repo and resources as is → no binds,

@@ -27,6 +27,7 @@ Usage:
   agentrun history list [--agent A] [--repo TEXT] [--limit N]   # archived conversations, newest first
   agentrun history search WORD... [--agent A] [--repo TEXT] [--limit N]
   agentrun history export-md DIR [--agent A] [--repo TEXT]  # one note per conversation, e.g. for Obsidian
+  agentrun history rename RUN_ID NEW NAME | RUN_ID --clear  # name a conversation (ID from history list)
   agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]  # read cross-review dialogues
   agentrun wizard [options] [PROMPT]         # menus for launching and for every other feature; options skip to launching
   agentrun template list|show NAME|delete NAME [--yes]
@@ -413,6 +414,8 @@ home_config_mounts() {
     esac
 }
 
+# history_index.py recognises these prompts by their wording (CAPSULE_PROMPT, INTERACTIVE_PROMPT, GOAL)
+# to hide conversations nobody asked anything in; tests/test_history.py fails if the wording drifts.
 write_prompt() {
     local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5" launch="${6:-batch}" \
         mem="${7:-}" cpus="${8:-}" gpus="${9:-}" time_limit="${10:-}" partition="${11:-}"
@@ -781,7 +784,7 @@ interactive_srun_args() {
 command_history() {
     local target="" watch=0 run_dir
     case "${1:-}" in
-        list|search|export-md) python3 "$ROOT_DIR/runtime/agentrun/history_index.py" "$@"; return $? ;;
+        list|search|export-md|rename) python3 "$ROOT_DIR/runtime/agentrun/history_index.py" "$@"; return $? ;;
     esac
     while [ "$#" -gt 0 ]; do
         case "$1" in

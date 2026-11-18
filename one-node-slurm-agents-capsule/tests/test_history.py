@@ -260,6 +260,110 @@ class HistoryTests(unittest.TestCase):
         self.assertTrue((vault / "2026-10-21 1703 fixed figures and tables.md").is_file())
         self.assertFalse((vault / "2026-10-21 1703 fixed figures.md").exists())
 
+    def history_cli(self, *args, expected=0):
+        result = subprocess.run([str(LAUNCHER), "history", *args], cwd=self.root,
+                                capture_output=True, text=True, timeout=10, check=False)
+        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+        return result.stdout + result.stderr
+
+    def archived_run(self, name, messages, title=None):
+        run = self.parent / name
+        run.mkdir()
+        sessions.init(run, "codex", str(self.root), "assist")
+        store = sessions.state_dir(run, sessions.manifest(run))
+        write_jsonl(store / ".codex/sessions/rollout.jsonl",
+                    [{"type": "session_meta", "payload": {"id": ID}}, *messages])
+        if title is not None:
+            (run / "artifacts").mkdir()
+            (run / "artifacts/run_title.txt").write_text(title + "\n")
+        collector.archive(run)
+        return run
+
+    def test_sessions_where_nobody_asked_anything_are_left_out(self):
+        start = ("You are running inside an HPC agent capsule.\n\nMode: assist\n\n"
+                 "Wait for the user's first instruction. Do not read files.")
+        goal = ("/goal You are running inside an HPC agent capsule.\n\nMode: experiment\n\n"
+                "User goal:\ntrain the baseline\n\nRequired outputs (paths are inside the capsule):\n- x")
+        exit_command = "<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>"
+        # Opened and closed without a request: the agent still answered the start prompt once.
+        self.archived_run("20261101_100000_assist_codex", [message("user", start), message("assistant", "指示を待ちます")])
+        self.archived_run("20261102_100000_assist_codex", [
+            message("user", start), message("assistant", "指示を待ちます"), message("user", exit_command),
+            message("user", "<environment_context>\n</environment_context>")])
+        self.archived_run("20261103_100000_assist_codex", [
+            message("user", start), message("assistant", "指示を待ちます"), message("user", "図を直して"),
+            message("assistant", "直した")])
+        self.archived_run("20261104_100000_experiment_codex", [message("user", goal), message("assistant", "done")])
+        self.archived_run("20261105_100000_assist_codex", [
+            message("user", start), message("assistant", "指示を待ちます"),
+            message("user", "<command-name>/review-paper</command-name>\n<command-args></command-args>")])
+        listing = self.history_cli("list")
+        self.assertNotIn("20261101_100000", listing)
+        self.assertNotIn("20261102_100000", listing)
+        self.assertIn("ID: 20261103_100000_assist_codex", listing)
+        self.assertIn("ID: 20261104_100000_experiment_codex", listing)  # a batch goal is a request
+        self.assertIn("ID: 20261105_100000_assist_codex", listing)  # so is a skill command
+        self.assertIn("最初の依頼: 図を直して", listing)
+        self.assertIn("最初の依頼: train the baseline", listing)
+        self.assertNotIn("You are running inside", listing)
+        self.assertIn("該当する会話はありません", self.history_cli("search", "指示を待ちます", "/exit"))
+        # Notes an earlier export wrote for those empty starts are removed on the next export.
+        vault = self.root / "vault"
+        vault.mkdir()
+        empty_id = history_export.archive_key(self.parent, "20261101_100000_assist_codex")
+        (vault / "2026-11-01 1000 empty.md").write_text("old\n")
+        (vault / ".agentrun-export.json").write_text(json.dumps({empty_id: {"file": "2026-11-01 1000 empty.md"}}))
+        self.assertIn("新規 3 件、更新 0 件、変更なし 0 件、依頼のない会話のノートを 1 件削除しました",
+                      self.history_cli("export-md", str(vault)))
+        self.assertFalse((vault / "2026-11-01 1000 empty.md").exists())
+        self.assertIn("2026-11-03 1000 図を直して.md", [p.name for p in vault.iterdir()])
+
+    def real_prompt(self, mode, launch, goal="train the baseline"):
+        """The start prompt exactly as the launcher writes it, so wording changes reach these tests."""
+        path = self.root / f"prompt-{mode}-{launch}.txt"
+        script = 'source "$1"; write_prompt "$2" "$3" codex /repo "$4" "$5" 32000M 4 0 01:00:00 ""'
+        subprocess.run(["bash", "-c", script, "bash", str(LAUNCHER), str(path), mode, goal, launch],
+                       check=True, capture_output=True, timeout=30, env=dict(os.environ, GH_ENV_FILE=""))
+        return path.read_text()
+
+    def test_empty_start_detection_follows_the_launchers_real_prompts(self):
+        # If this fails after editing write_prompt, update CAPSULE_PROMPT, INTERACTIVE_PROMPT or GOAL
+        # in history_index.py so empty starts stay hidden and batch goals stay visible.
+        import history_index
+        interactive = self.real_prompt("assist", "interactive")
+        self.assertFalse(history_index.spoken(interactive), "the interactive start prompt counts as a request")
+        for mode in ("assist", "experiment", "campaign"):
+            with self.subTest(mode=mode):
+                prompt = self.real_prompt(mode, "batch")
+                self.assertTrue(history_index.spoken(prompt), f"a {mode} batch prompt is hidden as empty")
+        # End to end: the same text as the first user turn of archived conversations.
+        self.archived_run("20261101_100000_assist_codex", [message("user", interactive), message("assistant", "待ちます")])
+        self.archived_run("20261102_100000_experiment_codex", [
+            message("user", self.real_prompt("experiment", "batch", goal="train the baseline\nwith two seeds")),
+            message("assistant", "done")])
+        listing = self.history_cli("list")
+        self.assertNotIn("20261101_100000", listing)
+        self.assertIn("最初の依頼: train the baseline with two seeds", listing)
+
+    def test_rename_names_the_conversation_until_cleared(self):
+        self.archived_run("20261103_100000_assist_codex", [message("user", "図を直して"), message("assistant", "直した")],
+                          title="fixed figures")
+        self.archived_run("20261103_110000_assist_codex", [message("user", "表を直して"), message("assistant", "直した")])
+        self.assertIn("2 件あります", self.history_cli("rename", "20261103", "x", expected=2))
+        self.assertIn("当たる会話がありません", self.history_cli("rename", "20991231", "x", expected=2))
+        self.assertIn("名前を変えました: fixed figures → 発表の図 修正",
+                      self.history_cli("rename", "20261103_1000", "発表の図", " 修正"))
+        self.assertIn("発表の図 修正", self.history_cli("list"))
+        vault = self.root / "vault"
+        self.history_cli("export-md", str(vault))
+        self.assertTrue((vault / "2026-11-03 1000 発表の図 修正.md").is_file())
+        self.assertIn('title: "発表の図 修正"', (vault / "2026-11-03 1000 発表の図 修正.md").read_text())
+        self.assertIn("名前を変えました: 発表の図 修正 → fixed figures",
+                      self.history_cli("rename", "20261103_100000_assist_codex", "--clear"))
+        self.assertIn("更新 1 件", self.history_cli("export-md", str(vault)))
+        self.assertTrue((vault / "2026-11-03 1000 fixed figures.md").is_file())
+        self.assertFalse((vault / "2026-11-03 1000 発表の図 修正.md").exists())
+
     def test_obsidian_note_folds_tools_and_keeps_messages_out_of_the_outline(self):
         archive = (
             f"\n## Session: abc (worker, claude)\n\n{history_export.fence(history_export.json_text({'cwd': '/workspace'}), 'json')}"

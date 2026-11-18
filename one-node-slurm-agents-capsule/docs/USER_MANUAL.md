@@ -556,7 +556,7 @@ agentrun wizard --agent codex    # 起動用のオプションを付けると、
 | --- | --- | --- |
 | 実行中の agentrun を見る | ジョブごとの一覧と overlap の関係 | `ps` |
 | run を選んで見る | run を選び（今いるディレクトリの run と、別の場所から起動した実行中の run）、概要を見たうえで、会話の再開（セッションが終わっていて会話が保存されている run だけ。再開前に設定を表示して確認します）、ログ（末尾 200 行か追いかけ表示）、`status.json`、成果物の点検、相互監査の一覧と追いかけ表示、会話履歴の保存し直し、バッチの履歴回収（`--submit` で投入し、まだ回収が終わっていない run だけ）、設定のテンプレート登録を行う | `resume`・`logs`・`tail`・`status`・`verify-run`・`reviews`・`history`・`history --watch`・`template save --from`・`list-runs`・`open-run` |
-| 会話履歴 | 一覧（作業リポジトリで絞り込み可）、キーワード検索、Markdown への書き出し（書き出し先は次回の既定値になります） | `history list`・`history search`・`history export-md` |
+| 会話履歴 | 一覧（作業リポジトリで絞り込み可）、キーワード検索、会話の名前の変更（新しい順に 40 件から選び、今の名前を直す。空にするとエージェントが付けた名前に戻す）、Markdown への書き出し（書き出し先は次回の既定値になります） | `history list`・`history search`・`history rename`・`history export-md` |
 | テンプレートの管理 | run からの登録、中身の確認、削除（確認あり） | `template` |
 | 認証 | 状態の確認、ログイン、取り込み、保存した認証の削除（確認あり） | `auth status`・`auth login`・`auth import`・`auth reset` |
 | 起動内容だけ確認する | 起動と同じ質問に答えたあと、何も起動せずにマウントやコマンドを表示します。結果を見てから「この設定で実際に起動する」「設定を変更する」「wizard を終了する」を選べます。会話の再開は対象外です | `dry-run --show-mounts` |
@@ -992,19 +992,27 @@ agentrun history list                      # 新しい順に 20 件
 agentrun history list --repo chem --limit 50
 agentrun history search 学習率 loss         # すべての語を含む会話（大文字小文字は区別しない）
 agentrun history search OOM --agent codex
+agentrun history rename 20261113_120000 発表用の再学習   # 会話に名前を付ける（ID は一覧の「ID:」）
+agentrun history rename 20261113_120000 --clear          # エージェントが付けた名前に戻す
 ```
 
 1 件が 1 つの会話です。resume した run は元の run と同じ会話の続きなので、何回 resume しても 1 件にまとめます。中身は最後の run で保存したもの（それまでの全文を含みます）を使います。
 
-1 件ごとに、会話を始めた日時・エージェント・モード・作業リポジトリ名・タイトル、resume の回数と最後に使った日時、最初の依頼、検索語の前後の文、Markdown のパスを表示します。タイトルは、最後の run から順にさかのぼって、最初に見つかった `run_title.txt` を使います（resume ではタイトルが書かれないことがあるためです）。どの run にもタイトルがない場合は、一覧では空欄にし、書き出すノートの名前には最初の依頼を使います。
+1 件ごとに、会話を始めた日時・エージェント・モード・作業リポジトリ名・タイトル、resume の回数と最後に使った日時、最初の依頼、検索語の前後の文、会話の ID（最初の run の ID）と Markdown のパスを表示します。タイトルは、`history rename` で付けた名前があればそれを、なければ最後の run から順にさかのぼって最初に見つかった `run_title.txt` を使います（resume ではタイトルが書かれないことがあるためです）。どの run にもタイトルがない場合は、一覧では空欄にし、書き出すノートの名前には最初の依頼を使います。
 
 ```text
 2026-11-13 12:00  codex  assist  chem-model  retrained chem model
     resume 2 回・最終 2026-11-17 09:30
     最初の依頼: 学習率を下げて再学習して
     一致: …### Assistant · loss は 0.31 まで下がった
-    ~/.agentrun/history/runs/20261113_120000_assist_codex-58327cfed3fda308/conversation.md
+    ID: 20261113_120000_assist_codex    ~/.agentrun/history/runs/20261113_120000_assist_codex-58327cfed3fda308/conversation.md
 ```
+
+「最初の依頼」は、ユーザーが書いた最初の発言です。バッチ実行では、起動時に渡した依頼（`User goal:` の中身）を表示します。
+
+対話式の起動では、agentrun が開幕に自動のプロンプト（「Wait for the user's first instruction」で終わるもの）を送ります。ユーザーがそのあと何も依頼しなかった会話は、一覧・検索・書き出しのどれにも出しません。エージェントがその自動のプロンプトに返事をしていても同じです。`/exit` や `/model` のような CLI の操作だけの会話もここに含みます。引数付きのコマンドやスキルの呼び出しは依頼として数えます。アーカイブ自体は残すので、`~/.agentrun/history/runs/` には残っています。
+
+`history rename` で付けた名前は `~/.agentrun/history/titles.json` に保存します。アーカイブや run の `run_title.txt` は書き換えません。ID は一覧の「ID:」の値で、resume した会話ならどの run の ID でも指定できます。前方一致でも、1 件に決まれば受け付けます。
 
 `--repo` は作業リポジトリのパスの一部で絞り込みます。検索対象は Markdown の全文で、ツールの出力と実行情報も含みます。データベースは読み取り専用で開くので、一覧や検索で履歴が変わることはありません。
 
@@ -1020,6 +1028,7 @@ agentrun history export-md ~/vault/agent-history --repo chem # 作業リポジ�
 - ファイル名は `2026-11-13 1200 retrained chem model.md` のように、会話を始めた日時とタイトル（一覧と同じ決め方）にします。Obsidian やファイル同期で使えない文字（`/ : # [ ]` など）は空白に置き換えます。
 - 冒頭は Obsidian のプロパティ（YAML フロントマター）で、`date`（会話を始めた日時）、`agent`、`mode`、`repo`、`title`、`run_id`（最初の run）、`archive_id`、`archived_at`、`tags: [agentrun]` を持ちます。resume した会話には、`last_active`（最後に使った日時）、`runs`（経由した run の一覧）、`resumes`（回数）も入ります。
 - resume しても同じノートを更新します。ファイル名の日時は会話を始めた日時のままです。以前の版が resume ごとに書き出した重複ノートは、次の書き出しで削除して 1 つにまとめます。
+- 依頼のない会話（上記）のノートを以前に書き出していた場合は、次の書き出しで削除します。名前を変えた会話は、次の書き出しでノートの名前も変わります。
 - 本文は保存済みの `conversation.md` を Obsidian で読みやすい形に直したものです。
   - 発言の見出しは `### 🧑 ユーザー · 11/18 14:30`、`### 🤖 Claude · 11/18 14:31` のように、日本時間の短い時刻を付けます（`AGENTRUN_TIMEZONE` で変えられます）。
   - ツールの呼び出しと結果、コマンドの実行、ファイルの変更、セッション情報、CLI が自動で挿入したメッセージは、閉じた状態の callout（`> [!example]-` など）に入れます。エラーになったツール結果は `[!failure]` で表示します。
