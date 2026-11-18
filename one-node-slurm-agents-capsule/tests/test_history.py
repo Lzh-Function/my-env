@@ -1,6 +1,7 @@
 """Conversation export and host-only batch collection with synthetic transcripts."""
 
 import contextlib
+from datetime import timezone
 import io
 import json
 import os
@@ -21,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime/agentrun"))
 import history as collector
 import history_export
+import obsidian_note
 import sessions
 
 LAUNCHER = ROOT / "runtime/agentrun/agentrun"
@@ -198,6 +200,35 @@ class HistoryTests(unittest.TestCase):
         self.assertFalse((vault / "2026-11-13 1200 retrained chem model.md").exists())
         self.assertIn("loss は 0.29", (vault / "2026-11-13 1200 retrained again.md").read_text())
         self.assertEqual((vault / "2026-11-13 1200 retrained again.md").stat().st_mode & 0o777, 0o600)
+        # Notes written by an older layout are rewritten once, even when the archive did not change.
+        state_path = vault / ".agentrun-export.json"
+        state = json.loads(state_path.read_text())
+        for entry in state.values():
+            entry.pop("format")
+        state_path.write_text(json.dumps(state))
+        self.assertIn("新規 0 件、更新 2 件、変更なし 0 件", export())
+        self.assertIn("新規 0 件、更新 0 件、変更なし 2 件", export())
+
+    def test_obsidian_note_folds_tools_and_keeps_messages_out_of_the_outline(self):
+        archive = (
+            f"\n## Session: abc (worker, claude)\n\n{history_export.fence(history_export.json_text({'cwd': '/workspace'}), 'json')}"
+            "\n### User · 2026-11-18T05:30:12Z\n\n<environment_context>\n</environment_context>\n"
+            "\n### User · 2026-11-18T05:30:13Z\n\nfix [[slides]]\n"
+            "\n### Assistant · 2026-11-18T05:31:00Z\n\n## Result\n\n#include and `#keep`\n\n```sh\n# comment\n\n\nls\n```\n"
+            + history_export.detail("Tool call: Bash · t1 · 2026-11-18T05:31:05Z", "{}", "json")
+            + history_export.detail("Tool result: Bash · t1 · 2026-11-18T05:31:06Z", "is_error: True\n\nboom ```x```")
+            + "\n_Context compacted; original records above remain part of this archive._\n")
+        note = obsidian_note.obsidian_body(archive, timezone.utc)
+        self.assertIn("## 作業担当のセッション（Claude）\n\n> [!info]- セッション情報\n> ```json\n", note)
+        self.assertIn("> [!note]- ⚙️ 自動で挿入されたメッセージ · 11/18 05:30\n> <environment_context>", note)
+        self.assertIn("### 🧑 ユーザー · 11/18 05:30\n\nfix \\[\\[slides]]", note)
+        self.assertIn("### 🤖 Claude · 11/18 05:31\n\n**Result**\n\n\\#include and `#keep`", note)
+        self.assertIn("```sh\n# comment\n\n\nls\n```", note)  # code is left exactly as it was
+        self.assertIn("> [!example]- 🔧 Bash · 11/18 05:31\n> ```json\n> {}\n> ```", note)
+        self.assertIn("> [!failure]- ↩️ 結果: Bash（エラー） · 11/18 05:31\n> ````text\n> boom ```x```\n> ````", note)
+        self.assertIn("> [!info] ここで文脈が圧縮されました", note)
+        self.assertNotIn("<details>", note)
+        self.assertIn("11/18 14:30", obsidian_note.obsidian_body(archive))  # Japan time by default
 
     def test_default_root_and_override(self):
         with patch.dict(os.environ, HOME=str(self.root / "host-home")):

@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from history_export import history_root
+from obsidian_note import FORMAT, obsidian_body, zone
 from sessions import safe_text
 
 RUN_TIME = re.compile(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})")
@@ -162,6 +163,7 @@ def export_markdown(found, directory):
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
     taken = {entry["file"] for entry in state.values()}
     counts = {"new": 0, "updated": 0, "same": 0}
+    tz = zone()
     for archive_id, run_id, run_parent, agent, repo, _path, metadata_json, markdown, updated in reversed(found):
         metadata = json.loads(metadata_json)
         label = title(run_parent, run_id, metadata) or one_line(first_request(markdown), 60) or agent
@@ -170,6 +172,7 @@ def export_markdown(found, directory):
         if previous and re.fullmatch(re.escape(name[:-3]) + r" \(\d+\)\.md", previous["file"]):
             name = previous["file"]  # keeps the suffix it got for a name clash earlier
         if previous and previous["updated_at"] == updated and previous["file"] == name \
+                and previous.get("format") == FORMAT \
                 and (directory / name).is_file():
             counts["same"] += 1
             continue
@@ -182,12 +185,12 @@ def export_markdown(found, directory):
         if not header:
             raise ValueError(f"unexpected archive layout: {archive_id}")
         write_private(directory / name, frontmatter(run_id, agent, repo, metadata, label, updated)
-                      + markdown[header.end():])
+                      + "\n" + obsidian_body(markdown[header.end():], tz))
         if previous and previous["file"] != name:
             (directory / previous["file"]).unlink(missing_ok=True)  # the title changed
             taken.discard(previous["file"])
         taken.add(name)
-        state[archive_id] = {"file": name, "updated_at": updated}
+        state[archive_id] = {"file": name, "updated_at": updated, "format": FORMAT}
         counts["updated" if previous else "new"] += 1
     write_private(state_path, json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
     print(f"書き出しました: 新規 {counts['new']} 件、更新 {counts['updated']} 件、変更なし {counts['same']} 件 → {directory}")
