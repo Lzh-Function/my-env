@@ -50,6 +50,25 @@ def codex_history(store, ident=ID, text="修正しました"):
     return path
 
 
+def agy_history(store, ident=ID, request="バグを修正して", answer="修正しました", source="USER_EXPLICIT"):
+    """An agy conversation as 1.5 stores it: a step database and a transcript under brain/<id>."""
+    root = store / ".gemini/antigravity-cli"
+    (root / "conversations").mkdir(parents=True, exist_ok=True)
+    (root / "conversations" / f"{ident}.db").write_bytes(b"SQLite format 3\x00")
+    path = root / "brain" / ident / ".system_generated/logs/transcript.jsonl"
+    write_jsonl(path, [
+        {"step_index": 0, "source": source, "type": "USER_INPUT", "status": "DONE",
+         "created_at": "2026-11-20T05:44:27Z",
+         "content": f"<USER_REQUEST>\n{request}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nHIDDEN METADATA\n</ADDITIONAL_METADATA>"},
+        {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+         "thinking": "HIDDEN THOUGHT", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "HIDDEN TOOL"}}]},
+        {"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "HIDDEN RESULT"},
+        {"step_index": 3, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE", "content": "HIDDEN REMINDER"},
+        {"step_index": 4, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": answer},
+    ])
+    return path
+
+
 class SessionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="agentrun-sessions-")
@@ -233,6 +252,42 @@ class SessionTests(unittest.TestCase):
         self.assertIn("修正済みです", output)
         self.assertNotIn("HIDDEN", output)
         self.assertIn("claude --resume " + ID, sessions.command(run))
+
+    def test_antigravity_text_only_resume_and_subagents_skipped(self):
+        run, store = self.new_run("antigravity")
+        root = store / ".gemini/antigravity-cli"
+        # A fresh store skips agy's first-run theme picker.
+        self.assertTrue(json.loads((root / "cache/onboarding.json").read_text())["onboardingComplete"])
+        agy_history(store)
+        # A subagent's conversation is newer but is not the run's own conversation.
+        subagent = agy_history(store, "22345678-1234-1234-1234-123456789abc", "サブタスク", "SUBAGENT DONE",
+                               source="SUBAGENT")
+        os.utime(subagent, (time.time() + 60, time.time() + 60))
+        self.cli("finalize", run)
+        self.assertEqual(sessions.manifest(run)["native_id"], ID)
+        self.assertEqual(sessions.manifest(run)["native_cli"], "antigravity")
+        output = self.cli("preview", run).stdout
+        self.assertIn("バグを修正して", output)
+        self.assertIn("修正しました", output)
+        self.assertNotIn("HIDDEN", output)
+        self.assertNotIn("SUBAGENT", output)
+        argv = shlex.split(sessions.command(run))[3:]
+        self.assertEqual(argv, ["agy", "--conversation", ID, "--dangerously-skip-permissions"])
+        self.assertNotIn("/runs/prompt.txt", argv)
+        # A resume shares the store, and the onboarding state written there is kept.
+        (root / "cache/onboarding.json").write_text('{"onboardingComplete": true, "kept": 1}')
+        resumed = self.parent / "resume-run"
+        resumed.mkdir()
+        sessions.init(resumed, "antigravity", str(self.root), "assist", run)
+        self.assertEqual(sessions.state_dir(resumed, sessions.manifest(resumed)), store)
+        self.assertEqual(json.loads((root / "cache/onboarding.json").read_text())["kept"], 1)
+        # A conversation whose transcript is not written yet still counts by its database.
+        (root / "conversations" / "32345678-1234-1234-1234-123456789abc.db").write_bytes(b"")
+        ids = {c["id"] for c in sessions.history_candidates(store, "antigravity")}
+        self.assertEqual(ids, {ID, "32345678-1234-1234-1234-123456789abc"})
+        mounts = self.cli("mounts", run).stdout
+        for rel in ("conversations", "brain", "cache"):
+            self.assertIn(f"/home/sandbox/.gemini/antigravity-cli/{rel}", mounts)
 
     def test_unsupported_agent_state_is_rejected_without_breaking_listing(self):
         run, store = self.new_run()

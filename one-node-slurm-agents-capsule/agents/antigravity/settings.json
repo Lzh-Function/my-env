@@ -1,0 +1,36 @@
+{
+  "toolPermission": "always-proceed",
+  "agentMode": "",
+  "artifactReviewPolicy": "always-proceed",
+  "enableTerminalSandbox": false,
+  "allowNonWorkspaceAccess": true,
+  "trustedWorkspaces": [
+    "/workspace"
+  ],
+  "showTips": false,
+  "showFeedbackSurvey": false,
+  "permissions": {
+    "allow": [],
+    "deny": [
+      "read_file(.git)",
+      "read_file(.env)",
+      "read_file(secrets)",
+      "read_file(/home/sandbox/.ssh)",
+      "read_file(/home/sandbox/.bashrc)",
+      "read_file(.workspace_rc)",
+      "command(ssh)",
+      "command(sudo)",
+      "command(rm -rf /)",
+      "command(rm -rf ~)",
+      "command(git config)",
+      "command(pip)",
+      "command(conda)"
+    ],
+    "ask": []
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "~/.gemini/antigravity-cli/statusline.sh",
+    "padding": 1
+  }
+}

@@ -31,6 +31,19 @@ def progress(text, end="\n"):
         pass
 
 
+def update_antigravity_mcp_environment(path, server):
+    """agy reads MCP servers only from ~/.gemini/config/mcp_config.json; keep the user's others."""
+    try:
+        document = json.loads(path.read_text())
+    except (OSError, ValueError):
+        document = {}
+    if not isinstance(document, dict) or not isinstance(document.get("mcpServers"), dict):
+        document = {"mcpServers": {}}
+    document["mcpServers"]["cross-review"] = server
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(path, document)
+
+
 def update_codex_mcp_environment(path, environment):
     """Replace per-allocation connection settings without duplicating TOML tables."""
     text = path.read_text()
@@ -113,7 +126,7 @@ def update_codex_mcp_environment(path, environment):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agent", required=True, choices=("codex", "claude"))
+    parser.add_argument("--agent", required=True, choices=PROVIDERS)
     parser.add_argument("--run-dir", type=Path, default=Path("/runs"))
     parser.add_argument("--workspace", type=Path, default=Path("/workspace"))
     parser.add_argument(
@@ -209,6 +222,10 @@ def main():
     if args.agent == "codex":
         update_codex_mcp_environment(
             Path.home() / ".codex/config.toml", mcp_environment
+        )
+    elif args.agent == "antigravity":
+        update_antigravity_mcp_environment(
+            Path.home() / ".gemini/config/mcp_config.json", mcp_config["mcpServers"]["cross-review"]
         )
     atomic_json(runtime / "config.json", config)
     # Detached helpers must never inherit the worker's terminal streams.

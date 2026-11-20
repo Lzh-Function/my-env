@@ -228,7 +228,7 @@ def load(path):
 class Reviews:
     def __init__(self, config):
         self.config = config
-        if config.get("primary_agent") not in ("codex", "claude"):
+        if config.get("primary_agent") not in PROVIDERS:
             raise ValueError("Unsupported primary agent")
         # Ignore removed limits even when loading legacy configuration.
         for key in ("max_rounds", "max_exchanges", "reply_timeout", "thread_timeout", "job_deadline"):

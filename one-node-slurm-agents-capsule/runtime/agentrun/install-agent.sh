@@ -9,7 +9,6 @@ cache_dir="${3:-/cache}"
 case "$agent" in
     claude) url=https://claude.ai/install.sh; cli=claude ;;
     codex) url=https://chatgpt.com/codex/install.sh; cli=codex ;;
-    # Antigravity is installed only for cross-review reviewers.
     antigravity) url=https://antigravity.google/cli/install.sh; cli=agy ;;
     *) printf 'unknown agent: %s\n' "$agent" >&2; exit 2 ;;
 esac

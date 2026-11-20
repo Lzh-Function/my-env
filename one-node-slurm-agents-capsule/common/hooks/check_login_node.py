@@ -54,7 +54,7 @@ def main() -> int:
         "reason": (
             f"ログインノードでの直接実行は禁止です: {first_word} は"
             "srunまたはsbatchで投入してください。"
-            "パーティション等の引数はプロジェクトの./CLAUDE.mdを確認してください。"
+            "パーティション等の引数はプロジェクトの ./AGENTS.md（./CLAUDE.md、./GEMINI.md）を確認してください。"
         ),
     }, ensure_ascii=False))
     return 2

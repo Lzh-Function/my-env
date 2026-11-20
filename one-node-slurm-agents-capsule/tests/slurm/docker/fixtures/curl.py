@@ -10,6 +10,7 @@ urls = [arg for arg in args if arg.startswith("https://")]
 known = {
     "https://chatgpt.com/codex/install.sh": "codex",
     "https://claude.ai/install.sh": "claude",
+    "https://antigravity.google/cli/install.sh": "agy",
 }
 if len(urls) != 1 or urls[0] not in known or "-o" not in args:
     raise SystemExit("test curl refuses unexpected network requests")
@@ -18,6 +19,7 @@ contract = {
     "claude": '[ "$#" -eq 1 ] && [ "$1" = latest ]\n',
     "codex": '[ "$CODEX_RELEASE" = latest ] && [ "$CODEX_NON_INTERACTIVE" = 1 ]\n'
     '[ "$CODEX_INSTALL_DIR" = "$HOME/.local/bin" ]\n',
+    "agy": '[ "$#" -eq 2 ] && [ "$1" = --dir ] && [ "$2" = "$HOME/.local/bin" ]\n',
 }[cli]
 scenario = Path("/workspace/.capsule-test.json")
 options = json.loads(scenario.read_text()) if scenario.exists() else {}

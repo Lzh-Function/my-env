@@ -30,14 +30,15 @@
       "matcher": "Bash",
       "entries": [
         {"script": "git_worktree_auto_create.py"},
-        {"script": "update_run_status.py"}
+        {"script": "update_run_status.py"},
+        {"script": "record_file_changes.py"}
       ]
     },
     {
       "event": "PostToolUse",
       "matcher": "Edit|Write|NotebookEdit",
       "entries": [
-        {"script": "post_edit_format.py"}
+        {"script": "record_file_changes.py"}
       ]
     },
     {
@@ -45,7 +46,7 @@
       "matcher": "",
       "entries": [
         {"script": "stop_notify.py"},
-        {"script": "summarize_session.py"}
+        {"script": "session_log.py"}
       ]
     }
   ],

@@ -11,7 +11,10 @@ CTX=$(printf '%s' "$input" | jq -r '.context_window.used_percentage // 0')
 COST=$(printf '%s' "$input" | jq -r '.cost.total_cost_usd // 0' | awk '{printf "%.4f", $1}')
 BAR_FILLED=$(printf '%s' "$CTX" | awk '{n=int($1/5); if(n>20) n=20; print n}')
 BAR_EMPTY=$((20 - BAR_FILLED))
-BAR=$(printf '%0.s█' $(seq 1 "$BAR_FILLED" 2>/dev/null))$(printf '%0.s░' $(seq 1 "$BAR_EMPTY" 2>/dev/null))
+# printf repeats its format once even with no arguments, so an empty part stays empty.
+BAR=""
+[ "$BAR_FILLED" -eq 0 ] || BAR=$(printf '%0.s█' $(seq 1 "$BAR_FILLED"))
+[ "$BAR_EMPTY" -eq 0 ] || BAR="$BAR$(printf '%0.s░' $(seq 1 "$BAR_EMPTY"))"
 printf 'CTX [%s] %s%%  $%s\n' "$BAR" "$CTX" "$COST"
 
 # Line 3: rate limits (Pro/Max only — field absent otherwise)

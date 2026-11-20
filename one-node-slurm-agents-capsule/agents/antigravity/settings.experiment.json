@@ -1,0 +1,24 @@
+{
+  "extends": "./settings.json",
+  "runtimeProfile": "experiment",
+  "permissions": {
+    "deny": [
+      "command(sbatch)",
+      "command(salloc)",
+      "command(pip)",
+      "command(sudo)",
+      "command(apt)",
+      "read_file(/home/sandbox/.ssh)",
+      "read_file(.env)"
+    ]
+  },
+  "requiredOutputs": [
+    "/runs/live/status.json",
+    "/runs/live/heartbeat.txt",
+    "/runs/live/command_log.jsonl",
+    "/runs/artifacts/report.md",
+    "/runs/artifacts/git_diff.patch",
+    "/runs/artifacts/metrics.json",
+    "/runs/artifacts/proposed_next.yaml"
+  ]
+}

@@ -53,12 +53,17 @@ type = "command"
 command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/update_run_status.py"
 timeout = 30
 
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/record_file_changes.py"
+timeout = 30
+
 [[hooks.PostToolUse]]
 matcher = "apply_patch"
 
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/post_edit_format.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/record_file_changes.py"
 timeout = 30
 
 [[hooks.Stop]]
@@ -70,6 +75,6 @@ timeout = 30
 
 [[hooks.Stop.hooks]]
 type = "command"
-command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/summarize_session.py"
+command = "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py /home/sandbox/ai-agent-config/common/hooks/session_log.py"
 timeout = 30
 

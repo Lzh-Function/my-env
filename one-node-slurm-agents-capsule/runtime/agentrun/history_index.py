@@ -23,7 +23,7 @@ from sessions import safe_text
 
 RUN_TIME = re.compile(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})")
 USER_TURN = re.compile(r"^### User · [^\n]*\n\n(.*?)(?=\n### |\n## |\n<details>|\Z)", re.MULTILINE | re.DOTALL)
-WORKER_SESSION = re.compile(r"^## Session: .* \((worker|reviewer), (?:codex|claude)\)$", re.MULTILINE)
+WORKER_SESSION = re.compile(r"^## Session: .* \((worker|reviewer), (?:codex|claude|antigravity)\)$", re.MULTILINE)
 SECTION_END = re.compile(r"^## (?:Session: |Review: |Archive notes$)", re.MULTILINE)
 # The prompt agentrun itself sends to start an interactive assist session; batch prompts carry a goal.
 CAPSULE_PROMPT = "You are running inside an HPC agent capsule."
@@ -439,7 +439,7 @@ def main():
     parser.add_argument("words", nargs="*",
                         help="search words, the target directory for export-md, or RUN_ID NEW NAME for rename")
     parser.add_argument("--clear", action="store_true", help="rename: go back to the title the agent wrote")
-    parser.add_argument("--agent", choices=("claude", "codex"))
+    parser.add_argument("--agent", choices=("claude", "codex", "antigravity"))
     parser.add_argument("--repo", default="", help="only conversations whose repository path contains this text")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--live", action="store_true",

@@ -15,9 +15,13 @@ import tempfile
 
 
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+PROVIDERS = ("codex", "claude", "antigravity")
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 SECTION_HEAD = re.compile(r"^## (?:Session: |Review: |Archive notes$)", re.MULTILINE)
-SESSION_ROLE = re.compile(r"## Session: .* \((worker|reviewer), (?:codex|claude)\)\n")
+SESSION_ROLE = re.compile(r"## Session: .* \((worker|reviewer), (?:codex|claude|antigravity)\)\n")
+# agy wraps what the person typed with context it adds for the model.
+AGY_REQUEST = re.compile(r"<USER_REQUEST>\n?(.*?)\n?</USER_REQUEST>", re.DOTALL)
+AGY_LOGS = ".gemini/antigravity-cli/brain/*/.system_generated/logs"
 TURN_STAMP = re.compile(r"^### (?:User|Assistant) · (\S+)$", re.MULTILINE)
 
 
@@ -258,6 +262,70 @@ def claude_transcript(path, run, store, warnings):
     return metadata, "".join(parts)
 
 
+AGY_TIMES = re.compile(r"^(?:Created At|Completed At): .*\n?", re.MULTILINE)
+
+
+def antigravity_transcript(path, warnings):
+    """agy's transcript log: one JSON object per step, in step order.
+
+    USER_INPUT steps are what the person (or agentrun's launch prompt) sent, and
+    PLANNER_RESPONSE steps are the model's reply plus the tools it called. Each tool's
+    result is a later step of its own (GENERIC, status ERROR when it failed), in the
+    order the calls were made. Thinking is not archived, like the other CLIs.
+    """
+    metadata = {"conversation_id": path.parents[2].name, "transcript": path.name}
+    parts, pending = [], []
+    for record in records(path, warnings):
+        kind = str(record.get("type", "STEP"))
+        stamp = record.get("created_at", "")
+        step = record.get("step_index", "")
+        content = record.get("content") if isinstance(record.get("content"), str) else ""
+        if isinstance(record.get("model"), str):
+            metadata.setdefault("model", record["model"])
+        if kind == "USER_INPUT":
+            found = AGY_REQUEST.search(content)
+            text = found.group(1) if found else content
+            if record.get("source") not in (None, "USER_EXPLICIT"):
+                metadata.setdefault("started_by", record.get("source"))
+            if text.strip():
+                parts.append(f"\n### User · {stamp}\n\n{clean(text)}\n")
+        elif kind == "PLANNER_RESPONSE":
+            if content.strip():
+                parts.append(f"\n### Assistant · {stamp}\n\n{clean(content)}\n")
+            for call in record.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                name = str(call.get("name", "tool"))
+                pending.append(name)
+                parts.append(detail(f"Tool call: {name} · {step} · {stamp}",
+                                    json_text(call.get("args", {})), "json"))
+        elif kind == "GENERIC":
+            name = pending.pop(0) if pending else "tool"
+            failed = record.get("status") == "ERROR"
+            body = AGY_TIMES.sub("", content).strip()
+            if failed and record.get("error") and record["error"] not in body:
+                body = str(record["error"]) + ("\n\n" + body if body else "")
+            parts.append(detail(f"Tool result: {name} · {step} · {stamp}", f"is_error: {failed}\n\n{body}"))
+        elif kind == "SYSTEM_MESSAGE":
+            # Reminders agy adds on its own; the model reads them, the person did not write them.
+            parts.append(detail(f"System message · {step} · {stamp}", content))
+        else:
+            body = {k: v for k, v in record.items() if k not in ("type", "created_at", "thinking")}
+            parts.append(detail(f"Tool result: {kind.lower()} · {step} · {stamp}", json_text(body), "json"))
+    return metadata, "".join(parts)
+
+
+def antigravity_logs(directory):
+    """One transcript per agy conversation: the full log when it was written, else the short one."""
+    found = []
+    for logs in sorted(directory.glob(AGY_LOGS)):
+        for name in ("transcript_full.jsonl", "transcript.jsonl"):
+            if (logs / name).is_file():
+                found.append(logs / name)
+                break
+    return found
+
+
 @contextmanager
 def archive_lock(directory):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -315,28 +383,34 @@ def export_run(run, data, store):
     target = root / "runs" / archive_id
     with archive_lock(target):
         warnings = set(); transcript_metadata = []; parts = []
-        if data["agent"] not in ("codex", "claude"):
+        if data["agent"] not in PROVIDERS:
             raise ValueError("Unsupported agent for history export")
         def native_paths(directory, provider):
             if provider == "codex":
                 return sorted({*directory.glob(".codex/sessions/**/*.jsonl"),
                                *directory.glob(".codex/archived_sessions/**/*.jsonl")})
+            if provider == "antigravity":
+                return antigravity_logs(directory)
             return sorted(directory.glob(".claude/projects/**/*.jsonl"))
         paths = [(p, data["agent"], "worker", store) for p in native_paths(store, data["agent"])]
-        for provider in ("codex", "claude"):
+        for provider in PROVIDERS:
             reviewer_store = store / "reviewers" / provider
             paths.extend((p, provider, "reviewer", reviewer_store) for p in native_paths(reviewer_store, provider))
         for path, provider, role, native_store in paths:
             if not within(path, store):
                 raise ValueError("Transcript points outside its session store")
+            name = path.stem
             if provider == "codex":
                 metadata, body = codex_transcript(path, warnings)
+            elif provider == "antigravity":
+                metadata, body = antigravity_transcript(path, warnings)
+                name = metadata["conversation_id"]
             else:
                 metadata, body = claude_transcript(path, run, native_store, warnings)
             metadata["file"] = str(path.relative_to(store))
             metadata.update(provider=provider, role=role)
             transcript_metadata.append(metadata)
-            parts.append(f"\n## Session: {path.stem} ({role}, {provider})\n\n{fence(json_text(metadata), 'json')}{body}")
+            parts.append(f"\n## Session: {name} ({role}, {provider})\n\n{fence(json_text(metadata), 'json')}{body}")
         reviews = []
         directories = [*(run / "reviews").glob("review-*"), *(run / "reviews").glob("thread-*/review-*")]
         for directory in sorted(directories, key=lambda d: d.name):

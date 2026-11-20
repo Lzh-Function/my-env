@@ -22,6 +22,10 @@ def execute(args, expected=0, **kwargs):
     return result
 
 
+# The reviewer each worker gets when a review names none (agent_cli.DEFAULT_REVIEWER).
+PEER = {"codex": "claude", "claude": "codex", "antigravity": "codex"}
+
+
 def check_features(agent, options):
     hooks = Path("/home/sandbox/ai-agent-config/common/hooks")
     skills = Path("/home/sandbox/ai-agent-config/common/skills")
@@ -73,6 +77,19 @@ def check_features(agent, options):
         assert "git status" in Path("/runs/live/command_log.jsonl").read_text()
         if agent == "claude":
             execute(["bash", str(Path.home() / ".claude/statusline.sh")], input="{}")
+        if agent == "antigravity":
+            execute(["bash", str(Path.home() / ".gemini/antigravity-cli/statusline.sh")], input="{}")
+            # Run the exact commands agy would run from hooks.json, with agy's payload format.
+            groups = json.loads((Path.home() / ".gemini/config/hooks.json").read_text())["agentrun"]
+            for command, decision in (("pip install x", "deny"), ("git status", "allow")):
+                payload = json.dumps({"hookEventName": "PreToolUse", "conversationId": "fixture",
+                                      "toolCall": {"name": "run_command", "args": {"CommandLine": command}}})
+                answers = [
+                    json.loads(execute(["sh", "-c", hook["command"]], input=payload).stdout)["decision"]
+                    for group in groups["PreToolUse"] if "run_command" in group["matcher"].split("|")
+                    for hook in group["hooks"]
+                ]
+                assert (decision in answers) if decision == "deny" else set(answers) == {"allow"}, answers
     if options.get("gh"):
         assert os.access("/usr/local/bin/git-remote-agentrun", os.X_OK)
         assert Path("/opt/gh-broker/git.sock").is_socket()
@@ -107,7 +124,7 @@ def check_features(agent, options):
         os.environ["UV_OFFLINE"] = "1"
     if options.get("review"):
         sys.path.insert(0, "/opt/test-deps/lib/python3.12/site-packages")
-        asyncio.run(review_dialogue(options["review"], agent))
+        asyncio.run(review_dialogue(options["review"], agent, options.get("reviewer")))
     if options.get("review_negative"):
         brief = Path("/runs/artifacts/negative-brief.md")
         brief.write_text(options["review_negative"])
@@ -142,7 +159,8 @@ def check_features(agent, options):
     print("FEATURE_CHECKS_OK", flush=True)
 
 
-async def review_dialogue(transport, agent):
+async def review_dialogue(transport, agent, reviewer=None):
+    """A full question → finding → fix → approve dialogue; reviewer None means the default peer."""
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
@@ -173,15 +191,17 @@ async def review_dialogue(transport, agent):
                 "review_cancel",
                 "review_extend",
             }
-            # The opposite reviewer CLI lists its models inside the real container.
-            peer = "codex" if agent == "claude" else "claude"
+            # The other reviewer CLI lists its models inside the real container.
+            peer = reviewer or PEER[agent]
             listing = await action("review_models", reviewers=[peer])
             entry = listing["reviewers"][0]
             assert entry["provider"] == peer and entry["available"], listing
             assert [m["id"] for m in entry["models"]] == ["fixture-review-model"], entry
-            state = await action("review_start", request_id="initial", brief=str(brief))
+            chosen = {"reviewers": [reviewer]} if reviewer else {}
+            state = await action("review_start", request_id="initial", brief=str(brief), **chosen)
         else:
-            state = cli("run", "--request-id", "initial", "--brief", str(brief))
+            state = cli("run", "--request-id", "initial", "--brief", str(brief),
+                        *(["--reviewers", reviewer] if reviewer else []))
         ident = state["review_id"]
         for _ in range(50):
             state = cli(

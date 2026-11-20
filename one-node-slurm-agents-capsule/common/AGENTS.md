@@ -1,6 +1,6 @@
 # Shared AI Agent Rules
 
-These rules apply to Claude Code and Codex launched through `agentrun`.
+These rules apply to Claude Code, Codex and Antigravity launched through `agentrun`.
 
 ## Execution Boundary
 

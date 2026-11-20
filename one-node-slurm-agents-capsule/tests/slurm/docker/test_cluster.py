@@ -20,6 +20,11 @@ from pathlib import Path
 
 CAPSULE = Path("/shared/capsule")
 LAUNCHER = CAPSULE / "runtime/agentrun/agentrun"
+AGENTS = ("codex", "claude", "antigravity")
+# The reviewer each worker gets when a review names none (agent_cli.DEFAULT_REVIEWER).
+PEER = {"codex": "claude", "claude": "codex", "antigravity": "codex"}
+# What each fake CLI prints after rewriting its settings file the way the real CLI saves preferences.
+SAVE_MARKER = {"claude": "CLAUDE_SETTINGS_ATOMIC_SAVE_OK", "antigravity": "ANTIGRAVITY_SETTINGS_ATOMIC_SAVE_OK"}
 
 
 def command(argv, **options):
@@ -132,7 +137,7 @@ class ClusterTests(unittest.TestCase):
     def setUpClass(cls):
         if not Path("/etc/capsule-test-cluster").is_file():
             raise RuntimeError("Refusing to run outside the isolated Docker cluster")
-        if any(shutil.which(name) for name in ("apptainer", "codex", "claude")):
+        if any(shutil.which(name) for name in ("apptainer", "codex", "claude", "agy")):
             raise RuntimeError(
                 "Controller must not have Apptainer or agent CLIs on PATH"
             )
@@ -187,6 +192,8 @@ class ClusterTests(unittest.TestCase):
             ("codex", ".codex/auth.json"),
             ("claude", ".claude/.credentials.json"),
             ("claude", ".claude.json"),
+            ("antigravity", ".gemini/antigravity-cli/antigravity-oauth-token"),
+            ("antigravity", ".gemini/antigravity-cli/installation_id"),
         ]:
             path = Path.home() / ".agentrun/auth" / agent / relative
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -366,7 +373,7 @@ class ClusterTests(unittest.TestCase):
         return data, markdown
 
     def test_all_agents_all_profiles_real_batch_and_required_outputs(self):
-        for agent in ("codex", "claude"):
+        for agent in AGENTS:
             for mode in ("assist", "experiment", "campaign"):
                 with self.subTest(agent=agent, mode=mode):
                     repo = self.repo(agent + "-" + mode)
@@ -382,9 +389,9 @@ class ClusterTests(unittest.TestCase):
                         "success",
                     )
                     self.assertTrue((repo / "workspace-write.txt").is_file())
-                    if agent == "claude":
+                    if agent in SAVE_MARKER:
                         self.assertIn(
-                            "CLAUDE_SETTINGS_ATOMIC_SAVE_OK",
+                            SAVE_MARKER[agent],
                             (run / "live/slurm.out").read_text(),
                         )
                     metadata = json.loads(
@@ -409,15 +416,15 @@ class ClusterTests(unittest.TestCase):
                     self.assertIn("TimeLimit=00:03:00", resources.stdout)
                     self.archived(run)
 
-    def test_interactive_completion_history_preview_and_resume_both_agents(self):
-        for agent in ("codex", "claude"):
+    def test_interactive_completion_history_preview_and_resume_every_agent(self):
+        for agent in AGENTS:
             with self.subTest(agent=agent):
                 repo = self.repo("resume-" + agent)
                 first = self.assist(repo, agent)
                 original = first.until(("AGENT_READY:" + agent + ":").encode())
                 self.assertEqual(first.finish(), 0, first.output)
-                if agent == "claude":
-                    self.assertIn(b"CLAUDE_SETTINGS_ATOMIC_SAVE_OK", first.output)
+                if agent in SAVE_MARKER:
+                    self.assertIn(SAVE_MARKER[agent].encode(), first.output)
                 self.ended(first)
                 self.archived(original)
                 if agent == "claude":
@@ -426,6 +433,13 @@ class ClusterTests(unittest.TestCase):
                             (original / "saved_settings/settings.json").read_text()
                         )["effortLevel"],
                         "medium",
+                    )
+                elif agent == "antigravity":
+                    self.assertEqual(
+                        json.loads(
+                            (original / "saved_settings/settings.json").read_text()
+                        )["model"],
+                        "Fixture A",
                     )
                 else:
                     self.assertIn(
@@ -452,8 +466,8 @@ class ClusterTests(unittest.TestCase):
                     ("RESUME_OK:" + agent + ":" + manifest["native_id"]).encode()
                 )
                 self.assertEqual(resumed.finish(), 0, resumed.output)
-                if agent == "claude":
-                    self.assertIn(b"CLAUDE_SETTINGS_ATOMIC_SAVE_OK", resumed.output)
+                if agent in SAVE_MARKER:
+                    self.assertIn(SAVE_MARKER[agent].encode(), resumed.output)
                 self.ended(resumed)
                 current = json.loads((resumed.run / "session.json").read_text())
                 self.assertEqual(current["session_key"], manifest["session_key"])
@@ -462,17 +476,19 @@ class ClusterTests(unittest.TestCase):
                 initial = (
                     resumed.run
                     / "container_config"
-                    / ("settings.json" if agent == "claude" else "config.toml")
+                    / ("config.toml" if agent == "codex" else "settings.json")
                 )
                 if agent == "claude":
                     self.assertEqual(
                         json.loads(initial.read_text())["effortLevel"], "medium"
                     )
+                elif agent == "antigravity":
+                    self.assertEqual(json.loads(initial.read_text())["model"], "Fixture A")
                 else:
                     self.assertIn('model_reasoning_effort = "low"', initial.read_text())
 
     def test_resume_inherits_settings_and_decline_never_submits_a_job(self):
-        for agent in ("codex", "claude"):
+        for agent in AGENTS:
             with self.subTest(agent=agent):
                 repo = self.repo("inherit-" + agent)
                 data = repo / "data with spaces"
@@ -528,11 +544,11 @@ class ClusterTests(unittest.TestCase):
                 )
                 self.archived(resumed.run)
 
-    def test_scheduler_timeout_restores_terminal_and_allows_resume_for_both_agents(
+    def test_scheduler_timeout_restores_terminal_and_allows_resume_for_every_agent(
         self,
     ):
         active = []
-        for agent in ("codex", "claude"):
+        for agent in AGENTS:
             repo = self.repo("timeout-" + agent)
             self.options(repo, hold=True)
             session = self.assist(repo, agent, limit="00:01:00")
@@ -590,7 +606,7 @@ class ClusterTests(unittest.TestCase):
         self.ended(first)
 
     def test_agent_download_and_installer_failures_allow_retry(self):
-        for agent in ("codex", "claude"):
+        for agent in AGENTS:
             for option, expected in [
                 ("exit_code", 23),
                 ("download_failure", 6),
@@ -718,7 +734,7 @@ class ClusterTests(unittest.TestCase):
         )
         token.chmod(0o600)
         self.addCleanup(token.unlink, missing_ok=True)
-        for agent in ("claude", "codex"):
+        for agent in AGENTS:
             with self.subTest(agent=agent):
                 repo = self.repo("helper-terminal-" + agent)
                 self.options(repo, gh=True)
@@ -794,19 +810,21 @@ class ClusterTests(unittest.TestCase):
         )
         self.unlocked(repo)
 
-    def test_cross_review_both_providers_cli_mcp_and_central_archive(self):
-        for agent in ("codex", "claude"):
+    def test_cross_review_every_provider_cli_mcp_and_central_archive(self):
+        # Each worker with its default reviewer, plus Antigravity as the named reviewer.
+        cases = [(agent, None) for agent in AGENTS] + [("codex", "antigravity")]
+        for agent, reviewer in cases:
             for transport in ("cli", "mcp"):
-                with self.subTest(agent=agent, transport=transport):
-                    repo = self.repo("review-" + agent + "-" + transport)
-                    self.options(repo, review=transport)
+                with self.subTest(agent=agent, reviewer=reviewer, transport=transport):
+                    repo = self.repo("review-" + agent + "-" + (reviewer or "default") + "-" + transport)
+                    self.options(repo, review=transport, reviewer=reviewer)
                     run = self.batch(repo, agent)
                     state = json.loads(
                         (run / "artifacts/dialogue-check.json").read_text()
                     )
                     self.assertEqual(state["verdict"], "approve")
                     self.assertEqual(state["round"], 3)
-                    peer = "claude" if agent == "codex" else "codex"
+                    peer = reviewer or PEER[agent]
                     manifest = json.loads((run / "session.json").read_text())
                     store = (
                         run.parent
@@ -825,7 +843,7 @@ class ClusterTests(unittest.TestCase):
                     # One reviewer conversation continues across the question and all rounds.
                     self.assertEqual({call["session"] for call in calls}, {calls[0]["session"]})
                     self.assertTrue(
-                        all("resume" in call["args"] or "--resume" in call["args"] for call in calls[1:])
+                        all({"resume", "--resume", "--conversation"} & set(call["args"]) for call in calls[1:])
                     )
                     _data, markdown = self.archived(run)
                     self.assertIn("Why this value?", markdown)
@@ -837,6 +855,7 @@ class ClusterTests(unittest.TestCase):
         for worker, peer, relative in [
             ("claude", "codex", ".codex/auth.json"),
             ("codex", "claude", ".claude/.credentials.json"),
+            ("antigravity", "codex", ".codex/auth.json"),
         ]:
             with self.subTest(worker=worker):
                 moved = []
@@ -859,7 +878,7 @@ class ClusterTests(unittest.TestCase):
                         backup.rename(original)
 
     def test_reviewer_timeout_is_reported_and_worker_continues(self):
-        for worker in ("codex", "claude"):
+        for worker in AGENTS:
             with self.subTest(worker=worker):
                 repo = self.repo("review-timeout-" + worker)
                 self.options(repo, review_negative="timeout")
@@ -1023,12 +1042,12 @@ os.execv('/usr/bin/python3',['/usr/bin/python3',*sys.argv[1:]])
         repo = self.repo("auth-skills")
         binary = repo / "host tools"
         binary.mkdir()
-        for agent in ("codex", "claude"):
-            shutil.copyfile("/opt/cluster-test/fixtures/agent.py", binary / agent)
-            (binary / agent).chmod(0o755)
+        for cli in ("codex", "claude", "agy"):
+            shutil.copyfile("/opt/cluster-test/fixtures/agent.py", binary / cli)
+            (binary / cli).chmod(0o755)
         env = dict(os.environ, PATH=str(binary) + ":" + os.environ["PATH"])
         self.addCleanup(self.seed_auth)
-        for agent in ("codex", "claude"):
+        for agent in AGENTS:
             self.cli(repo, "auth", "reset", "--agent", agent)
         self.cli(repo, "auth", "login", "--all", env=env)
         self.cli(repo, "auth", "import", "--all")

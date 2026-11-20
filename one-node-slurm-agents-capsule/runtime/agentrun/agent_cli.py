@@ -17,9 +17,9 @@ from pathlib import Path
 
 from review_snapshot import atomic_json
 
-# Antigravity is only a reviewer; workers remain Codex or Claude Code.
+# Each provider can be the worker; the others review its work.
 PROVIDERS = ("codex", "claude", "antigravity")
-DEFAULT_REVIEWER = {"codex": "claude", "claude": "codex"}
+DEFAULT_REVIEWER = {"codex": "claude", "claude": "codex", "antigravity": "codex"}
 CREDENTIALS = {
     "codex": (".codex/auth.json",),
     "claude": (".claude/.credentials.json",),

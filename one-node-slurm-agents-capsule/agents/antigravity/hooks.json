@@ -1,0 +1,100 @@
+{
+  "agentrun": {
+    "PostToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PostToolUse /home/sandbox/ai-agent-config/common/hooks/git_worktree_auto_create.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PostToolUse /home/sandbox/ai-agent-config/common/hooks/update_run_status.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PostToolUse /home/sandbox/ai-agent-config/common/hooks/record_file_changes.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "write_file|edit_file|write_to_file|replace_file_content|multi_replace_file_content|sed_file|notebook_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PostToolUse /home/sandbox/ai-agent-config/common/hooks/record_file_changes.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PreToolUse /home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PreToolUse /home/sandbox/ai-agent-config/common/hooks/check_login_node.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PreToolUse /home/sandbox/ai-agent-config/common/hooks/check_pip_forbidden.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PreToolUse /home/sandbox/ai-agent-config/common/hooks/check_sbatch_forbidden.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PreToolUse /home/sandbox/ai-agent-config/common/hooks/git_branch_guard.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "read_file|view_file|view_file_outline|view_code_item|view_content_chunk|list_dir|find_by_name|grep_search",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PreToolUse /home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "write_file|edit_file|write_to_file|replace_file_content|multi_replace_file_content|sed_file|notebook_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PreToolUse /home/sandbox/ai-agent-config/common/hooks/block_dangerous_command.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity Stop /home/sandbox/ai-agent-config/common/hooks/stop_notify.py",
+        "timeout": 30
+      },
+      {
+        "type": "command",
+        "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity Stop /home/sandbox/ai-agent-config/common/hooks/session_log.py",
+        "timeout": 30
+      }
+    ]
+  }
+}

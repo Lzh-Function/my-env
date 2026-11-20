@@ -11,10 +11,28 @@ import unittest
 from pathlib import Path
 
 import test_cross_review as fixtures
-from review_launch import update_codex_mcp_environment
+from review_launch import update_antigravity_mcp_environment, update_codex_mcp_environment
 
 
 class ReviewLaunchTests(unittest.TestCase):
+    def test_antigravity_mcp_server_is_replaced_without_losing_other_servers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".gemini/config/mcp_config.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"mcpServers": {
+                "cross-review": {"command": "/opt/agentrun/agent-review", "args": ["mcp"]},
+                "other": {"command": "keep-other"}}}))
+            for socket in ("/tmp/first/review.sock", "/tmp/second/review.sock"):
+                server = {"command": "/opt/agentrun/agent-review", "args": ["mcp"],
+                          "env": {"AGENT_REVIEW_SOCKET": socket, "UV_CACHE_DIR": "/cache/uv"}}
+                update_antigravity_mcp_environment(path, server)
+                config = json.loads(path.read_text())
+                self.assertEqual(config["mcpServers"]["cross-review"], server)
+                self.assertEqual(config["mcpServers"]["other"], {"command": "keep-other"})
+            path.write_text("not json")  # a broken file is replaced rather than stopping the run
+            update_antigravity_mcp_environment(path, server)
+            self.assertEqual(json.loads(path.read_text()), {"mcpServers": {"cross-review": server}})
+
     def test_codex_mcp_environment_is_replaced_without_losing_preferences(self):
         for original in (
             '[mcp_servers.cross-review.env]\nAGENT_REVIEW_SOCKET = "old"\nEXTRA = "keep"\n',

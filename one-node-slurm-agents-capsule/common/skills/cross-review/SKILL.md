@@ -9,7 +9,7 @@ Use the capsule's `cross-review` MCP tools, or `agent-review` CLI when MCP is un
 
 ## Reviewers
 
-Without `reviewers`, Claude Code work is reviewed by Codex and Codex work by Claude Code. Pass `reviewers` (CLI: `--reviewers codex,antigravity`) to choose any providers other than yourself: `codex`, `claude`, `antigravity`. Antigravity is available only as a reviewer. With several reviewers, `review_start` returns `reviews[]`; track each review's ID, thread, questions and cursor independently, and answer and recheck each reviewer separately. One reviewer's approval does not substitute for another's, and an authentication failure or cancellation of one does not stop the other. Each reviewer provider runs at most one active conversation.
+Without `reviewers`, Claude Code work is reviewed by Codex, Codex work by Claude Code, and Antigravity work by Codex. Pass `reviewers` (CLI: `--reviewers codex,antigravity`) to choose any providers other than yourself: `codex`, `claude`, `antigravity`. With several reviewers, `review_start` returns `reviews[]`; track each review's ID, thread, questions and cursor independently, and answer and recheck each reviewer separately. One reviewer's approval does not substitute for another's, and an authentication failure or cancellation of one does not stop the other. Each reviewer provider runs at most one active conversation.
 
 ## Reviewer model
 

@@ -1,0 +1,82 @@
+{
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "matcher": "run_command",
+      "entries": [
+        {
+          "script": "block_dangerous_command.py"
+        },
+        {
+          "script": "check_login_node.py"
+        },
+        {
+          "script": "check_pip_forbidden.py"
+        },
+        {
+          "script": "check_sbatch_forbidden.py"
+        },
+        {
+          "script": "git_branch_guard.py"
+        }
+      ]
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "read_file|view_file|view_file_outline|view_code_item|view_content_chunk|list_dir|find_by_name|grep_search",
+      "entries": [
+        {
+          "script": "block_dangerous_command.py"
+        }
+      ]
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "write_file|edit_file|write_to_file|replace_file_content|multi_replace_file_content|sed_file|notebook_edit",
+      "entries": [
+        {
+          "script": "block_dangerous_command.py"
+        }
+      ]
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "run_command",
+      "entries": [
+        {
+          "script": "git_worktree_auto_create.py"
+        },
+        {
+          "script": "update_run_status.py"
+        },
+        {
+          "script": "record_file_changes.py"
+        }
+      ]
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "write_file|edit_file|write_to_file|replace_file_content|multi_replace_file_content|sed_file|notebook_edit",
+      "entries": [
+        {
+          "script": "record_file_changes.py"
+        }
+      ]
+    },
+    {
+      "event": "Stop",
+      "matcher": "",
+      "entries": [
+        {
+          "script": "stop_notify.py"
+        },
+        {
+          "script": "session_log.py"
+        }
+      ]
+    }
+  ],
+  "ignored": [
+    "worker_hook.py"
+  ]
+}

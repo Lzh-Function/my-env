@@ -392,6 +392,18 @@ class CrossReviewTests(unittest.TestCase):
         summary = json.loads(Path(state["findings_path"]).read_text())["summary"]
         self.assertEqual(summary, "reviewed")  # not the later copy
 
+    def test_antigravity_worker_is_reviewed_by_the_other_providers(self):
+        self.reviews.close()
+        self.reviews = review.Reviews(dict(self.config, primary_agent="antigravity"))
+        self.addCleanup(self.reviews.close)
+        ident = self.start("approve", one_shot=True)
+        state = self.wait(ident, review.TERMINAL)
+        self.assertEqual(state["provider"], "codex", state)
+        with self.assertRaisesRegex(ValueError, "other providers"):
+            self.reviews.call("run", dict(request_id="self", brief=str(self.brief), reviewers=["antigravity"]))
+        with self.assertRaisesRegex(ValueError, "Unsupported primary agent"):
+            review.Reviews(dict(self.config, primary_agent="gemini"))
+
     def test_review_hook_allows_only_reads_inside_the_input(self):
         directory = self.root / "input"
         (directory / "source").mkdir(parents=True)
@@ -405,7 +417,11 @@ class CrossReviewTests(unittest.TestCase):
 
         self.assertEqual(decide("view_file", {"AbsolutePath": str(directory / "source/code.py")}), "allow")
         self.assertEqual(decide("grep_search", {"SearchPath": "source", "Query": "x"}), "allow")
-        for name, args in (("view_file", {"AbsolutePath": "/home/sandbox/.codex/auth.json"}),
+        # agy 1.5 hands hooks read_file with "Path"; it must be checked like the older keys.
+        self.assertEqual(decide("read_file", {"Path": str(directory / "source/code.py")}), "allow")
+        for name, args in (("read_file", {"Path": "/home/sandbox/.codex/auth.json"}),
+                           ("read_file", {"Path": "../../outside.txt"}),
+                           ("view_file", {"AbsolutePath": "/home/sandbox/.codex/auth.json"}),
                            ("list_dir", {"DirectoryPath": "../.."}),
                            ("run_command", {"CommandLine": "cat manifest.json"}),
                            ("write_to_file", {"TargetFile": str(directory / "x")}),

@@ -2,7 +2,7 @@
 """Block dangerous shell commands and file-tool access to secret resources.
 
 Handles all agent tool formats:
-  - Claude/Codex Bash:      tool_input.command
+  - Claude/Codex Bash:      tool_input.command (Antigravity run_command, via worker_hook.py)
   - Claude Read/Edit/Write: tool_input.file_path
   - Codex apply_patch:      tool_input.command (the patch text; only its file headers are checked)
 """

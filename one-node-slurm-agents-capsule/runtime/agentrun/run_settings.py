@@ -25,7 +25,8 @@ REMOVED_REVIEW_ENV = (
     "AGENT_REVIEW_REPLY_TIMEOUT",
     "AGENT_REVIEW_THREAD_TIMEOUT",
 )
-CONFIG = {"claude": ".claude/settings.json", "codex": ".codex/config.toml"}
+CONFIG = {"claude": ".claude/settings.json", "codex": ".codex/config.toml",
+          "antigravity": ".gemini/antigravity-cli/settings.json"}
 VALUE_OPTIONS = (
     "repo",
     "mem",
@@ -167,17 +168,9 @@ def legacy(run):
         (line for line in reversed(lines) if line.startswith("apptainer exec")), ""
     )
     words = shlex.split(command)
-    session_destinations = (
-        "/home/sandbox/.codex/sessions",
-        "/home/sandbox/.codex/archived_sessions",
-        "/home/sandbox/.codex/sqlite",
-        "/home/sandbox/.claude/projects",
-        "/home/sandbox/.claude/file-history",
-        "/home/sandbox/.claude/todos",
-        "/home/sandbox/.claude/tasks",
-        "/home/sandbox/.claude/plans",
-        "/reviewer-sessions",
-    )
+    session_destinations = tuple(
+        "/home/sandbox/" + relative for paths in session_mounts().values() for relative in paths
+    ) + ("/reviewer-sessions",)
     # Extra mounts occur after the last persistent-session mount in generated commands.
     last_session = -1
     for index, word in enumerate(words[:-1]):
@@ -273,6 +266,16 @@ def args(run):
     )
     result.append("--gh-broker" if data["gh_env_file"] else "--no-gh-broker")
     return result
+
+
+def session_mounts():
+    """Every agent's persisted session directories (sessions.MOUNTS), wherever this file is loaded from."""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from sessions import MOUNTS
+
+    return MOUNTS
 
 
 def config_source(run):
@@ -413,6 +416,7 @@ def main():
                     "model",
                     "effortLevel",
                     "model_reasoning_effort",
+                    "agentMode",
                     "theme",
                     "approval_policy",
                     "sandbox_mode",

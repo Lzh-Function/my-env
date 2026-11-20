@@ -1,6 +1,6 @@
 # AI Agent Environment
 
-Claude Code / Codex を Slurm compute node 上の Apptainer sandbox 内で実行するための設定・ランタイムリポジトリです。
+Claude Code / Codex / Antigravity を Slurm compute node 上の Apptainer sandbox 内で実行するための設定・ランタイムリポジトリです。
 
 詳細な利用手順は **[docs/USER_MANUAL.md](docs/USER_MANUAL.md)** を参照してください。
 
@@ -8,16 +8,16 @@ Claude Code / Codex を Slurm compute node 上の Apptainer sandbox 内で実行
 
 ```text
 common/AGENTS.md          全 agent 共通ルール
-agents/                   Claude Code, Codex 固有の設定・shim
+agents/                   Claude Code, Codex, Antigravity 固有の設定・shim
 profiles/                 assist / experiment / campaign の runtime profile
 runtime/agentrun/         login-node-safe agentrun shell launcher
 runtime/apptainer/        Apptainer definition templates
 tests/fixtures/           smoke-test goal ファイルおよびダミー repository
 ```
 
-対応する agent は `codex` と `claude` です。省略時は `claude`（Claude Code）を使います。
+対応する agent は `codex`・`claude`・`antigravity`（CLI は `agy`）で、どれも同じ機能を使えます。省略時は `claude`（Claude Code）を使います。
 
-共通skill `cross-review`により、Claude Codeの作業をCodexに、その逆も同じallocation内で監査させられます。Antigravityも監査の依頼先として使えます（作業エージェントとしては起動しません）。依頼ごとに監査担当と、各CLIが現在提供するモデルを選べ、2つの監査担当への同時依頼にも対応します。監査途中の質問・回答、指摘への返答、回数・全体時間の上限を設けない再監査をCLIとMCPの両方から扱い、対話はホストの別ターミナルで`agentrun reviews --follow`により確認できます。使う監査担当の認証を準備してください。[利用手順](docs/USER_MANUAL.md#対話による相互監査)と[設計書](docs/CROSS_AGENT_REVIEW_DESIGN.md)を参照してください。
+共通skill `cross-review`により、作業agentの作業をほかのagent（Claude Code・Codex・Antigravity）に、同じallocation内で監査させられます。依頼ごとに監査担当と、各CLIが現在提供するモデルを選べ、2つの監査担当への同時依頼にも対応します。監査途中の質問・回答、指摘への返答、回数・全体時間の上限を設けない再監査をCLIとMCPの両方から扱い、対話はホストの別ターミナルで`agentrun reviews --follow`により確認できます。使う監査担当の認証を準備してください。[利用手順](docs/USER_MANUAL.md#対話による相互監査)と[設計書](docs/CROSS_AGENT_REVIEW_DESIGN.md)を参照してください。
 
 ## Quick Start
 

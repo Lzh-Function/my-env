@@ -32,7 +32,7 @@ def review_start(
     exclude: list[str] | None = None,
     one_shot: bool = False,
     reviewers: Annotated[list[str] | None, Field(
-        description="Other providers to ask: codex, claude, antigravity. Omitted means the opposite of Codex/Claude.")] = None,
+        description="Other providers to ask: codex, claude, antigravity. Omitted means the default other provider (Codex for Claude and Antigravity, Claude for Codex).")] = None,
     models: Annotated[dict[str, str] | None, Field(
         description="Reviewer model per provider, e.g. {\"codex\": \"<id from review_models>\"}.")] = None,
     efforts: Annotated[dict[str, str] | None, Field(

@@ -76,6 +76,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/update_run_status.py"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/record_file_changes.py"
           }
         ]
       },
@@ -84,7 +88,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/post_edit_format.py"
+            "command": "~/.claude/hooks/record_file_changes.py"
           }
         ]
       }
@@ -145,7 +149,7 @@
           },
           {
             "type": "command",
-            "command": "~/.claude/hooks/summarize_session.py"
+            "command": "~/.claude/hooks/session_log.py"
           }
         ]
       }

@@ -289,7 +289,8 @@ class WizardTests(unittest.TestCase):
         menu = output.split("エージェントを選んでください", 1)[1].split("起動方法を選んでください", 1)[0]
         self.assertIn("1) claude", menu)
         self.assertIn("2) codex", menu)
-        self.assertIn("3) ← 戻る", menu)
+        self.assertIn("3) antigravity", menu)
+        self.assertIn("4) ← 戻る", menu)
 
     def test_explicit_resources_override_previous_defaults(self):
         state_file = Path(self.env["HOME"]) / ".agentrun/wizard-last"

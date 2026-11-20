@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 FORMAT = 5
 
 TURN = re.compile(r"### (User|Assistant) · (.*)")
-SESSION = re.compile(r"## Session: (.*) \((worker|reviewer), (codex|claude)\)")
+SESSION = re.compile(r"## Session: (.*) \((worker|reviewer), (codex|claude|antigravity)\)")
 REVIEW = re.compile(r"## Review: (.*)")
 REVIEW_FILE = re.compile(r"### (conversation\.md|review_findings\.json|response\.json)")
 SUMMARY = re.compile(r"<summary>(.*)</summary>")
@@ -29,7 +29,7 @@ TEXT_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
 HEADING = re.compile(r" {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*")
 CODE_SPAN = re.compile(r"(`+)(?!`).*?(?<!`)\1(?!`)")
 TAG = re.compile(r"(?<!\S)#(?=[^\s#])")
-NAMES = {"claude": "Claude", "codex": "Codex"}
+NAMES = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"}
 ROLES = {"worker": "作業担当", "reviewer": "監査役"}
 REVIEW_FILES = {"conversation.md": ("quote", "監査のやり取り"),
                 "review_findings.json": ("abstract", "監査の指摘"),
@@ -195,6 +195,9 @@ def detail(label, fence, tz):
             title += ": " + (command if len(command) <= 60 else command[:59] + "…")
     elif parts[0] == "File changes":
         title = "📝 ファイル変更"
+    elif parts[0] == "System message":
+        title = "📣 システムメッセージ"
+        kind = "note"
     else:
         title = label
     return callout(kind, title + suffix, code(mark, language, content))

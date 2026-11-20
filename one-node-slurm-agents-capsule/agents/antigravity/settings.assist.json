@@ -1,0 +1,13 @@
+{
+  "extends": "./settings.json",
+  "runtimeProfile": "assist",
+  "permissions": {
+    "deny": [
+      "command(pip)",
+      "command(sudo)",
+      "command(apt)",
+      "read_file(/home/sandbox/.ssh)",
+      "read_file(.env)"
+    ]
+  }
+}

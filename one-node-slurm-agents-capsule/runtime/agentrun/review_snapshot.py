@@ -32,7 +32,7 @@ PRIVATE = {
     ".venv",
     "__pycache__",
 }
-SPECIAL = {"AGENTS.md", "CLAUDE.md", ".mcp.json"}
+SPECIAL = {"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".mcp.json"}
 
 
 class InputTooLarge(ValueError):

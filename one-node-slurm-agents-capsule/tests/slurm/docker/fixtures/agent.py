@@ -15,11 +15,22 @@ from pathlib import Path
 
 AGENT = Path(sys.argv[0]).name
 ARGS = sys.argv[1:]
-assert AGENT in ("codex", "claude"), AGENT
+assert AGENT in ("codex", "claude", "agy"), AGENT
+# agentrun's name for the agent; Antigravity's CLI is called agy.
+PROVIDER = "antigravity" if AGENT == "agy" else AGENT
 HOME = Path.home()
-CREDENTIAL = HOME / (
-    ".codex/auth.json" if AGENT == "codex" else ".claude/.credentials.json"
-)
+AGY = HOME / ".gemini/antigravity-cli"
+CREDENTIAL = HOME / {
+    "codex": ".codex/auth.json",
+    "claude": ".claude/.credentials.json",
+    "agy": ".gemini/antigravity-cli/antigravity-oauth-token",
+}[AGENT]
+# Where each CLI keeps native conversations (agy: one brain/<id> directory each).
+NATIVE = {"codex": HOME / ".codex/sessions", "claude": HOME / ".claude/projects", "agy": AGY / "brain"}[AGENT]
+
+
+def option(*names):
+    return next((ARGS[ARGS.index(name) + 1] for name in names if name in ARGS), None)
 
 
 def transcript(ident, prompt, answer):
@@ -64,6 +75,24 @@ def transcript(ident, prompt, answer):
                 },
             },
         ]
+    elif AGENT == "agy":
+        # agy 1.5: steps in conversations/<id>.db, the readable log in brain/<id>/.
+        path = AGY / "brain" / ident / ".system_generated/logs/transcript.jsonl"
+        start = len(path.read_text().splitlines()) if path.exists() else 0
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        records = [
+            {"step_index": start, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+             "created_at": stamp, "content": f"<USER_REQUEST>\n{prompt}\n</USER_REQUEST>"},
+            {"step_index": start + 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+             "created_at": stamp, "thinking": "fixture thought",
+             "tool_calls": [{"name": "run_command", "args": {"CommandLine": "printf offline-output"}}]},
+            {"step_index": start + 2, "source": "MODEL", "type": "GENERIC", "status": "DONE",
+             "created_at": stamp, "content": "offline-output"},
+            {"step_index": start + 3, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+             "created_at": stamp, "content": answer},
+        ]
+        (AGY / "conversations").mkdir(parents=True, exist_ok=True)
+        (AGY / "conversations" / f"{ident}.db").touch()
     else:
         path = HOME / f".claude/projects/-workspace/{ident}.jsonl"
         records = [
@@ -117,6 +146,16 @@ def transcript(ident, prompt, answer):
     return path
 
 
+if AGENT == "agy" and ARGS == [] and "AGENTRUN_ROLE" not in os.environ:
+    # agy has no login subcommand: agentrun opens it, and you sign in on its first screen.
+    assert Path("/etc/capsule-test-cluster").exists()
+    CREDENTIAL.parent.mkdir(parents=True, exist_ok=True)
+    CREDENTIAL.write_text('{"synthetic":"offline-login"}')
+    CREDENTIAL.chmod(0o600)
+    (AGY / "installation_id").write_text("offline-installation\n")
+    print("SYNTHETIC_LOGIN_OK")
+    raise SystemExit(0)
+
 if ARGS in (["login"], ["login", "--device-auth"], ["auth", "login"]):
     assert Path("/etc/capsule-test-cluster").exists()
     CREDENTIAL.parent.mkdir(parents=True, exist_ok=True)
@@ -140,8 +179,13 @@ if ARGS == ["--version"]:
 if "--help" in ARGS:
     print(
         "--json --output-schema --ignore-user-config --ignore-rules --restricted --safe-mode "
-        "--tools --strict-mcp-config --permission-prompts --json-schema"
+        "--tools --strict-mcp-config --permission-prompts --json-schema",
+        # agy prints its usage to stderr.
+        file=sys.stderr if AGENT == "agy" else sys.stdout,
     )
+    if AGENT == "agy":
+        print("--output-format --conversation --settings --disable-slash-commands --print-timeout "
+              "--input-format", file=sys.stderr)
     raise SystemExit(0)
 
 if ARGS and ARGS[0] == "sandbox":
@@ -150,9 +194,12 @@ if ARGS and ARGS[0] == "sandbox":
     raise SystemExit(0)
 
 if os.environ.get("AGENTRUN_ROLE") == "reviewer" and (
-        ARGS[:2] == ["debug", "models"] or (AGENT == "claude" and "--input-format" in ARGS)):
+        ARGS[:2] == ["debug", "models"] or ARGS == ["models"]
+        or (AGENT == "claude" and "--input-format" in ARGS)):
     # Reproduce each CLI's model list format without calling a model service.
-    if AGENT == "codex":
+    if AGENT == "agy":
+        print("fixture-review-model\tFixture")
+    elif AGENT == "codex":
         print(json.dumps({"models": [{"slug": "fixture-review-model", "display_name": "Fixture", "visibility": "list",
                                       "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]}]}))
     else:
@@ -171,17 +218,23 @@ if os.environ.get("AGENTRUN_ROLE") == "reviewer":
     if AGENT == "codex":
         assert 'sandbox_mode="read-only"' in ARGS
         assert any(a.startswith("mcp_servers.capsule-input.command=") for a in ARGS)
+    elif AGENT == "agy":
+        settings = json.loads(Path(option("--settings")).read_text())
+        assert "command(*)" in settings["permissions"]["deny"], settings
+        assert "review_hook.py" in (HOME / ".gemini/config/hooks.json").read_text()
+        assert "--json-schema" in ARGS and option("--input-format") == "stream-json"
     else:
         assert ARGS[ARGS.index("--tools") + 1] == "Read,Glob,Grep"
         assert "--safe-mode" in ARGS and "--restricted" in ARGS
-    context = json.loads(sys.stdin.read().split("\n", 1)[1])
+    raw = sys.stdin.read()
+    if AGENT == "agy":  # one stream-json user event carries the prompt
+        raw = json.loads(raw.splitlines()[0])["message"]["content"]
+    context = json.loads(raw.split("\n", 1)[1])
     mode = next(p.read_text().strip() for p in Path("brief").rglob("*") if p.is_file())
     ident = (
         ARGS[ARGS.index("resume") + 1]
         if "resume" in ARGS
-        else ARGS[ARGS.index("--resume") + 1]
-        if "--resume" in ARGS
-        else str(uuid.uuid4())
+        else option("--resume", "--conversation") or str(uuid.uuid4())
     )
     result = {
         "kind": "review_result",
@@ -246,11 +299,7 @@ if os.environ.get("AGENTRUN_ROLE") == "reviewer":
         assert prior["response"]["responses"] == []
         assert Path("source/code.py").read_text() == f"value = {context['round']}\n"
     transcript(ident, "offline reviewer turn", json.dumps(result))
-    persisted = (
-        (HOME / (".codex/sessions" if AGENT == "codex" else ".claude/projects"))
-        .resolve()
-        .parents[1]
-    )
+    persisted = NATIVE.resolve().parents[2 if AGENT == "agy" else 1]
     with (persisted / "fixture-calls.jsonl").open("a") as stream:
         stream.write(
             json.dumps({"session": ident, "args": ARGS, "round": context["round"]})
@@ -260,6 +309,10 @@ if os.environ.get("AGENTRUN_ROLE") == "reviewer":
         Path(ARGS[ARGS.index("-o") + 1]).write_text(json.dumps(result))
         print(json.dumps({"type": "thread.started", "thread_id": ident}))
         print(json.dumps({"type": "turn.completed"}))
+    elif AGENT == "agy":
+        print(json.dumps({"event": "init", "conversation_id": ident, "init": {"cwd": str(Path.cwd())}}))
+        print(json.dumps({"event": "result", "result": {"conversation_id": ident, "status": "SUCCESS",
+                                                        "structured_output": result}}))
     else:
         print(
             json.dumps(
@@ -299,6 +352,27 @@ if AGENT == "codex":
     temporary = config_path.with_name("config.toml.tmp.capsule-test")
     temporary.write_text(config_text)
     temporary.replace(config_path)
+elif AGENT == "agy":
+    settings_path = AGY / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    original = json.loads(Path("/runs/container_config/settings.json").read_text())
+    assert settings == original
+    assert settings["toolPermission"] == "always-proceed"
+    assert "--dangerously-skip-permissions" in ARGS
+    hooks = json.loads((HOME / ".gemini/config/hooks.json").read_text())
+    assert "worker_hook.py --antigravity PreToolUse" in json.dumps(hooks)
+    assert (HOME / ".gemini/GEMINI.md").read_text().strip(), "the shared rules reach agy"
+    assert (HOME / ".gemini/config/skills/cross-review/SKILL.md").is_file()
+    assert json.loads((AGY / "cache/onboarding.json").read_text())["onboardingComplete"]
+    mcp = json.loads((HOME / ".gemini/config/mcp_config.json").read_text())
+    assert mcp["mcpServers"]["cross-review"]["env"]["AGENT_REVIEW_SOCKET"], mcp
+    # Exercise the atomic rewrite agy uses when /model saves the choice.
+    settings["model"] = "Fixture B" if settings.get("model") == "Fixture A" else "Fixture A"
+    temporary = settings_path.with_name("settings.json.tmp.capsule-test")
+    temporary.write_text(json.dumps(settings) + "\n")
+    temporary.replace(settings_path)
+    assert json.loads(Path("/runs/container_config/settings.json").read_text()) == original
+    print("ANTIGRAVITY_SETTINGS_ATOMIC_SAVE_OK", flush=True)
 else:
     settings_path = HOME / ".claude/settings.json"
     settings = json.loads(settings_path.read_text())
@@ -324,21 +398,18 @@ options = json.loads(scenario.read_text()) if scenario.exists() else {}
 sys.path.insert(0, "/opt/capsule-test")
 from features import check_features
 
-check_features(AGENT, options)
+check_features(PROVIDER, options)
 
 ident = (
     ARGS[ARGS.index("resume") + 1]
     if "resume" in ARGS
-    else ARGS[ARGS.index("--resume") + 1]
-    if "--resume" in ARGS
-    else str(uuid.uuid4())
+    else option("--resume", "--conversation") or str(uuid.uuid4())
 )
-resumed = "resume" in ARGS or "--resume" in ARGS
+resumed = "resume" in ARGS or "--resume" in ARGS or "--conversation" in ARGS
 if resumed:
-    roots = HOME / (".codex/sessions" if AGENT == "codex" else ".claude/projects")
     assert any(
         ident in str(p) and "capsule persisted conversation" in p.read_text()
-        for p in roots.rglob("*.jsonl")
+        for p in NATIVE.rglob("*.jsonl")
     ), "resume lost native history"
 transcript(ident, "offline fixture user", "capsule persisted conversation")
 Path("/runs/artifacts/report.md").write_text(
@@ -347,7 +418,7 @@ Path("/runs/artifacts/report.md").write_text(
 Path("/runs/artifacts/run_title.txt").write_text(
     "completed isolated cluster fixture work\n"
 )
-print(("RESUME_OK:" if resumed else "AGENT_READY:") + AGENT + ":" + ident, flush=True)
+print(("RESUME_OK:" if resumed else "AGENT_READY:") + PROVIDER + ":" + ident, flush=True)
 if options.get("hold"):
     if os.isatty(0):
         tty.setraw(0)

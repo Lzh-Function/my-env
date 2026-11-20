@@ -17,7 +17,15 @@ MOUNTS = {
     "codex": (".codex/sessions", ".codex/archived_sessions", ".codex/sqlite"),
     "claude": (".claude/projects", ".claude/file-history", ".claude/todos",
                ".claude/tasks", ".claude/plans"),
+    # agy keeps each conversation's steps in conversations/<id>.db and its transcript and
+    # artifacts in brain/<id>/; cache maps workspaces to projects for --conversation.
+    "antigravity": (".gemini/antigravity-cli/conversations", ".gemini/antigravity-cli/brain",
+                    ".gemini/antigravity-cli/annotations", ".gemini/antigravity-cli/implicit",
+                    ".gemini/antigravity-cli/cache"),
 }
+AGY_LOG = ".system_generated/logs/transcript.jsonl"
+# agy wraps what the person typed with context it adds for the model.
+AGY_REQUEST = re.compile(r"<USER_REQUEST>\n?(.*?)\n?</USER_REQUEST>", re.DOTALL)
 NATIVE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
@@ -73,6 +81,14 @@ def init(run, agent, repo, mode, source=None):
         (store / rel).mkdir(parents=True, exist_ok=True, mode=0o700)
         # Apptainer の bind 先をあらかじめ作っておく。
         (run / "home" / rel).mkdir(parents=True, exist_ok=True)
+    if agent == "antigravity":
+        # agy keeps its first-run state in the persisted cache; without it every new run
+        # opens on the theme picker, as Claude Code would without hasCompletedOnboarding.
+        onboarding = store / ".gemini/antigravity-cli/cache/onboarding.json"
+        if not onboarding.exists():
+            onboarding.write_text(json.dumps({"consumerOnboardingComplete": True,
+                                              "enterpriseOnboardingComplete": False,
+                                              "onboardingComplete": True}, indent=2) + "\n")
     # Reviewer transcripts are disjoint from worker discovery/resume paths.
     (store / "reviewers").mkdir(parents=True, exist_ok=True, mode=0o700)
     save(run, data)
@@ -116,6 +132,17 @@ def messages(path, cli):
     for entry in jsonl(path):
         if not isinstance(entry, dict):
             continue
+        if cli == "antigravity":
+            kind = entry.get("type")
+            if kind not in ("USER_INPUT", "PLANNER_RESPONSE") or not isinstance(entry.get("content"), str):
+                continue
+            text = entry["content"]
+            if kind == "USER_INPUT":
+                found = AGY_REQUEST.search(text)
+                text = found.group(1) if found else text
+            if text.strip():
+                result.append({"role": "user" if kind == "USER_INPUT" else "assistant", "text": text})
+            continue
         if cli == "codex":
             # event_msg と response_item は重複するので、正式な message のみ使う。
             if entry.get("type") != "response_item":
@@ -145,6 +172,8 @@ def history_candidates(store, agent):
     elif agent == "claude":
         paths = store.glob(".claude/projects/*/*.jsonl")
         cli = "claude"
+    elif agent == "antigravity":
+        return agy_candidates(store)
     else:
         raise ValueError("Unsupported agent: " + str(agent))
     for path in paths:
@@ -160,6 +189,33 @@ def history_candidates(store, agent):
         if isinstance(ident, str) and NATIVE_ID.fullmatch(ident):
             candidates.append({"id": ident, "cli": cli, "path": path,
                                "mtime": path.stat().st_mtime})
+    return candidates
+
+
+def agy_started_by_person(log):
+    """Whether a conversation began with typed (or launch) input, not as a subagent's task."""
+    for entry in jsonl(log, head=True):
+        return entry.get("type") != "USER_INPUT" or entry.get("source") in (None, "USER_EXPLICIT")
+    return True
+
+
+def agy_candidates(store):
+    """agy conversations: conversations/<id>.db, with the transcript in brain/<id>/ when written."""
+    root = store / ".gemini/antigravity-cli"
+    found = {}
+    for path in root.glob("conversations/*.db"):
+        found[path.stem] = [path]
+    for path in root.glob("brain/*/" + AGY_LOG):
+        found.setdefault(path.parents[2].name, []).append(path)
+    candidates = []
+    for ident, paths in found.items():
+        if not NATIVE_ID.fullmatch(ident):
+            continue
+        log = next((path for path in paths if path.name == "transcript.jsonl"), None)
+        if log is not None and not agy_started_by_person(log):
+            continue  # a subagent's conversation: it cannot be resumed as the run's own
+        candidates.append({"id": ident, "cli": "antigravity", "path": log,
+                           "mtime": max(path.stat().st_mtime for path in paths)})
     return candidates
 
 
@@ -273,6 +329,8 @@ def command(run):
                "-c", 'sqlite_home="/home/sandbox/.codex/sqlite"']
     elif cli == "claude":
         cmd = ["claude", "--resume", ident, "--dangerously-skip-permissions"]
+    elif cli == "antigravity":
+        cmd = ["agy", "--conversation", ident, "--dangerously-skip-permissions"]
     else:
         raise ValueError("未対応の CLI: " + str(cli))
     return "cd /workspace && " + shlex.join(cmd)

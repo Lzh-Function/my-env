@@ -12,7 +12,7 @@ flake8, isort, black, and others.
 
 ## Important: no auto-formatter in this capsule
 
-The `post_edit_format.py` hook records that an edit happened but does **not** run
+The `record_file_changes.py` hook records which files changed and by how many lines, but does **not** run
 any formatter automatically. You must run ruff yourself after editing Python files.
 
 ## Running ruff

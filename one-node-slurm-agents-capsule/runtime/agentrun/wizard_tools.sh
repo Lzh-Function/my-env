@@ -319,7 +319,7 @@ wizard_history_rename() {
 wizard_auth_agent() {
     # Sets WIZARD_AUTH_ARGS for the chosen agent.
     local prompt="$1" all_label="$2" choice
-    local claude='claude（Claude Code）' codex='codex（Codex）' agy='antigravity（相互監査の担当としてだけ使います）'
+    local claude='claude（Claude Code）' codex='codex（Codex）' agy='antigravity（Antigravity CLI）'
     choice="$(wizard_select "$prompt" "$claude" "$codex" "$agy" ${all_label:+"$all_label"})" || return $?
     case "$choice" in
         "$claude") WIZARD_AUTH_ARGS=(--agent claude) ;;
@@ -341,7 +341,7 @@ wizard_auth() {
         case "$choice" in
             "$status") wizard_exec '認証の状態' wizard_cli auth status || rc=$? ;;
             "$login")
-                wizard_auth_agent 'どのエージェントにログインしますか？' 'claude と codex の両方' || rc=$?
+                wizard_auth_agent 'どのエージェントにログインしますか？' 'すべて（claude・codex・antigravity）' || rc=$?
                 [ "$rc" -ne 0 ] || wizard_exec 'ログイン' wizard_cli auth login "${WIZARD_AUTH_ARGS[@]}" || rc=$? ;;
             "$import")
                 wizard_auth_agent 'どのエージェントの認証を取り込みますか？' 'すべて（claude・codex・antigravity）' || rc=$?
@@ -366,7 +366,7 @@ wizard_checks() {
     local doctor='起動に必要なものを点検する（doctor）' agents='エージェント CLI があるか確認する（agents）'
     local validate='このリポジトリの設定ファイルを検証する（validate）'
     local smoke='Slurm で最小のテストジョブを動かす（smoke-test）'
-    local sync='フックとスキルの設定を同期し直す（sync-claude / sync-codex）'
+    local sync='フックとスキルの設定を同期し直す（sync-claude / sync-codex / sync-antigravity）'
     local choice rc which
     while :; do
         rc=0
@@ -374,7 +374,7 @@ wizard_checks() {
         [ "$rc" -eq 0 ] || { [ "$rc" -eq 10 ] && return 0; return "$rc"; }
         case "$choice" in
             "$doctor")
-                which="$(wizard_select 'どのエージェントについて点検しますか？' claude codex 'すべて')" || rc=$?
+                which="$(wizard_select 'どのエージェントについて点検しますか？' claude codex antigravity 'すべて')" || rc=$?
                 if [ "$rc" -eq 0 ]; then
                     case "$which" in すべて) wizard_exec 'doctor' wizard_cli doctor --all || rc=$? ;;
                         *) wizard_exec "doctor（$which）" wizard_cli doctor --agent "$which" || rc=$? ;; esac
@@ -382,7 +382,7 @@ wizard_checks() {
             "$agents") wizard_exec 'エージェント CLI' wizard_cli agents || rc=$? ;;
             "$validate") wizard_exec 'validate' wizard_cli validate || rc=$? ;;
             "$smoke")
-                which="$(wizard_select 'どのエージェントで試しますか？' claude codex)" || rc=$?
+                which="$(wizard_select 'どのエージェントで試しますか？' claude codex antigravity)" || rc=$?
                 if [ "$rc" -eq 0 ]; then
                     if wizard_confirm 'sbatch で投入しますか？（No なら投入用ファイルを作るだけ）' 1; then
                         wizard_exec "smoke-test（$which）" wizard_cli smoke-test --agent "$which" --submit || rc=$?
@@ -392,12 +392,14 @@ wizard_checks() {
                     fi
                 fi ;;
             "$sync")
-                which="$(wizard_select 'どちらを同期しますか？（agentrun リポジトリ内の設定ファイルを書き換えます）' \
+                which="$(wizard_select 'どれを同期しますか？（agentrun リポジトリ内の設定ファイルを書き換えます）' \
                     'Claude Code（agents/claude/settings.json のフック、CLAUDE.md、skills）' \
-                    'Codex（agents/codex/requirements.toml のフック、AGENTS.md、skills）')" || rc=$?
+                    'Codex（agents/codex/requirements.toml のフック、AGENTS.md、skills）' \
+                    'Antigravity（agents/antigravity/hooks.json のフック、GEMINI.md、skills）')" || rc=$?
                 if [ "$rc" -eq 0 ]; then
                     case "$which" in Claude*) wizard_exec 'sync-claude' wizard_cli sync-claude || rc=$? ;;
-                        *) wizard_exec 'sync-codex' wizard_cli sync-codex || rc=$? ;; esac
+                        Codex*) wizard_exec 'sync-codex' wizard_cli sync-codex || rc=$? ;;
+                        *) wizard_exec 'sync-antigravity' wizard_cli sync-antigravity || rc=$? ;; esac
                 fi ;;
         esac
         wizard_menu_rc "$rc" || return $?

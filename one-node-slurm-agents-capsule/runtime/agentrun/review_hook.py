@@ -11,7 +11,8 @@ READ_TOOLS = {
 }
 # finish submits the --json-schema answer and has no side effects.
 ANSWER_TOOLS = {"finish"}
-PATH_KEYS = ("file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory",
+# agy 1.5 hands hooks read_file with "Path"; the other keys cover older and listing tools.
+PATH_KEYS = ("Path", "file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory",
              "DirectoryPath", "FilePath")
 LIST_KEYS = ("paths", "files", "ImagePaths")
 

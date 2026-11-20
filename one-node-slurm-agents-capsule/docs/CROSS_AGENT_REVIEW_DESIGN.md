@@ -88,7 +88,7 @@ MCP toolの起動・回答・再監査は要求の受理を返し、実際のmod
 
 変更を伴う要求には呼び出し側で作成した`request_id`（CLIでは`--request-id`）を必須とする。新しい操作には新しいIDを使い、同じ要求の再送は同じ結果を返す。同じIDで内容が異なる要求は拒否する。回答は`reply_to`と対象状態を照合し、古い質問への回答、重複した会話継続、同時の再監査開始を排他制御で防ぐ。CLIとMCPを途中で切り替えても、providerへの送信が重複しない。providerへの送信後に応答を失い、実行の有無を確定できない場合は、その不確実性を記録し、自動で同じ発言を再送しない。
 
-runtimeが`primary_agent`を記録し、監査担当の指定がなければ相手agentを自動選択する。依頼ごとに`reviewers`でCodex・Claude Code・Antigravityから作業agent以外を選べ、複数を指定するとproviderごとに独立したthreadを作る。同じproviderで同時に進める会話は1つに限る。Antigravityは監査担当専用で、作業agentとしては起動しない。監査に使うmodelと推論の強度は、起動時の環境変数（ユーザー指定）、依頼ごとのagentの選択、CLIの既定値の順に決める。agentは`review_models`で各CLIが現在提供する一覧を取得して選び、一覧にない値はCLI起動前に`invalid_model`として拒否し、`review_retry`で同じラウンドを再試行できる。実際に使ったmodelがCLIから取得できる場合は記録し、取得できないメタデータは推測せず不明として扱う。相手agentが使えない場合に、作業agent自身へ黙って切り替えることはしない。
+runtimeが`primary_agent`を記録し、監査担当の指定がなければ既定の相手agent（Claude CodeにはCodex、CodexにはClaude Code、AntigravityにはCodex）を選ぶ。依頼ごとに`reviewers`でCodex・Claude Code・Antigravityから作業agent以外を選べ、複数を指定するとproviderごとに独立したthreadを作る。同じproviderで同時に進める会話は1つに限る。3つのproviderはどれも作業agentにも監査担当にもなれる。監査に使うmodelと推論の強度は、起動時の環境変数（ユーザー指定）、依頼ごとのagentの選択、CLIの既定値の順に決める。agentは`review_models`で各CLIが現在提供する一覧を取得して選び、一覧にない値はCLI起動前に`invalid_model`として拒否し、`review_retry`で同じラウンドを再試行できる。実際に使ったmodelがCLIから取得できる場合は記録し、取得できないメタデータは推測せず不明として扱う。相手agentが使えない場合に、作業agent自身へ黙って切り替えることはしない。
 
 監査依頼書には、目的、検証したい主張、合格条件、関係するデータと手法、依頼する監査範囲、既知の制約を記載する。提供された論文やログも参照できる。作業agent自身の説明は「主張」として渡し、作業の正しさを裏づける証拠としては扱わない。
 
@@ -149,7 +149,7 @@ sequenceDiagram
 | --- | --- | --- |
 | Codex | 初期の実行処理は`codex exec`で開始し、取得したIDを明示して`codex exec resume <SESSION_ID>`で継続する。構造化した発言とJSONイベントログを取得する | 読み取り専用sandboxを維持し、snapshot専用の読み取りMCPで資料を参照する。sandboxを迂回する設定へ自動で切り替えない |
 | Claude Code | print実行で開始し、取得したIDを明示して`--resume <session-id>`で継続する。JSON Schemaに沿った発言と、応答を格納するJSONを取得する | 読み取り・検索toolを明示した制限付き実行、専用設定、既存MCP serverを引き継がない構成 |
-| Antigravity（監査担当のみ） | `agy`をstream-json入出力で起動し、取得した会話IDを`--conversation`で指定して継続する。`--json-schema`の結果（`structured_output`、なければ最終応答内のJSON）を取得する | snapshot内の`read_file`だけを許可し、command・書き込み・URL・MCPを設定で拒否する。PreToolUse hookが読み取り系toolと回答提出の`finish`以外、およびsnapshot外のパスを拒否する |
+| Antigravity | `agy`をstream-json入出力で起動し、取得した会話IDを`--conversation`で指定して継続する。`--json-schema`の結果（`structured_output`、なければ最終応答内のJSON）を取得する | snapshot内の`read_file`だけを許可し、command・書き込み・URL・MCPを設定で拒否する。PreToolUse hookが読み取り系toolと回答提出の`finish`以外、およびsnapshot外のパスを拒否する |
 
 両CLIとも非対話実行での会話継続と構造化した出力に対応するが、発言を包む応答の形式は異なる。provider別の実行処理で共通形式へ変換してから、実行管理処理で検証する。初期版では発言ごとにCLI processが終了してもよく、会話IDと履歴を維持する。すべての継続実行で専用設定・権限・対象の結びつきを再確認し、必要なflagが継続コマンドに対応することも導入versionごとに検証する。[OpenAIの非対話実行](https://learn.chatgpt.com/docs/non-interactive-mode)と[Claudeのプログラム実行](https://code.claude.com/docs/en/headless)を参照する。
 

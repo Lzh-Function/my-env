@@ -1,6 +1,6 @@
 # agentrun 利用マニュアル
 
-`agentrun` は、Claude Code と Codex を Slurm の計算ノード上の Apptainer コンテナで動かすためのコマンドです。対話しながらの作業、バッチ実行、会話の再開、会話履歴の保存、両エージェントによる相互監査に対応しています。エージェントを省略すると Claude Code を使います。
+`agentrun` は、Claude Code・Codex・Antigravity（`agy`）を Slurm の計算ノード上の Apptainer コンテナで動かすためのコマンドです。対話しながらの作業、バッチ実行、会話の再開、会話履歴の保存、エージェント同士の相互監査に対応しています。3 つのエージェントは同じ扱いで、どれでも同じ機能を使えます。エージェントを省略すると Claude Code を使います。
 
 本書では、`agentrun` を実行してジョブを投入するマシンを**投入元ホスト**、ジョブが実際に動くマシンを**計算ノード**と呼びます。また、起動から終了までの一回の作業を**実行**と呼び、その記録を保存する `.agent-runs/<run_id>/` を**実行ディレクトリ**と呼びます。
 
@@ -116,7 +116,7 @@ srun --partition <partition> runtime/apptainer/build-images.sh --run --force
 ```bash
 agentrun agents
 agentrun validate
-agentrun doctor --agent <name>   # 使用するエージェントを指定する（例: claude, codex）
+agentrun doctor --agent <name>   # 使用するエージェントを指定する（claude, codex, antigravity）
 ```
 
 `doctor` の `image:base-system.sif` が `[OK]` になればイメージの準備は完了です。
@@ -132,17 +132,18 @@ agentrun doctor --agent <name>   # 使用するエージェントを指定する
 ```bash
 agentrun auth login --agent claude
 agentrun auth login --agent codex
+agentrun auth login --agent antigravity
 agentrun auth status
 ```
 
-両方のエージェントをまとめてログイン・登録する場合:
+すべてのエージェントをまとめてログイン・登録する場合:
 
 ```bash
 agentrun auth login --all
 agentrun auth status
 ```
 
-`auth login` を使うには、対象の CLI（`claude` / `codex`）を投入元ホストにインストールし、`PATH` から呼び出せるようにしてください。インストール先の例は `$HOME/.local/bin/` です。
+`auth login` を使うには、対象の CLI（`claude` / `codex` / `agy`）を投入元ホストにインストールし、`PATH` から呼び出せるようにしてください。インストール先の例は `$HOME/.local/bin/` です。`agy` にはログイン用のサブコマンドがないため、`auth login --agent antigravity` は `agy` を起動します。最初の画面でサインインし、終わったら `/exit` で戻ってください。
 
 **既にホスト側でログイン済みの場合** は `auth import` のみ実行します。
 
@@ -157,6 +158,8 @@ agentrun auth status --agent claude
 claude      $HOME/.claude/.credentials.json
             $HOME/.claude.json
 codex       $HOME/.codex/auth.json
+antigravity $HOME/.gemini/antigravity-cli/antigravity-oauth-token
+            $HOME/.gemini/antigravity-cli/installation_id
 ```
 
 以後のジョブは、認証ストアから認証情報を実行ごとの一時ホームへコピーします。認証ストアにない場合だけ、投入元ホストの元ファイルを参照します。
@@ -217,9 +220,9 @@ agentrun assist --agent codex --partition <partition> --time 02:00:00
 agentrun agents
 ```
 
-利用可能なエージェント CLI を表示します。対応するエージェントは `codex` と `claude` で、省略時は `claude`（Claude Code）を使います。
+利用可能なエージェント CLI を表示します。対応するエージェントは `codex`・`claude`・`antigravity` で、省略時は `claude`（Claude Code）を使います。Antigravity の CLI のコマンド名は `agy` です。
 
-`--agent` はこの2種類だけを受け付けます。未対応の名前はエラーになります。ウィザードに保存されたエージェントが未対応なら `claude` に戻します。
+`--agent` はこの 3 種類だけを受け付けます。CLI のコマンド名（`agy`）や未対応の名前はエラーになります。ウィザードに保存されたエージェントが未対応なら `claude` に戻します。
 
 例:
 
@@ -227,6 +230,7 @@ agentrun agents
 使えるエージェント:
   codex        あり  /home/li/.local/bin/codex
   claude       あり  /home/li/.local/bin/claude
+  antigravity  あり  /home/li/.local/bin/agy
 ```
 
 <a id="validate"></a>
@@ -251,6 +255,7 @@ agentrun validate
 ```bash
 agentrun sync-claude
 agentrun sync-codex
+agentrun sync-antigravity
 agentrun validate
 ```
 
@@ -260,7 +265,7 @@ agentrun validate
 
 ```bash
 agentrun doctor --agent claude   # 使用するエージェントを指定する
-agentrun doctor --all            # 両エージェントの認証を検証する
+agentrun doctor --all            # すべてのエージェントの認証を検証する
 ```
 
 以下を確認します。
@@ -282,7 +287,7 @@ FUSE のチェックは常に WARN 止まりで、実行を FAIL にはしませ
 
 ログインノード上で `apptainer` や `uv` が見つからない場合は WARN です。計算ノードやイメージ内で提供される構成もあるため、WARN は即失敗とは限りません。
 
-**`--all` を指定すると両エージェントの認証を検証します。** 使用しないエージェントの認証ファイルが未設定の場合、そのエージェントの認証チェックが `[FAIL]` になります。使用するエージェントだけを確認する場合は `--agent NAME` を使ってください。
+**`--all` を指定するとすべてのエージェントの認証を検証します。** 使用しないエージェントの認証ファイルが未設定の場合、そのエージェントの認証チェックが `[FAIL]` になります。使用するエージェントだけを確認する場合は `--agent NAME` を使ってください。
 
 認証ファイルは次の場所を確認します。認証ストアになければ、投入元ホストの元ファイルを参照します。
 
@@ -290,6 +295,7 @@ FUSE のチェックは常に WARN 止まりで、実行を FAIL にはしませ
 claude      $HOME/.agentrun/auth/claude/.claude/.credentials.json
             $HOME/.agentrun/auth/claude/.claude.json
 codex       $HOME/.agentrun/auth/codex/.codex/auth.json
+antigravity $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity-oauth-token
 ```
 
 認証ストアにもホストにも存在しない場合のみ `[FAIL]` になります。認証ストアには `agentrun auth import --agent NAME` でインポートしてください。
@@ -560,7 +566,7 @@ agentrun wizard --agent codex    # 起動用のオプションを付けると、
 | テンプレートの管理 | run からの登録、中身の確認、削除（確認あり） | `template` |
 | 認証 | 状態の確認、ログイン、取り込み、保存した認証の削除（確認あり） | `auth status`・`auth login`・`auth import`・`auth reset` |
 | 起動内容だけ確認する | 起動と同じ質問に答えたあと、何も起動せずにマウントやコマンドを表示します。結果を見てから「この設定で実際に起動する」「設定を変更する」「wizard を終了する」を選べます。会話の再開は対象外です | `dry-run --show-mounts` |
-| 環境の点検と設定 | 起動に必要なものの点検（エージェントを選択）、エージェント CLI の確認、設定ファイルの検証、テストジョブ（投入か準備のみかを選択）、フックとスキルの設定の同期（確認あり） | `doctor`・`agents`・`validate`・`smoke-test`・`sync-claude`・`sync-codex` |
+| 環境の点検と設定 | 起動に必要なものの点検（エージェントを選択）、エージェント CLI の確認、設定ファイルの検証、テストジョブ（投入か準備のみかを選択）、フックとスキルの設定の同期（確認あり） | `doctor`・`agents`・`validate`・`smoke-test`・`sync-claude`・`sync-codex`・`sync-antigravity` |
 | スキルの追加と目標ファイル | フォルダか Git の URL からのスキル追加（入れる名前と上書きを選択）、今いるディレクトリへの `goal.yaml` の作成 | `skill-install`・`init-goal` |
 
 各機能が表示する結果（`doctor` の `[OK]` 行など）は、サブコマンドの出力そのものです。
@@ -633,7 +639,7 @@ agentrun resume  # 対話的に選択
 | 計算資源 | メモリ、CPU、制限時間、GPU 数、パーティション |
 | マウント | 追加 `--bind` のマウント元・マウント先・読み書き権限、FUSE の有無 |
 | 外部サービス | 秘密情報ファイルの参照先、GitHub 仲介サービスの有無と設定ファイルの参照先 |
-| エージェント設定 | Claude の `settings.json`、Codex の `config.toml`。`/effort` などによる実行中の変更も、ホーム削除前に保存 |
+| エージェント設定 | Claude の `settings.json`、Codex の `config.toml`、Antigravity の `settings.json`。`/effort` や `/model` などによる実行中の変更も、ホーム削除前に保存 |
 | 相互監査 | モデル・effort・単発 CLI の任意の時間制限。廃止した回数・期限設定は無視し、再開時に明示した環境変数を優先 |
 
 同じ会話を繰り返し再開した場合、一覧には最新の実行だけを表示します。以前の実行記録は残り、run ID を直接指定すれば、その時点の起動設定で再開できます。
@@ -813,7 +819,7 @@ antigravity $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity
             $HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
 ```
 
-Antigravity は相互監査の監査担当としてだけ使い、作業エージェントには指定できません。`auth login --all` は作業エージェント（Codex・Claude Code）だけを対象にし、`auth import --all` と `auth status` は Antigravity も含みます。
+`auth login --all`・`auth import --all`・`auth status` は、3 つのエージェントすべてを対象にします。作業エージェントとして起動するときも、相互監査の監査担当として呼ばれるときも、同じ認証を使います。
 
 各エージェント CLI は、更新用トークン（`refresh_token`）が利用できれば、ジョブ実行中に期限切れになったアクセストークンを自動更新します。更新できない場合や認証が失われた場合は、再ログインして認証ストアを更新します。
 
@@ -946,6 +952,7 @@ Markdown には、ユーザーの発言と、画面に表示されるアシス�
 
 - Codex に標準出力・標準エラーの区別がない場合は、結合された出力を保存します。
 - Claude のツール結果は、構造化されたデータとエラー文字列の両方に対応します。ツール結果をユーザーの発言として表示することはありません。
+- Antigravity は、会話ごとの記録（`brain/<会話 ID>/.system_generated/logs/` の `transcript_full.jsonl`、なければ `transcript.jsonl`）を読みます。ユーザーの発言は、agy が付け足す時刻などの情報を除いた本文だけを保存します。ツールの呼び出しと結果は呼んだ順に対応付け、失敗した呼び出しはエラーとして残します。agy が自分で挟む注意書き（システムメッセージ）は、別の折りたたみ表示にします。
 - サブエージェントの履歴と、`/new` で追加されたセッションは、別の節として収録します。
 - 元の履歴に含まれる `source` / `originator` は実行情報に残します。オブジェクト形式の `source` にも対応します。
 
@@ -1092,9 +1099,9 @@ with sqlite3.connect(root / "index.sqlite3") as db:
 
 ## 対話による相互監査
 
-Claude Code の作業を Codex に、Codex の作業を Claude Code に監査させられます。Antigravity（`agy`）も監査担当として依頼できます。Antigravity は作業エージェントとしては起動できず、監査の依頼先としてだけ使います。依頼ごとに監査担当を選べ、2 つの監査担当へ同時に依頼することもできます。共通スキルの `cross-review` が、監査依頼、質問への回答、修正・反論後の再監査を案内します。監査は作業中の Slurm ジョブに割り当てられた資源で実行し、追加のジョブは投入しません。
+作業エージェント（Claude Code・Codex・Antigravity のどれか）の作業を、ほかのエージェントに監査させられます。依頼ごとに監査担当を選べ、2 つの監査担当へ同時に依頼することもできます。共通スキルの `cross-review` が、監査依頼、質問への回答、修正・反論後の再監査を案内します。監査は作業中の Slurm ジョブに割り当てられた資源で実行し、追加のジョブは投入しません。
 
-監査担当の認証情報を投入元ホストで準備してください。既にログイン済みなら `agentrun auth import --all` で登録できます。Antigravity を使う場合は、ホストの `agy` でログインしてから `agentrun auth import --agent antigravity` を実行します（`agentrun auth login --agent antigravity` は `agy` を起動します。ログイン後に `/exit` で終了してください）。保存するのは `~/.gemini/antigravity-cli/` の `antigravity-oauth-token` と `installation_id` だけです。監査担当の認証がなくても通常の作業は開始できますが、その監査担当への依頼は認証不足（`missing_authentication`）として失敗します。実行中にホストで `agentrun auth login` か `agentrun auth import` を実行すると、実行中の run にも反映され、次の監査依頼から新しい認証を使います（[認証情報の登録](#認証情報のセットアップ初回必須) を参照）。
+監査担当の認証情報を投入元ホストで準備してください。既にログイン済みなら `agentrun auth import --all` で登録できます。Antigravity の場合は、ホストの `agy` でログインしてから `agentrun auth import --agent antigravity` を実行します（`agentrun auth login --agent antigravity` は `agy` を起動します。ログイン後に `/exit` で終了してください）。保存するのは `~/.gemini/antigravity-cli/` の `antigravity-oauth-token` と `installation_id` だけです。監査担当の認証がなくても通常の作業は開始できますが、その監査担当への依頼は認証不足（`missing_authentication`）として失敗します。実行中にホストで `agentrun auth login` か `agentrun auth import` を実行すると、実行中の run にも反映され、次の監査依頼から新しい認証を使います（[認証情報の登録](#認証情報のセットアップ初回必須) を参照）。
 
 作業エージェントには `cross-review` の MCP サーバーを自動登録します。MCP は、エージェントから監査用のツールを呼び出すための接続方式です。監査用 CLI は最初の依頼時に導入し、その実行中は再利用します。監査側で更新された認証情報は、変更があった場合だけ既存の認証保存経路へ戻します。会話履歴の保存領域には認証情報を含めません。
 
@@ -1102,7 +1109,7 @@ Claude Code の作業を Codex に、Codex の作業を Claude Code に監査さ
 
 コンテナ内の作業エージェントに、例えば「cross-review を使って、この変更と研究上の主張を監査して」と依頼します。監査エージェントから質問が届くと、作業エージェントが理由と証拠を回答し、同じ監査会話を続けます。
 
-監査担当を省略すると、Claude Code の作業は Codex、Codex の作業は Claude Code が監査します。MCP の `reviewers`、CLI の `--reviewers codex,antigravity` で依頼先を指定できます。複数を指定した場合は監査担当ごとに別の `review_id` と `review_thread_id` が返り、それぞれ独立に回答・再監査します。同じ監査担当で同時に進められる会話は 1 つです。一方の認証切れや中止は、もう一方を止めません。
+監査担当を省略すると、Claude Code の作業は Codex、Codex の作業は Claude Code、Antigravity の作業は Codex が監査します。MCP の `reviewers`、CLI の `--reviewers codex,antigravity` で依頼先を指定できます。複数を指定した場合は監査担当ごとに別の `review_id` と `review_thread_id` が返り、それぞれ独立に回答・再監査します。同じ監査担当で同時に進められる会話は 1 つです。一方の認証切れや中止は、もう一方を止めません。
 
 質疑応答の途中では対象ファイルを変更せず、判定が返ってから修正や反論を行います。ラウンド数・質疑応答数に上限はありません。現在の変更について合意するか、ユーザーが中止するまで質問・回答・修正・再監査を続けられます。承認後にさらに変更した場合は、その変更も再監査してください。
 
@@ -1259,7 +1266,7 @@ Git で追跡しているファイル、`.gitignore` で除外されていない
 
 各ラウンドの記録はスレッドごとにまとめ、`/runs/reviews/THREAD_ID/REVIEW_ID/` に保存します（以前の版で作った `/runs/reviews/REVIEW_ID/` もそのまま読めます）。`conversation.md`、`events.jsonl`、`review_findings.json`、`report.md`、`response.json` と、発言ごとのログが含まれます。監査担当が読む入力は `/runs/reviews/workspace/<監査担当>/` に置き、次のラウンドが始まると前ラウンドの入力をそのラウンドの `input/` へ移します。
 
-CLI が保存する元の履歴は、既存のセッション保存領域の `reviewers/PROVIDER/` に分け、作業セッションの再開対象には含めません。終了後は、ホスト側の履歴保存処理で両エージェントの会話と監査対話を `~/.agentrun/history/` の Markdown・SQLite に集約します。Antigravity の元の履歴は形式が異なるため集約しません。Antigravity との対話も `/runs/reviews/THREAD_ID/REVIEW_ID/conversation.md` と `events.jsonl` には記録されます。
+CLI が保存する元の履歴は、既存のセッション保存領域の `reviewers/PROVIDER/` に分け、作業セッションの再開対象には含めません。終了後は、ホスト側の履歴保存処理で作業エージェントと監査担当の会話（Antigravity を含む）と監査対話を `~/.agentrun/history/` の Markdown・SQLite に集約します。監査対話は `/runs/reviews/THREAD_ID/REVIEW_ID/conversation.md` と `events.jsonl` にも記録されます。
 
 MCP に必要なパッケージは、`mcp==1.26.0` を指定した uv 環境に取得し、`/cache/uv` を使います。初回は配布先への接続が必要です。イメージの再ビルドは不要です。詳細は[相互監査の設計書](CROSS_AGENT_REVIEW_DESIGN.md)を参照してください。
 
@@ -1280,7 +1287,7 @@ uv run --no-project --with mcp==1.26.0 python -m unittest discover -s tests -p '
 uv run --no-project python -m unittest discover -s tests -p test_review_launch.py -v
 ```
 
-実環境では、監査担当の認証を準備し、`agentrun assist --agent claude` と `agentrun assist --agent codex` をそれぞれ起動します。Antigravity は `reviewers` に加えて依頼します。小さな Git リポジトリの変更について `cross-review` を依頼し、両方向で質問への回答、修正・反論後の再監査まで進めてください。会話 ID、権限制限、作業エージェントの成果物、終了後の集約履歴を確認します。この試験では、実際のモデルの利用枠を消費します。
+実環境では、監査担当の認証を準備し、`agentrun assist --agent claude`・`--agent codex`・`--agent antigravity` をそれぞれ起動します。小さな Git リポジトリの変更について `cross-review` を依頼し、どの組み合わせでも質問への回答、修正・反論後の再監査まで進めてください。会話 ID、権限制限、作業エージェントの成果物、終了後の集約履歴を確認します。この試験では、実際のモデルの利用枠を消費します。
 
 <a id="rust--日本語-lualatex"></a>
 
@@ -1443,7 +1450,7 @@ agentrun doctor --agent claude   # gh-broker:token が [OK] になることを�
 - コンテナ内の `/usr/bin/gh` を直接呼ぶことはできますが、認証情報が無いため認証の必要な操作は失敗します。
 - `gh` はイメージ（`base-system.def`）に入っています。`gh` 追加前にビルドした `.sif` の場合は再ビルドしてください。`git pull` で `base-system.def` が更新されていれば `build-images.sh --run` でシステムイメージが作り直されます。確実に作り直す場合は `--run --force` を使います。
 - 隔離は Apptainer の名前空間と「トークンファイルをマウントしない」ことに依存しています。同じ UID で動くため、カーネルの脆弱性などによるコンテナからの脱出までは防げません。
-- Claude・Codexの設定と共通フックでは、強制pushを含むpush・fetch・pull・mergeを禁止しません。GitHubが受け付けるかは、トークンの権限とリモート側のブランチ保護で決まります。保護したいブランチ（`main` など）はGitHubのブランチ保護で強制pushと削除を禁止してください。既存runをresumeする際は、保存済みClaude設定にある旧 `Bash(git push *)` 拒否だけを取り除き、ほかの設定は保持します。
+- Claude・Codex・Antigravityの設定と共通フックでは、強制pushを含むpush・fetch・pull・mergeを禁止しません。GitHubが受け付けるかは、トークンの権限とリモート側のブランチ保護で決まります。保護したいブランチ（`main` など）はGitHubのブランチ保護で強制pushと削除を禁止してください。既存runをresumeする際は、保存済みClaude設定にある旧 `Bash(git push *)` 拒否だけを取り除き、ほかの設定は保持します。
 
 ## 設定の管理
 
@@ -1548,6 +1555,72 @@ $HOME/.agentrun/auth/codex/.codex/auth.json
 
 Codex の設定は、実行ごとのホームディレクトリへコピーするため書き込み可能です。終了時に `saved_settings/config.toml` へ退避し、`resume` で引き継ぎます。信頼設定の保存エラーが出る場合は `/home/sandbox/.codex/config.toml` がファイル単位のバインドマウントになっていないか確認してください。
 
+#### Antigravity
+
+CLI のコマンド名は `agy` です。
+
+コンテナパス:
+
+```text
+/home/sandbox/.gemini/GEMINI.md                        全体ルール（共通の指示）
+/home/sandbox/.gemini/config/skills/                   スキル
+/home/sandbox/.gemini/config/hooks.json                フック
+/home/sandbox/.gemini/config/mcp_config.json           MCP サーバー（cross-review）
+/home/sandbox/.gemini/antigravity-cli/settings.json    CLI の設定
+/home/sandbox/.gemini/antigravity-cli/statusline.sh    ステータスライン
+```
+
+ホスト側のファイル:
+
+| パス | 内容 |
+| --- | --- |
+| `agents/antigravity/GEMINI.md` | → `../../common/AGENTS.md` |
+| `agents/antigravity/skills` | → `../../common/skills` |
+| `agents/antigravity/settings.json` | 基本設定 |
+| `agents/antigravity/settings.assist.json` | assist 用の追加設定 |
+| `agents/antigravity/settings.experiment.json` | experiment 用の追加設定 |
+| `agents/antigravity/hooks.manifest.json` | フックの定義ファイル |
+| `agents/antigravity/hooks.json` | 定義ファイルから生成したフックの設定（`agentrun sync-antigravity`） |
+| `agents/antigravity/statusline.sh` | ステータスライン（モデル、作業ディレクトリ、コンテキスト使用率、費用、利用枠） |
+
+起動コマンド:
+
+```text
+対話式 assist        cd /workspace && agy --dangerously-skip-permissions -i "<開始の指示>"
+バッチ実行           cd /workspace && agy --dangerously-skip-permissions --print-timeout 0 --print "<指示>"
+再開                 cd /workspace && agy --conversation <会話 ID> --dangerously-skip-permissions
+```
+
+認証 (認証ストア):
+
+```text
+$HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/antigravity-oauth-token
+$HOME/.agentrun/auth/antigravity/.gemini/antigravity-cli/installation_id
+```
+
+マウントと一時配置するファイル:
+
+| パス | 内容 |
+| --- | --- |
+| `agents/antigravity/GEMINI.md` | → `/home/sandbox/.gemini/GEMINI.md:ro` |
+| `agents/antigravity/skills` | → `/home/sandbox/.gemini/config/skills:ro` |
+| `agents/antigravity/hooks.json` | → `/home/sandbox/.gemini/config/hooks.json:ro` |
+| `agents/antigravity/statusline.sh` | → `/home/sandbox/.gemini/antigravity-cli/statusline.sh:ro` |
+| `container_config/settings.json` | → `<run_dir>/home/.gemini/antigravity-cli/settings.json` へコピー（書き込み可能） |
+| `container_config/mcp_config.json` | → `<run_dir>/home/.gemini/config/mcp_config.json` へコピー（書き込み可能） |
+
+設定は次のとおりです。
+- `toolPermission` は `always-proceed`、端末の sandbox（`enableTerminalSandbox`）は使いません。Codex の `--dangerously-bypass-approvals-and-sandbox`、Claude Code の `--dangerously-skip-permissions` と同じ扱いです。
+- ワークスペース外（`/runs`、`/scratch` など）にも書き込めるよう `allowNonWorkspaceAccess` を有効にし、`/workspace` を信頼済みにしています。
+- 実装計画などの成果物で確認待ちにならないよう、`artifactReviewPolicy` は `always-proceed` です。
+- 禁止の規則（`permissions.deny`）は、Claude Code の設定と同じ対象を agy の書式（`command(...)`、`read_file(...)`）で並べています。
+
+フックは、共通フック（`common/hooks/*.py`）を `worker_hook.py --antigravity <イベント>` 経由で呼びます。agy のフックは `toolCall.name` / `toolCall.args`（例: `run_command` の `CommandLine`、`read_file` の `Path`）を渡し、標準出力の JSON（`{"decision": "deny", "reason": ...}`）で止めるため、`worker_hook.py` が Claude Code / Codex の形に変換して共通フックを動かし、答えを agy の形に戻します。止めた理由は、そのまま agy に表示されます。
+
+設定は実行専用ホーム内の通常ファイルなので、`/model` などによる設定の保存が可能です。終了時に `saved_settings/settings.json` へ退避し、`resume` で引き継ぎます。`--fresh-config` を指定した再開では、リポジトリの設定から作り直します。
+
+会話は `~/.gemini/antigravity-cli/` の `conversations/`（会話ごとのデータベース）と `brain/`（会話ごとの記録 `transcript.jsonl`）に保存し、セッション保存領域に残します。最初の起動で表示されるテーマ選択などの初期設定は、セッション保存領域の `cache/onboarding.json` に完了済みとして記録してから起動するため、表示されません。サブエージェントの会話は再開の対象にしません。
+
 <a id="common-instructions"></a>
 
 ### 共通の指示の変更
@@ -1592,6 +1665,7 @@ agentrun validate
 ```bash
 agentrun sync-claude
 agentrun sync-codex
+agentrun sync-antigravity
 agentrun validate
 ```
 
@@ -1627,7 +1701,7 @@ URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれ
 | ----- | ---- |
 | `uv` | Python プロジェクト・パッケージ・スクリプトの管理に使う `uv` コマンドのガイドです。`uv add`/`uv run`/`uvx` の使い分けや、仮想環境の作成・管理方法を説明します。 |
 | `agentrun-contract` | agentrun コンテナ内でエージェントが書くべき出力ファイル・フォーマット・書き込みタイミングの一覧です。`live/status.json`・`artifacts/report.md` などの必須ファイルとモード別の追加要件、`verify-run` が何をチェックするかを記述します。 |
-| `ruff` | Python ファイルを編集した後の静的検査・整形手順です。`post_edit_format.py` フックはフォーマッタを自動実行しないため、`uvx ruff check --fix` と `uvx ruff format` を手動実行する必要があることを説明します。 |
+| `ruff` | Python ファイルを編集した後の静的検査・整形手順です。`record_file_changes.py` フックは変更の記録だけでフォーマッタを自動実行しないため、`uvx ruff check --fix` と `uvx ruff format` を手動実行する必要があることを説明します。 |
 | `experiment-report` | `experiment`・`campaign` の各モードで書くべきモード固有ファイルのスキーマです。`artifacts/proposed_next.yaml`・`artifacts/proposed_train.sbatch` のフォーマットを記述します。 |
 | `pytest` | `uv run pytest` によるテスト実行と、結果を `/runs/live/stdout.log`、`artifacts/metrics.json` に記録する方法を説明します。プロジェクトのテストには uv を使い、システム Python はコンテナの起動やフックなどの基盤処理に使います。 |
 | `research-latex` | 学術論文・技術報告書・モノグラフのテンプレートを使い、日英の研究文書を PDF にします。LuaLaTeX、Biber、構造検証、目視確認用のページ画像生成に対応します。付属の例は架空のデータです。 |
@@ -1640,7 +1714,7 @@ URL 判定は `http(s)://`・`git@`・`ssh://`・`git://`・`*.git` のいずれ
 
 #### research-latex による研究文書の作成
 
-`research-latex` は、読み取り専用でマウントされた共通スキルを通じて Claude Code と Codex の両方で使えます。スキルの更新だけならイメージの再ビルドは不要で、次に起動した実行から反映されます。ただし、テンプレートが使う `siunitx` には `texlive-science` が必要です。導入前のイメージを使っている場合は、先に再ビルドしてください。
+`research-latex` は、読み取り専用でマウントされた共通スキルを通じて Claude Code・Codex・Antigravity のどれでも使えます。スキルの更新だけならイメージの再ビルドは不要で、次に起動した実行から反映されます。ただし、テンプレートが使う `siunitx` には `texlive-science` が必要です。導入前のイメージを使っている場合は、先に再ビルドしてください。
 
 システム Python は、フック、エージェント起動時の情報取得、GitHub 操作の仲介などの基盤処理用に残しています。`research-latex` のツールは `uv run --no-project python` で動かし、追加の Python パッケージは使いません。TeX Live と Poppler は OS パッケージとして導入しています。
 
@@ -1682,7 +1756,7 @@ uv run --no-project python "$SKILL_ROOT/scripts/research_latex.py" render --proj
 
 #### yomiyasu による日本語の推敲
 
-`yomiyasu` も Claude Code と Codex で共有します。[nanaism/yomiyasu v2.5.0](https://github.com/nanaism/yomiyasu/tree/29d67ccb05e370b5958d72920a9cd1aa829dee80/skills/yomiyasu) から取り込み、MIT ライセンス、Unicode のライセンス告知、参考資料、文章確認用のスクリプトを含めています。取り込み元のコミットとローカル変更は `UPSTREAM.json` に記録しています。変更は、`SKILL.md` の冒頭にこの環境向けの説明を加えたことだけで、スクリプトは取り込み元のままです。
+`yomiyasu` も Claude Code・Codex・Antigravity で共有します。[nanaism/yomiyasu v2.5.0](https://github.com/nanaism/yomiyasu/tree/29d67ccb05e370b5958d72920a9cd1aa829dee80/skills/yomiyasu) から取り込み、MIT ライセンス、Unicode のライセンス告知、参考資料、文章確認用のスクリプトを含めています。取り込み元のコミットとローカル変更は `UPSTREAM.json` に記録しています。変更は、`SKILL.md` の冒頭にこの環境向けの説明を加えたことだけで、スクリプトは取り込み元のままです。
 
 `yomiyasu` は、利用者が名前を出して頼んだとき（`/yomiyasu`、「yomiyasu で推敲して」など）だけ使われます。v2 からは、最終稿の lint と原文との差分検査を `yomiyasu_check.py run` でまとめて実行し、提出直前に `verify` で記録と照合します。コンテナ内では検査の記録を `/runs` に残すため、`--state-dir` を指定します。
 
@@ -1704,7 +1778,7 @@ LaTeX 文書では、TeX コマンドや数式を変えずに本文を推敲し�
 
 #### natural-japanese による日本語文書の作成と推敲
 
-`natural-japanese` も Claude Code と Codex で共有します。[coji/natural-japanese v1.6.4](https://github.com/coji/natural-japanese/tree/25a8638b780037a2012e2bb3f624a0b1710666fb/skills/natural-japanese) から取り込み、リポジトリ直下の MIT ライセンスを同梱しています。取り込み元のコミットとローカル変更は `UPSTREAM.json` に記録しています。`SKILL.md` の冒頭にこの環境向けの説明を加えた以外は、取り込み元のままです。
+`natural-japanese` も Claude Code・Codex・Antigravity で共有します。[coji/natural-japanese v1.6.4](https://github.com/coji/natural-japanese/tree/25a8638b780037a2012e2bb3f624a0b1710666fb/skills/natural-japanese) から取り込み、リポジトリ直下の MIT ライセンスを同梱しています。取り込み元のコミットとローカル変更は `UPSTREAM.json` に記録しています。`SKILL.md` の冒頭にこの環境向けの説明を加えた以外は、取り込み元のままです。
 
 議事録、調査レポート、社内ガイド、PR の説明文、スライド構成など、仕事の日本語文書を書く・直す依頼で使われます。`natural-japanese score` で、文書を書き換えずに AI らしさを診断できます。名前を出して頼んだときだけ動く `yomiyasu` と違い、日本語の文書作成や「読みやすくしたい」「AI っぽい」といった依頼でも使われます。
 
@@ -1733,6 +1807,7 @@ common/hooks/
 ```text
 agents/claude/hooks.manifest.json
 agents/codex/hooks.manifest.json
+agents/antigravity/hooks.manifest.json
 ```
 
 既存フックの中身だけを編集する場合:
@@ -1746,12 +1821,13 @@ agentrun validate
 ```bash
 agentrun sync-claude
 agentrun sync-codex
+agentrun sync-antigravity
 agentrun validate
 ```
 
 全ての `common/hooks/*.py` は、各エージェントの定義ファイルで `active`（有効）または `ignored`（対象外） に分類されている必要があります。未分類フックがあると `validate` は失敗します。
 
-両エージェントの定義ファイルは同一のイベント × 照合条件形式を使います。
+3 つのエージェントの定義ファイルは同一のイベント × 照合条件形式を使います。照合条件は各 CLI のツール名で書きます（Claude Code / Codex は `Bash` など、Antigravity は `run_command`・`read_file`・`write_file`・`edit_file` など）。
 
 <a id="デフォルト-hook-の解説"></a>
 
@@ -1763,11 +1839,11 @@ agentrun validate
 
 ##### 実行前のコマンド検査（PreToolUse）
 
-これらはエージェントがコマンド実行ツール（Claude / Codex の `Bash`）を呼ぶ前に発火します。
+これらはエージェントがコマンド実行ツール（Claude / Codex の `Bash`、Antigravity の `run_command`）を呼ぶ前に発火します。
 
 | フック | 役割 |
 | ---- | ---- |
-| `block_dangerous_command.py` | `rm -rf /`・`rm -rf ~`、`mkfs`、`ssh`、`sudo` と、秘密ファイル（`.ssh/`、`id_rsa`/`id_ed25519`、`auth.json`、`.credentials.json`、`.env`/`.env.*`、`secrets/`、`.bashrc` など）へのアクセスをブロックします。判定はファイル名・パスだけで、`token`・`secret` といった単語（`AutoTokenizer`、`--max-new-tokens` など）では止めません。環境変数の値は対象外です。コマンド実行ツールとファイル系ツール（`Read` / `Edit` / `Write` / `apply_patch` など）の両方に適用されます。Codex の `apply_patch` はパッチ本文ではなく、対象ファイルのパス（`*** Update File:` などの行）だけを判定します。 |
+| `block_dangerous_command.py` | `rm -rf /`・`rm -rf ~`、`mkfs`、`ssh`、`sudo` と、秘密ファイル（`.ssh/`、`id_rsa`/`id_ed25519`、`auth.json`、`.credentials.json`、`.env`/`.env.*`、`secrets/`、`.bashrc` など）へのアクセスをブロックします。判定はファイル名・パスだけで、`token`・`secret` といった単語（`AutoTokenizer`、`--max-new-tokens` など）では止めません。環境変数の値は対象外です。コマンド実行ツールとファイル系ツール（`Read` / `Edit` / `Write` / `apply_patch`、Antigravity の `read_file` / `write_file` / `edit_file` など）の両方に適用されます。Codex の `apply_patch` はパッチ本文ではなく、対象ファイルのパス（`*** Update File:` などの行）だけを判定します。 |
 | `check_login_node.py` | Slurm ログインノード上での計算用コマンド（`python`、`pytest`、`jupyter`、`torchrun` 等）をブロックします。`SLURM_JOB_ID` が設定されていない場合のみ動作するため、計算ノード内では処理を制限しません。 |
 | `check_pip_forbidden.py` | `pip` の直接呼び出しと `uv pip install`/`uninstall`/`sync`/`compile` をブロックします。パッケージ管理は `uv add`/`uv remove` を使います。`uv pip list`/`show`/`freeze`/`check` は許可されます。 |
 | `check_sbatch_forbidden.py` | Slurm ジョブ割り当ての内部（`SLURM_JOB_ID` が設定されている環境）での `sbatch`/`salloc` 呼び出しをブロックします。ネストしたジョブ投入を防ぎます。 |
@@ -1783,27 +1859,28 @@ agentrun validate
 | ---- | ---- |
 | `git_worktree_auto_create.py` | `git checkout -b <branch>` または `git switch -c <branch>` の直後に、`../<branch>` に作業ツリーを自動作成します。 |
 | `update_run_status.py` | 実行されたコマンドのツール名とコマンド文字列を `live/command_log.jsonl` に追記し、`live/status.json` を更新します。コマンドの出力は記録しません（`env` の結果などから秘密情報の値が実行ディレクトリに残るのを防ぐため）。書き込み先は `AGENTRUN_DIR`、未設定なら `/runs` です。 |
+| `record_file_changes.py` | 下の「ファイル編集後の処理」と同じフックです。`sed -i`、リダイレクト、スクリプト、`git checkout` などコマンド経由の変更も記録するため、コマンドの後にも動かします。 |
 
 <a id="posttooluse-ファイル編集後"></a>
 
 ##### ファイル編集後の処理（PostToolUse）
 
-ファイル編集ツール（Claude の `Edit` / `Write`、Codex の `apply_patch`）が完了した後に発火します。
+ファイル編集ツール（Claude の `Edit` / `Write`、Codex の `apply_patch`、Antigravity の `write_file` / `edit_file` など）が完了した後に発火します。
 
 | フック | 役割 |
 | ---- | ---- |
-| `post_edit_format.py` | 編集イベントを `live/events.jsonl` に記録します。フォーマッタは自動実行しません。フォーマットが必要なプロジェクトではエージェント自身がコマンドとして実行するか、別フックに追加してください。 |
+| `record_file_changes.py` | 作業リポジトリ（`/workspace`）で変わったファイルと変わった行数を、時刻とともに 1 ファイル 1 行で `live/events.jsonl` に書きます（例: `{"ts": "2026-11-20T16:40:01+09:00", "event": "file_change", "file": "src/train.py", "added": 3, "removed": 1}`。新規・削除・バイナリのファイルには `created` / `deleted` / `binary` が付きます）。ツールの引数は読まず、前回見たときの内容（初めてのファイルは Git の `HEAD`）と今のファイルを比べるため、どの方法で書き換えても記録されます。エージェントには何も返さないので、トークンを使いません。前回の内容は `scratch/.file-changes/` に置きます。Git 管理外の作業ディレクトリでは記録しません。`.gitignore` で除外したファイルは対象外です。フォーマッタは自動実行しません。 |
 
 <a id="stop"></a>
 
 ##### セッション終了時の処理（Stop）
 
-エージェントセッションが終了するときに発火します。
+エージェントが返答を終えて止まるたびに発火します（対話では返答ごと、バッチでは作業の最後）。
 
 | フック | 役割 |
 | ---- | ---- |
-| `stop_notify.py` | Slack Incoming Webhook で完了通知を送ります。スクリプト内の `SLACK_WEBHOOK_URL` に実際の URL を設定してください。未設定のままでもフックは失敗せず、通知をスキップします。エージェント種別（Claude / Codex）を受信データから自動検出します。 |
-| `summarize_session.py` | `artifacts/report.md` が存在しない場合にプレースホルダを作成します。エージェントが報告書を出力しなかったときに `verify-run` を通過させるための最低限の保護です。 |
+| `stop_notify.py` | Slack Incoming Webhook で完了通知を送ります。スクリプト内の `SLACK_WEBHOOK_URL` に実際の URL を設定してください。未設定のままでもフックは失敗せず、通知をスキップします。エージェント種別（Claude / Codex / Antigravity）を受信データから自動検出し、最後の応答の冒頭を要約として載せます。1 回の返答につき、最初に止まったときだけ送ります。 |
+| `session_log.py` | 止まるたびに一度だけ止まるのを保留し、「`live/session_log.md` に `- 2026-11-20 16:40 <この返答でしたこと（15 語以内）>` を 1 行追記して、返答せずに止まる」ようエージェントに短く指示します。時刻はフックが日本時間（`AGENTRUN_TIMEZONE` で変更可）で埋めるため、エージェントは時刻を調べずに済み、使うのは短い書き込み 1 回分です。書き込んで再び止まったときは保留しません（Claude Code / Codex の `stop_hook_active`、Antigravity の `continuationActive`）。Antigravity では、中断・エラー・上限で止まったときも保留しません。 |
 
 <a id="install--uninstall"></a>
 

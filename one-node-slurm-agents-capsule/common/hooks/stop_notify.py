@@ -15,13 +15,15 @@ SLACK_WEBHOOK_URL = "SLACK_WEBHOOK_URL" # Set your Slack Incoming Webhook URL he
 
 
 def detect_agent(payload: dict) -> str:
+    if payload.get("agent") == "antigravity":  # set by worker_hook.py --antigravity
+        return "Antigravity"
     if "model" in payload or "turn_id" in payload:
         return "Codex"
     return "Claude Code"
 
 
 def extract_summary(payload: dict) -> str:
-    # Claude Code and Codex both provide last_assistant_message
+    # Claude Code and Codex provide last_assistant_message; Antigravity's Stop payload does not
     msg = payload.get("last_assistant_message", "")
     if not msg:
         return "作業が完了しました。"
@@ -36,6 +38,8 @@ def main() -> int:
     except json.JSONDecodeError:
         payload = {}
 
+    if payload.get("stop_hook_active"):
+        return 0  # the second stop of a turn, after session_log.py's line: already notified
     agent = detect_agent(payload)
     summary = extract_summary(payload)
     hostname = socket.gethostname().split(".")[0]

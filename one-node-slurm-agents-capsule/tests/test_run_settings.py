@@ -193,15 +193,16 @@ write_plan experiment "$6" "$1" "$4" "$GPUS" "$TIME_LIMIT" task "$5" "$PARTITION
         self.assertIn(str(renamed / "goal.yaml"), settings.args(renamed))
         self.assertFalse((self.root / "injected").exists())
 
-    def test_mutable_preferences_are_captured_before_cleanup_for_both_agents(self):
-        for agent in ("codex", "claude"):
+    def test_mutable_preferences_are_captured_before_cleanup_for_every_agent(self):
+        for agent in ("codex", "claude", "antigravity"):
             with self.subTest(agent=agent):
                 self.run = self.root / ".agent-runs" / agent
                 run = self.prepare(agent)
                 file = run / "home" / settings.CONFIG[agent]
-                if agent == "claude":
+                if agent in ("claude", "antigravity"):
+                    # Claude Code's /effort and agy's /model both save into their settings.json.
                     value = json.loads(file.read_text())
-                    value["effortLevel"] = "medium"
+                    value["effortLevel" if agent == "claude" else "model"] = "medium"
                     file.write_text(json.dumps(value))
                 else:
                     file.write_text(
@@ -226,8 +227,12 @@ write_plan experiment "$6" "$1" "$4" "$GPUS" "$TIME_LIMIT" task "$5" "$PARTITION
                 )
 
     def test_old_launch_scripts_restore_mounts_gpu_partition_and_secrets(self):
-        run = self.prepare()
-        (run / "launch.json").unlink()
+        for agent in ("antigravity", "codex"):
+            # Session-store mounts of each agent come before the extra mounts in the script.
+            self.run = self.root / ".agent-runs" / ("legacy-" + agent)
+            run = self.prepare(agent)
+            (run / "launch.json").unlink()
+            self.assertEqual(settings.load(run)["binds"], [f"{self.data}:/data:ro"], agent)
         data = settings.load(run)
         self.assertTrue(data["legacy"])
         self.assertEqual(data["binds"], [f"{self.data}:/data:ro"])

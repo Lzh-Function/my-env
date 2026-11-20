@@ -588,7 +588,7 @@ wizard_finish() {
     fi
     local command_line="agentrun $mode" summary rc=0 key prefix=''
     for key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT \
-        AGENT_REVIEW_ACTIVE_TIMEOUT; do
+        AGENT_REVIEW_ANTIGRAVITY_MODEL AGENT_REVIEW_ANTIGRAVITY_EFFORT AGENT_REVIEW_ACTIVE_TIMEOUT; do
         [ -z "${!key:-}" ] || prefix+="$key=$(wizard_shell_quote "${!key}") "
     done
     [ -z "$prefix" ] || command_line="env $prefix$command_line"

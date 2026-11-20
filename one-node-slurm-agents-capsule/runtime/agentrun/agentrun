@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
 source "$ROOT_DIR/runtime/agentrun/process-cleanup.sh"
 DEFAULT_AGENT="claude"
-SUPPORTED_AGENTS=(codex claude)
+SUPPORTED_AGENTS=(codex claude antigravity)
 PROFILES="assist experiment campaign"
 
 usage() {
@@ -13,6 +13,7 @@ Usage:
   agentrun agents
   agentrun sync-claude
   agentrun sync-codex
+  agentrun sync-antigravity
   agentrun validate
   agentrun doctor [--agent NAME|--all]
   agentrun dry-run MODE [options] PROMPT
@@ -45,13 +46,13 @@ Usage:
   agentrun list-runs
   agentrun open-run [RUN_DIR]
   agentrun verify-run [RUN_DIR|--run-id RUN_ID]
-  agentrun auth login --agent NAME|--all [--run RUN]   # NAME may also be antigravity (cross-review only)
+  agentrun auth login --agent NAME|--all [--run RUN]
   agentrun auth import --agent NAME|--all [--run RUN]  # also updates running sessions
   agentrun auth status [--agent NAME]
   agentrun auth reset --agent NAME
 
 Options:
-  --agent NAME        codex or claude (default: claude)
+  --agent NAME        codex, claude or antigravity (default: claude)
   --repo PATH         repository path, default: .
   --goal PATH         goal.yaml path
   --gpus N            GPU count, default: 0
@@ -98,18 +99,23 @@ is_supported_agent() {
 
 require_supported_agent() {
     is_supported_agent "$1" || {
-        printf '知らないエージェントです: %s（使えるのは codex と claude）\n' "$1" >&2
+        printf '知らないエージェントです: %s（使えるのは codex、claude、antigravity）\n' "$1" >&2
         return 2
     }
 }
 
-# Antigravity is never a worker; it only needs credentials as a cross-review reviewer.
-AUTH_AGENTS=(codex claude antigravity)
+# Every worker agent can also be a cross-review reviewer, so both lists are the same.
+AUTH_AGENTS=("${SUPPORTED_AGENTS[@]}")
 
 require_auth_agent() {
+    require_supported_agent "$1"
+}
+
+# The command each agent's CLI is installed as.
+agent_cli() {
     case "$1" in
-        codex|claude|antigravity) return 0 ;;
-        *) printf '知らないエージェントです: %s（使えるのは codex、claude、antigravity）\n' "$1" >&2; return 2 ;;
+        antigravity) printf 'agy\n' ;;
+        *) printf '%s\n' "$1" ;;
     esac
 }
 
@@ -165,6 +171,15 @@ agent_command() {
                 printf '%s\n' 'cd /workspace && codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --cd /workspace -c '\''sqlite_home="/home/sandbox/.codex/sqlite"'\'' "$(cat /runs/prompt.txt)"'
             else
                 printf '%s\n' 'cd /workspace && codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --cd /workspace -c '\''sqlite_home="/home/sandbox/.codex/sqlite"'\'' "$(cat /runs/prompt.txt)"'
+            fi
+            ;;
+        antigravity)
+            # The prompt follows its flag directly; agy reads hooks, MCP servers, skills and
+            # rules from ~/.gemini and its settings from ~/.gemini/antigravity-cli/settings.json.
+            if [ "$mode" = "assist" ] && [ "$launch" = "interactive" ]; then
+                printf 'cd /workspace && agy --dangerously-skip-permissions -i "$(cat /runs/prompt.txt)"\n'
+            else
+                printf 'cd /workspace && agy --dangerously-skip-permissions --print-timeout 0 --print "$(cat /runs/prompt.txt)"\n'
             fi
             ;;
         *) printf 'unknown agent: %s\n' "$agent" >&2; return 2 ;;
@@ -266,6 +281,8 @@ make_layout() {
         "$run_dir/home/.claude" \
         "$run_dir/home/.codex" \
         "$run_dir/home/.codex/skills" \
+        "$run_dir/home/.gemini/antigravity-cli" \
+        "$run_dir/home/.gemini/config" \
         "$run_dir/home/.agents"
     : > "$run_dir/live/stdout.log"
     : > "$run_dir/live/stderr.log"
@@ -336,13 +353,14 @@ generate_container_config() {
     local run_dir="$1" agent="$2" mode="$3"
     local config_dir="$run_dir/container_config"
     mkdir -p "$config_dir"
-    if [ "$agent" = "claude" ]; then
-        local base="$ROOT_DIR/agents/claude/settings.json"
+    if [ "$agent" = "claude" ] || [ "$agent" = "antigravity" ]; then
+        # Both keep JSON settings with allow/deny/ask permission lists.
+        local base="$ROOT_DIR/agents/$agent/settings.json"
         local overlay=""
-        if [ "$mode" = "assist" ] && [ -f "$ROOT_DIR/agents/claude/settings.assist.json" ]; then
-            overlay="$ROOT_DIR/agents/claude/settings.assist.json"
-        elif [ "$mode" = "experiment" ] && [ -f "$ROOT_DIR/agents/claude/settings.experiment.json" ]; then
-            overlay="$ROOT_DIR/agents/claude/settings.experiment.json"
+        if [ "$mode" = "assist" ] && [ -f "$ROOT_DIR/agents/$agent/settings.assist.json" ]; then
+            overlay="$ROOT_DIR/agents/$agent/settings.assist.json"
+        elif [ "$mode" = "experiment" ] && [ -f "$ROOT_DIR/agents/$agent/settings.experiment.json" ]; then
+            overlay="$ROOT_DIR/agents/$agent/settings.experiment.json"
         fi
         if [ -n "$overlay" ] && command -v jq >/dev/null 2>&1; then
             # Deep-merge base + overlay; concatenate permission arrays so hooks are preserved.
@@ -369,6 +387,9 @@ import sys
 directory, agent = Path(sys.argv[1]), sys.argv[2]
 server = {"command": "/opt/agentrun/agent-review", "args": ["mcp"]}
 (directory / "review-mcp.json").write_text(json.dumps({"mcpServers": {"cross-review": server}}) + "\n")
+if agent == "antigravity":
+    # agy reads MCP servers only from ~/.gemini/config/mcp_config.json.
+    (directory / "mcp_config.json").write_text(json.dumps({"mcpServers": {"cross-review": server}}, indent=2) + "\n")
 if agent == "codex":
     with (directory / "config.toml").open("a") as stream:
         stream.write('\n[mcp_servers.cross-review]\ncommand = "/opt/agentrun/agent-review"\nargs = ["mcp"]\nstartup_timeout_sec = 120\ntool_timeout_sec = 900\n')
@@ -412,6 +433,13 @@ home_config_mounts() {
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/requirements.toml" "/etc/codex/requirements.toml"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/AGENTS.md" "/home/sandbox/.codex/AGENTS.md"
             printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/codex/rules" "/home/sandbox/.codex/rules"
+            ;;
+        antigravity)
+            # Global rules, skills and hooks; the hooks run from the shared common/hooks mount.
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/GEMINI.md" "/home/sandbox/.gemini/GEMINI.md"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/skills" "/home/sandbox/.gemini/config/skills"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/hooks.json" "/home/sandbox/.gemini/config/hooks.json"
+            printf ' --bind %q:%q:ro' "$ROOT_DIR/agents/antigravity/statusline.sh" "/home/sandbox/.gemini/antigravity-cli/statusline.sh"
             ;;
     esac
 }
@@ -869,7 +897,7 @@ apptainer_command() {
     fi
     local worker_command
     worker_command="$(python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$cmd")"
-    cmd="${runtime_setup}AGENTRUN_AGENT_BIN=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$agent")) || exit \$?; export PATH=\"\$AGENTRUN_AGENT_BIN:\$PATH\"; hash -r; unset -f claude codex; python3 /opt/agentrun/review_launch.py --agent $(printf '%q' "$agent") -- bash -c ${worker_command}"
+    cmd="${runtime_setup}AGENTRUN_AGENT_BIN=\$(bash /opt/agentrun/install-agent.sh $(printf '%q' "$agent")) || exit \$?; export PATH=\"\$AGENTRUN_AGENT_BIN:\$PATH\"; hash -r; unset -f claude codex agy; python3 /opt/agentrun/review_launch.py --agent $(printf '%q' "$agent") -- bash -c ${worker_command}"
     # Do not inherit implicit host mounts or inject GitHub broker credentials.
     printf '%s\n' 'unset APPTAINER_BIND APPTAINER_BINDPATH APPTAINER_MOUNT SINGULARITY_BIND SINGULARITY_BINDPATH SINGULARITY_MOUNT'
     printf '%s\n' 'unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN APPTAINERENV_GH_TOKEN APPTAINERENV_GITHUB_TOKEN APPTAINERENV_GH_ENTERPRISE_TOKEN APPTAINERENV_GITHUB_ENTERPRISE_TOKEN SINGULARITYENV_GH_TOKEN SINGULARITYENV_GITHUB_TOKEN SINGULARITYENV_GH_ENTERPRISE_TOKEN SINGULARITYENV_GITHUB_ENTERPRISE_TOKEN'
@@ -965,6 +993,12 @@ write_plan() {
     fi
     if [ "$agent" = "codex" ]; then
         link_codex_shared_assets "$run_dir"
+    fi
+    if [ "$agent" = "antigravity" ]; then
+        # agy rewrites settings.json at startup and for /model, /config and /permissions,
+        # and /mcp edits mcp_config.json, so both are copies rather than file mounts.
+        cp "$run_dir/container_config/settings.json" "$run_dir/home/.gemini/antigravity-cli/settings.json"
+        cp "$run_dir/container_config/mcp_config.json" "$run_dir/home/.gemini/config/mcp_config.json"
     fi
     if [ -n "${RESUME_SOURCE:-}" ] && [ "${RESUME_FRESH_CONFIG:-0}" -ne 1 ]; then
         settings_tool restore "$RESUME_SOURCE" "$run_dir" || return $?
@@ -1092,12 +1126,13 @@ settings_tool() {
 
 command_agents() {
     printf '使えるエージェント:\n'
-    local agent found
+    local agent found cli
     for agent in "${SUPPORTED_AGENTS[@]}"; do
-        if found="$(command -v "$agent")"; then
+        cli="$(agent_cli "$agent")"
+        if found="$(command -v "$cli")"; then
             printf '  %-12s あり  %s\n' "$agent" "$found"
         else
-            printf '  %-12s なし  （%s コマンドが見つかりません）\n' "$agent" "$agent"
+            printf '  %-12s なし  （%s コマンドが見つかりません）\n' "$agent" "$cli"
         fi
     done
 }
@@ -1273,6 +1308,157 @@ command_sync_codex() {
     printf '[OK] agents/codex/hooks.manifest.json から agents/codex/requirements.toml を作り直しました\n'
     printf '[OK] agents/codex/AGENTS.md -> ../../common/AGENTS.md のリンクを張り直しました\n'
     printf '[OK] agents/codex/skills -> ../../common/skills のリンクを張り直しました\n'
+}
+
+antigravity_hooks_manifest() {
+    printf '%s\n' "$ROOT_DIR/agents/antigravity/hooks.manifest.json"
+}
+
+# agy hooks.json: one named hook "agentrun". Tool events group handlers under a
+# matcher; the other events take a flat handler list. Each handler goes through
+# worker_hook.py, which translates agy's payload and answer for the shared hooks.
+render_antigravity_hooks_json() {
+    local output="$1"
+    local prefix="$CONTAINER_CONFIG_DIR/common/hooks/"
+    jq --arg prefix "$prefix" '
+      def handler($event): {
+        "type": "command",
+        "command": ($prefix + "worker_hook.py --antigravity " + $event + " " + $prefix + .script),
+        "timeout": 30
+      };
+      {agentrun: (
+        .hooks | group_by(.event) | map(
+          .[0].event as $event |
+          {key: $event, value: (
+            if ($event == "PreToolUse" or $event == "PostToolUse") then
+              [.[] | {matcher: (.matcher // ""), hooks: [.entries[] | handler($event)]}]
+            else
+              [.[].entries[] | handler($event)]
+            end)}
+        ) | from_entries)}
+    ' "$(antigravity_hooks_manifest)" > "$output"
+}
+
+validate_antigravity_hook_manifest() {
+    local manifest hook failed=0 event
+    manifest="$(antigravity_hooks_manifest)"
+    if [ ! -f "$manifest" ]; then
+        printf '[FAIL] agents/antigravity/hooks.manifest.json\n'
+        return 1
+    fi
+    if ! jq -e '
+      type == "object" and
+      ((.hooks // []) | type == "array" and all(.[];
+        type == "object" and
+        (.event | IN("PreToolUse", "PostToolUse", "Stop", "SessionStart", "PreInvocation", "PostInvocation")) and
+        (.matcher | type == "string" or type == "null") and
+        (.entries | type == "array" and all(.[]; type == "object" and (.script | type == "string" and length > 0)))
+      )) and
+      ((.ignored // []) | type == "array" and all(.[]; type == "string"))
+    ' "$manifest" >/dev/null; then
+        printf '[FAIL] antigravity-hooks-manifest:shape\n'
+        return 1
+    fi
+    while IFS=$'\t' read -r event hook; do
+        [ -n "$hook" ] || continue
+        case "$hook" in
+            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
+                printf '[FAIL] antigravity-hooks-manifest:invalid-name:%s\n' "$hook"
+                failed=1
+                continue
+                ;;
+        esac
+        if [ -x "$ROOT_DIR/common/hooks/$hook" ]; then
+            printf '[OK] antigravity-hooks-manifest:%s:%s\n' "$event" "$hook"
+        else
+            printf '[FAIL] antigravity-hooks-manifest:%s:%s\n' "$event" "$hook"
+            failed=1
+        fi
+    done < <(jq -r '.hooks[] | .event as $e | .entries[].script | [$e, .] | @tsv' "$manifest")
+    while IFS= read -r hook; do
+        [ -n "$hook" ] || continue
+        case "$hook" in
+            ""|*/*|*..*|*[!A-Za-z0-9_.-]*)
+                printf '[FAIL] antigravity-hooks-manifest:invalid-ignored-name:%s\n' "$hook"
+                failed=1
+                continue
+                ;;
+        esac
+        if [ -e "$ROOT_DIR/common/hooks/$hook" ]; then
+            printf '[OK] antigravity-hooks-ignored:%s\n' "$hook"
+        else
+            printf '[FAIL] antigravity-hooks-ignored:%s\n' "$hook"
+            failed=1
+        fi
+    done < <(jq -r '(.ignored // [])[]' "$manifest")
+    local covered unclassified=0
+    covered="$(jq -r '.hooks[].entries[].script, (.ignored // [])[]' "$manifest")"
+    for hook_path in "$ROOT_DIR"/common/hooks/*.py; do
+        [ -e "$hook_path" ] || continue
+        hook="$(basename "$hook_path")"
+        if ! printf '%s\n' "$covered" | grep -Fxq "$hook"; then
+            printf '[FAIL] antigravity-hooks-unclassified:%s - hooks か ignored に追加してください\n' "$hook"
+            unclassified=1
+            failed=1
+        fi
+    done
+    if [ "$unclassified" -eq 0 ]; then
+        printf '[OK] antigravity-hooks-classified:all-common-hooks\n'
+    fi
+    return "$failed"
+}
+
+command_sync_antigravity() {
+    if [ "$#" -ne 0 ]; then
+        printf 'sync-antigravity に引数は要りません\n' >&2
+        return 2
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        printf 'sync-antigravity には jq が必要です\n' >&2
+        return 1
+    fi
+    validate_antigravity_hook_manifest >/dev/null
+    local tmp
+    tmp="$(mktemp)"
+    render_antigravity_hooks_json "$tmp"
+    mv "$tmp" "$ROOT_DIR/agents/antigravity/hooks.json"
+    chmod 0644 "$ROOT_DIR/agents/antigravity/hooks.json"
+    ln -sfnT ../../common/AGENTS.md "$ROOT_DIR/agents/antigravity/GEMINI.md"
+    ln -sfnT ../../common/skills "$ROOT_DIR/agents/antigravity/skills"
+    printf '[OK] agents/antigravity/hooks.manifest.json から agents/antigravity/hooks.json を作り直しました\n'
+    printf '[OK] agents/antigravity/GEMINI.md -> ../../common/AGENTS.md のリンクを張り直しました\n'
+    printf '[OK] agents/antigravity/skills -> ../../common/skills のリンクを張り直しました\n'
+}
+
+validate_antigravity_sync() {
+    local failed=0 tmp
+    if validate_antigravity_hook_manifest; then
+        printf '[OK] antigravity-hooks-manifest\n'
+    else
+        failed=1
+    fi
+    tmp="$(mktemp)"
+    render_antigravity_hooks_json "$tmp"
+    if cmp -s "$tmp" "$ROOT_DIR/agents/antigravity/hooks.json"; then
+        printf '[OK] antigravity-hooks-generated:agents/antigravity/hooks.json\n'
+    else
+        printf '[FAIL] antigravity-hooks-generated:agents/antigravity/hooks.json - agentrun sync-antigravity で直してください\n'
+        failed=1
+    fi
+    rm -f "$tmp"
+    if [ "$(readlink "$ROOT_DIR/agents/antigravity/GEMINI.md" 2>/dev/null || true)" = "../../common/AGENTS.md" ]; then
+        printf '[OK] antigravity-agents-link:agents/antigravity/GEMINI.md\n'
+    else
+        printf '[FAIL] antigravity-agents-link:agents/antigravity/GEMINI.md - agentrun sync-antigravity で直してください\n'
+        failed=1
+    fi
+    if [ "$(readlink "$ROOT_DIR/agents/antigravity/skills" 2>/dev/null || true)" = "../../common/skills" ]; then
+        printf '[OK] antigravity-skills-link:agents/antigravity/skills\n'
+    else
+        printf '[FAIL] antigravity-skills-link:agents/antigravity/skills - agentrun sync-antigravity で直してください\n'
+        failed=1
+    fi
+    return "$failed"
 }
 
 claude_hooks_manifest() {
@@ -1561,6 +1747,7 @@ command_skill_install() {
     if [ "$installed" -gt 0 ]; then
         command_sync_claude
         command_sync_codex
+        command_sync_antigravity
     fi
 
     printf 'skill-install: 追加 %d 件、スキップ %d 件\n' "$installed" "$skipped"
@@ -1580,6 +1767,13 @@ command_validate() {
         agents/codex/config.experiment.toml \
         agents/codex/hooks.manifest.json \
         agents/codex/requirements.toml \
+        agents/antigravity/GEMINI.md \
+        agents/antigravity/settings.json \
+        agents/antigravity/settings.assist.json \
+        agents/antigravity/settings.experiment.json \
+        agents/antigravity/hooks.manifest.json \
+        agents/antigravity/hooks.json \
+        agents/antigravity/statusline.sh \
         runtime/apptainer/base-system.def \
         runtime/agentrun/sessions.py \
         runtime/agentrun/run_settings.py \
@@ -1684,6 +1878,7 @@ command_validate() {
         -type l -print)
     validate_claude_sync || missing=1
     validate_codex_sync || missing=1
+    validate_antigravity_sync || missing=1
     return "$missing"
 }
 
@@ -1788,7 +1983,7 @@ command_doctor() {
     if [ "$all" -eq 1 ]; then
         command_agents
     else
-        command_agents | grep -E "(^Available| $agent[[:space:]])" || true
+        command_agents | grep -E "(^使えるエージェント| $agent[[:space:]])" || true
     fi
     if [ "$all" -eq 1 ]; then
         for auth_agent in "${SUPPORTED_AGENTS[@]}"; do
@@ -2253,7 +2448,7 @@ command_prepare() {
     if [ "$SUBMIT" -eq 1 ]; then
         copy_auth_credentials "$run_dir" "$AGENT"
         history_tool submit "$run_dir"
-    elif [ "$AGENT" = "claude" ] || [ "$AGENT" = "codex" ]; then
+    elif is_supported_agent "$AGENT"; then
         printf '認証情報はまだ配置していません。--submit を付けて実行すると、sbatch の前に配置します\n'
     fi
 }
@@ -2787,6 +2982,7 @@ main() {
         agents) command_agents "$@" ;;
         sync-claude) command_sync_claude "$@" ;;
         sync-codex) command_sync_codex "$@" ;;
+        sync-antigravity) command_sync_antigravity "$@" ;;
         validate) command_validate "$@" ;;
         doctor) command_doctor "$@" ;;
         dry-run)

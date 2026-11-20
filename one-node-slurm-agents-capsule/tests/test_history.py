@@ -319,11 +319,11 @@ class HistoryTests(unittest.TestCase):
         self.assertFalse((vault / "2026-11-01 1000 empty.md").exists())
         self.assertIn("2026-11-03 1000 図を直して.md", [p.name for p in vault.iterdir()])
 
-    def real_prompt(self, mode, launch, goal="train the baseline"):
+    def real_prompt(self, mode, launch, goal="train the baseline", agent="codex"):
         """The start prompt exactly as the launcher writes it, so wording changes reach these tests."""
-        path = self.root / f"prompt-{mode}-{launch}.txt"
-        script = 'source "$1"; write_prompt "$2" "$3" codex /repo "$4" "$5" 32000M 4 0 01:00:00 ""'
-        subprocess.run(["bash", "-c", script, "bash", str(LAUNCHER), str(path), mode, goal, launch],
+        path = self.root / f"prompt-{mode}-{launch}-{agent}.txt"
+        script = 'source "$1"; write_prompt "$2" "$3" "$6" /repo "$4" "$5" 32000M 4 0 01:00:00 ""'
+        subprocess.run(["bash", "-c", script, "bash", str(LAUNCHER), str(path), mode, goal, launch, agent],
                        check=True, capture_output=True, timeout=30, env=dict(os.environ, GH_ENV_FILE=""))
         return path.read_text()
 
@@ -345,6 +345,89 @@ class HistoryTests(unittest.TestCase):
         listing = self.history_cli("list")
         self.assertNotIn("20261101_100000", listing)
         self.assertIn("最初の依頼: train the baseline with two seeds", listing)
+
+    def agy_run(self, name, steps, reviewer_steps=None):
+        """An archived agy worker run, with an optional agy reviewer transcript."""
+        run = self.parent / name
+        run.mkdir()
+        sessions.init(run, "antigravity", str(self.root), name.split("_")[2])
+        store = sessions.state_dir(run, sessions.manifest(run))
+        logs = store / ".gemini/antigravity-cli/brain" / ID / ".system_generated/logs"
+        write_jsonl(logs / "transcript.jsonl", steps[:1])  # the short log is ignored when the full one exists
+        write_jsonl(logs / "transcript_full.jsonl", steps)
+        if reviewer_steps:
+            other = "22345678-1234-1234-1234-123456789abc"
+            path = store / "reviewers/antigravity/.gemini/antigravity-cli/brain" / other / ".system_generated/logs"
+            write_jsonl(path / "transcript.jsonl", reviewer_steps)
+        collector.archive(run)
+        self.run = run
+        return run
+
+    def test_antigravity_transcripts_archive_turns_tools_and_reviewers(self):
+        def request(text, stamp="2026-11-20T05:44:27Z"):
+            return {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+                    "created_at": stamp,
+                    "content": f"<USER_REQUEST>\n{text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nHIDDEN TIME\n</ADDITIONAL_METADATA>"}
+        steps = [
+            request("calc.py を直して"),
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+             "created_at": "2026-11-20T05:44:30Z", "model": "gemini-4-neon-high", "thinking": "HIDDEN THOUGHT",
+             "tool_calls": [{"name": "edit_file", "args": {"Path": "/workspace/calc.py", "Target": "a - b",
+                                                           "Replacement": "a + b"}},
+                            {"name": "run_command", "args": {"CommandLine": "pip install x"}}]},
+            {"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE", "created_at": "2026-11-20T05:44:31Z",
+             "content": "Created At: 2026-11-20T05:44:31Z\nCompleted At: 2026-11-20T05:44:31Z\nMade 1 replacement"},
+            {"step_index": 3, "source": "MODEL", "type": "GENERIC", "status": "ERROR", "created_at": "2026-11-20T05:44:32Z",
+             "error": "tool call denied by pre-tool hook: pip is forbidden",
+             "content": "Created At: 2026-11-20T05:44:32Z\nEncountered error in step execution"},
+            {"step_index": 4, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+             "created_at": "2026-11-20T05:44:33Z", "content": "Reminder: work efficiently."},
+            {"step_index": 5, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+             "created_at": "2026-11-20T05:44:40Z", "content": "直しました。pip は止められました。"},
+        ]
+        reviewer = [request("Review the snapshot"),
+                    {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+                     "created_at": "2026-11-20T05:45:00Z", "content": "No findings."}]
+        self.agy_run("20261120_144341_experiment_antigravity", steps, reviewer)
+        markdown = self.markdown()
+        self.assertIn(f"## Session: {ID} (worker, antigravity)", markdown)
+        self.assertIn("## Session: 22345678-1234-1234-1234-123456789abc (reviewer, antigravity)", markdown)
+        self.assertIn("### User · 2026-11-20T05:44:27Z\n\ncalc.py を直して\n", markdown)
+        self.assertIn("### Assistant · 2026-11-20T05:44:40Z\n\n直しました。pip は止められました。", markdown)
+        self.assertIn("<summary>Tool call: edit_file · 1 · 2026-11-20T05:44:30Z</summary>", markdown)
+        # Results follow their calls in order; a failed call keeps its error.
+        self.assertIn("<summary>Tool result: edit_file · 2 · 2026-11-20T05:44:31Z</summary>", markdown)
+        self.assertIn("<summary>Tool result: run_command · 3 · 2026-11-20T05:44:32Z</summary>", markdown)
+        self.assertIn("is_error: True\n\ntool call denied by pre-tool hook: pip is forbidden", markdown)
+        self.assertIn("<summary>System message · 4 · 2026-11-20T05:44:33Z</summary>", markdown)
+        for hidden in ("HIDDEN THOUGHT", "HIDDEN TIME", "Created At:"):
+            self.assertNotIn(hidden, markdown)
+        self.assertIn('"model": "gemini-4-neon-high"', markdown)
+        # Listing, filters and the Obsidian note treat agy like the other agents.
+        listing = self.history_cli("list", "--agent", "antigravity")
+        self.assertIn("antigravity  experiment", listing)
+        self.assertIn("最初の依頼: calc.py を直して", listing)
+        self.assertIn("該当する会話はありません", self.history_cli("search", "calc.py", "--agent", "codex"))
+        vault = self.root / "vault"
+        self.history_cli("export-md", str(vault))
+        note = next(vault.glob("*.md")).read_text()
+        self.assertIn("## 作業担当のセッション（Antigravity）", note)
+        self.assertIn("## 監査役のセッション（Antigravity）", note)
+        self.assertIn("🤖 Antigravity", note)
+        self.assertIn("> [!example]- 🔧 edit_file", note)
+        self.assertIn("> [!failure]- ↩️ 結果: run_command（エラー）", note)
+        self.assertIn("> [!note]- 📣 システムメッセージ", note)
+
+    def test_antigravity_empty_interactive_start_is_hidden(self):
+        import history_index
+        interactive = self.real_prompt("assist", "interactive", agent="antigravity")
+        self.assertFalse(history_index.spoken(interactive))
+        self.agy_run("20261120_090000_assist_antigravity", [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+             "created_at": "2026-11-20T00:00:00Z", "content": f"<USER_REQUEST>\n{interactive}\n</USER_REQUEST>"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+             "created_at": "2026-11-20T00:00:05Z", "content": "指示を待ちます。"}])
+        self.assertNotIn("20261120_090000", self.history_cli("list"))
 
     def test_last_activity_is_the_newest_message_and_orders_the_list(self):
         def timed(role, text, stamp):
