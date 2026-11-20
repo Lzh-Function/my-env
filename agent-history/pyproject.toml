@@ -1,0 +1,16 @@
+[project]
+name = "agent-history"
+version = "0.1.0"
+description = "Keep, search and export (for Obsidian) the conversations of local Claude Code, Codex and Antigravity"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+agent-history = "agent_history.cli:entry"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["agent_history"]
