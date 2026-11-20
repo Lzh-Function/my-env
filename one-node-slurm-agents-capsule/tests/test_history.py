@@ -503,6 +503,119 @@ class HistoryTests(unittest.TestCase):
         for value in ("legacy request", "legacy answer", "legacy result", "exec_command"):
             self.assertIn(value, self.markdown())
 
+    def test_export_md_live_saves_running_sessions_first(self):
+        def run(name, request, job, finished=False):
+            path = self.parent / name
+            path.mkdir()
+            sessions.init(path, "codex", str(self.root), "assist")
+            store = sessions.state_dir(path, sessions.manifest(path))
+            write_jsonl(store / ".codex/sessions/rollout.jsonl", [
+                {"type": "session_meta", "payload": {"id": ID}},
+                message("user", request), message("assistant", "作業中です")])
+            (path / "live").mkdir(exist_ok=True)
+            (path / "live/slurm_job_id.txt").write_text(job + "\n")
+            if finished:
+                (path / "live/session_finished.txt").write_text("done\n")
+
+        run("20261118_090000_assist_codex", "いま進行中の依頼", "4242")
+        run("20261118_080000_assist_codex", "ジョブが消えた依頼", "9999")
+        run("20261118_070000_assist_codex", "終わった依頼", "4243", finished=True)
+        run("20261118_060000_assist_codex", "準備だけの依頼", "")
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "squeue").write_text("#!/bin/sh\nprintf '4242\\n4243\\n'\n")
+        (bin_dir / "squeue").chmod(0o755)
+        home = self.root / "home"
+        home.mkdir()
+        environment = {**os.environ, "HOME": str(home), "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+
+        def export(*options):
+            result = subprocess.run([str(LAUNCHER), "history", "export-md", str(self.root / "vault"), *options],
+                                    cwd=self.root, env=environment, capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout + result.stderr
+
+        self.assertIn("保存された会話はまだありません", export())
+        output = export("--live")
+        self.assertIn("実行中のセッションを今の内容で保存しています: 20261118_090000_assist_codex … 完了", output)
+        self.assertNotIn("20261118_080000", output)
+        self.assertNotIn("20261118_070000", output)
+        self.assertNotIn("20261118_060000", output)
+        notes = [path.read_text() for path in (self.root / "vault").glob("*.md")]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("いま進行中の依頼", notes[0])
+        self.assertIn("--live is only for export-md", self.history_cli("list", "--live", expected=2))
+
+    def test_daily_schedule_is_one_crontab_line_that_exports_and_reports_failures(self):
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        table = self.root / "crontab.txt"
+        (bin_dir / "crontab").write_text(
+            '#!/bin/sh\nif [ "$1" = -l ]; then [ -f "$TABLE" ] || { echo "no crontab for tester" >&2; exit 1; }; '
+            'cat "$TABLE"; else cat > "$TABLE"; fi\n')
+        (bin_dir / "crontab").chmod(0o755)
+        home = self.root / "home"
+        home.mkdir()
+        environment = {**os.environ, "HOME": str(home), "TABLE": str(table), "TZ": "Asia/Tokyo",
+                       "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+        environment.pop("AGENTRUN_TIMEZONE", None)
+
+        def agentrun(*args, expected=0, **extra):
+            result = subprocess.run([str(LAUNCHER), "history", *args], cwd=self.root, env={**environment, **extra},
+                                    capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+            return result.stdout + result.stderr
+
+        self.assertIn("自動書き出しは登録されていません", agentrun("schedule"))
+        table.write_text("15 3 * * * echo keep me\n")
+        vault = self.root / "vault 100%"
+        self.assertIn("毎日 04:00（Asia/Tokyo）に", agentrun("schedule", str(vault)))
+        self.assertIn("前の登録は置き換えました", agentrun("schedule", str(vault), "--at", "4:30"))
+        lines = table.read_text().splitlines()
+        self.assertEqual(lines[0], "15 3 * * * echo keep me")
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].startswith("30 4 * * * "), lines[1])
+        self.assertIn("\\%", lines[1])  # cron would cut the command at a bare %
+        self.assertIn("毎日 04:30（Asia/Tokyo）に " + str(vault), agentrun("schedule"))
+        # A server clock in UTC gets the matching UTC time.
+        self.assertIn("サーバーの時計では 19:30", agentrun("schedule", str(vault), "--at", "04:30", TZ="UTC"))
+        self.assertTrue(table.read_text().splitlines()[1].startswith("30 19 * * * "))
+        self.assertIn("--at は 04:00 のように", agentrun("schedule", str(vault), "--at", "25:00", expected=2))
+
+        # Run the command exactly as cron would: through sh, with % restored by cron.
+        self.archived_run("20261117_090000_assist_codex", [message("user", "夜間の書き出し確認"),
+                                                           message("assistant", "了解")])
+        command = table.read_text().splitlines()[1].split(None, 5)[5].replace("\\%", "%")
+        cron = {"HOME": str(home), "PATH": "/usr/bin:/bin", "TABLE": str(table)}
+        subprocess.run(["sh", "-c", command], env=cron, cwd="/", timeout=60, check=True)
+        self.assertTrue(any("夜間の書き出し確認" in path.read_text() for path in vault.glob("*.md")))
+        status = json.loads((self.history_root / "auto-export.json").read_text())
+        self.assertEqual(status["status"], "success")
+        log = (self.history_root / "auto-export.log").read_text()
+        self.assertIn("自動書き出しを始めます", log)
+        self.assertIn("実行中のセッションはありません", log)
+        self.assertNotIn("自動書き出しが失敗", self.history_cli("list"))
+
+        # A failure is recorded and shown on the next list.
+        shutil.rmtree(vault)
+        vault.write_text("not a folder\n")
+        failed = subprocess.run(["sh", "-c", command], env=cron, cwd="/", timeout=60, check=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(json.loads((self.history_root / "auto-export.json").read_text())["status"], "failed")
+        self.assertIn("[注意] 毎日の自動書き出しが失敗しました", self.history_cli("list"))
+        self.assertIn("前回: 失敗", agentrun("schedule"))
+
+        # A run still going when the next one starts is left to finish.
+        import fcntl
+        with (self.history_root / "auto-export.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            subprocess.run(["sh", "-c", command], env=cron, cwd="/", timeout=60, check=True)
+        self.assertIn("前回の自動書き出しがまだ動いているので", (self.history_root / "auto-export.log").read_text())
+
+        self.assertIn("解除しました", agentrun("schedule", "--off"))
+        self.assertEqual(table.read_text(), "15 3 * * * echo keep me\n")
+        self.assertIn("登録されていません", agentrun("schedule", "--off"))
+
     def test_resumed_sessions_read_oldest_first_whatever_their_file_names(self):
         self.initialize("claude")
         project = self.store / ".claude/projects/-workspace"

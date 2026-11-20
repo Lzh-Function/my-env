@@ -3,6 +3,8 @@
 
 The database is opened read-only. export-md only writes into the directory it is given, and
 rename only writes the separate titles file next to the database; archives stay as they are.
+The one exception is export-md --live, which first saves running sessions as `agentrun history
+RUN` would (the end-of-session save later replaces that snapshot with the full conversation).
 """
 
 import argparse
@@ -224,6 +226,10 @@ def conversations(db, words, agent, repo, noise=False):
 
 
 def show(found, words, limit):
+    from history_schedule import failure_notice
+    notice = failure_notice()
+    if notice:
+        print(notice + "\n")
     if not found:
         print("該当する会話はありません。" if words else "保存された会話はまだありません。")
         return
@@ -396,6 +402,37 @@ def choices(found, limit):
               f"{Path(conversation.latest['repo']).name}  {one_line(label, 50)}{resumed}{when}\t{current}")
 
 
+def running_runs(parent):
+    """Runs whose session is still open: this directory's runs and those the launch registry knows."""
+    from auth_sync import live
+    from run_menu import all_runs, first_line, running_jobs
+    jobs = running_jobs()
+    if jobs is None:
+        print("[注意] Slurm に問い合わせできないため、終了の記録がない run をすべて実行中とみなします。", file=sys.stderr)
+    found = []
+    for run in all_runs(parent):
+        job = first_line(run / "live/slurm_job_id.txt")  # none yet: only prepared, never started
+        if job and live(run) and (jobs is None or job in jobs):
+            found.append(run)
+    return found
+
+
+def save_running(parent):
+    """Save the running sessions now so export-md includes what has been said so far."""
+    import history
+    runs = running_runs(parent)
+    if not runs:
+        print("実行中のセッションはありません。保存済みの会話だけを書き出します。")
+    for run in runs:
+        print(f"実行中のセッションを今の内容で保存しています: {safe_text(run.name)} … ", end="", flush=True)
+        try:
+            history.archive(run)
+        except Exception as error:  # noqa: BLE001 - one broken run must not stop the export
+            print("失敗（" + safe_text(str(error)) + "）")
+        else:
+            print("完了")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("list", "search", "export-md", "rename", "choices"))
@@ -405,6 +442,8 @@ def main():
     parser.add_argument("--agent", choices=("claude", "codex"))
     parser.add_argument("--repo", default="", help="only conversations whose repository path contains this text")
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--live", action="store_true",
+                        help="export-md: save running sessions first, so they are written as they are now")
     options = parser.parse_args()
     if options.action == "list" and options.words:
         parser.error("list takes no words; use search")
@@ -414,8 +453,12 @@ def main():
         parser.error("export-md needs exactly one target directory")
     if options.action == "rename" and (not options.words or (options.clear and len(options.words) != 1)):
         parser.error("usage: history rename RUN_ID NEW NAME  (or: history rename RUN_ID --clear)")
+    if options.live and options.action != "export-md":
+        parser.error("--live is only for export-md")
     if options.limit < 1:
         parser.error("--limit must be positive")
+    if options.live:
+        save_running(Path.cwd() / ".agent-runs")
     db = connect()
     if db is None:
         if options.action == "rename":

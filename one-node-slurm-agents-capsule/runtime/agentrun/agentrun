@@ -27,6 +27,8 @@ Usage:
   agentrun history list [--agent A] [--repo TEXT] [--limit N]   # archived conversations, newest first
   agentrun history search WORD... [--agent A] [--repo TEXT] [--limit N]
   agentrun history export-md DIR [--agent A] [--repo TEXT]  # one note per conversation, e.g. for Obsidian
+  agentrun history export-md DIR --live  # save running sessions first, then write their notes too
+  agentrun history schedule [DIR [--at 04:00] | --off]  # run export-md DIR --live every day from crontab (Tokyo time)
   agentrun history rename RUN_ID NEW NAME | RUN_ID --clear  # name a conversation (ID from history list)
   agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]  # read cross-review dialogues
   agentrun wizard [options] [PROMPT]         # menus for launching and for every other feature; options skip to launching
@@ -781,10 +783,32 @@ interactive_srun_args() {
     SRUN_ARGS+=("--gres=gpu:$GPUS")
 }
 
+command_history_schedule() {
+    local directory="" at="04:00" off=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --at) at="${2:?--at には 04:00 のような時刻が必要です}"; shift 2 ;;
+            --off) off=1; shift ;;
+            --*) printf 'history schedule に知らないオプションです: %s\n' "$1" >&2; return 2 ;;
+            *) [ -z "$directory" ] || { printf 'history schedule に指定できる書き出し先は 1 つです\n' >&2; return 2; }
+               directory="$1"; shift ;;
+        esac
+    done
+    if [ "$off" -eq 1 ]; then
+        [ -z "$directory" ] || { printf '--off には書き出し先を付けません\n' >&2; return 2; }
+        python3 "$ROOT_DIR/runtime/agentrun/history_schedule.py" remove
+    elif [ -n "$directory" ]; then
+        python3 "$ROOT_DIR/runtime/agentrun/history_schedule.py" install "$directory" --at "$at"
+    else
+        python3 "$ROOT_DIR/runtime/agentrun/history_schedule.py" show
+    fi
+}
+
 command_history() {
     local target="" watch=0 run_dir
     case "${1:-}" in
         list|search|export-md|rename) python3 "$ROOT_DIR/runtime/agentrun/history_index.py" "$@"; return $? ;;
+        schedule) shift; command_history_schedule "$@"; return $? ;;
     esac
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -1564,6 +1588,7 @@ command_validate() {
         runtime/agentrun/history_export.py \
         runtime/agentrun/history_index.py \
         runtime/agentrun/obsidian_note.py \
+        runtime/agentrun/history_schedule.py \
         runtime/agentrun/active.py \
         runtime/agentrun/review_view.py \
         runtime/agentrun/review_hook.py \

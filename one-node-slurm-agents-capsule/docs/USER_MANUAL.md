@@ -556,7 +556,7 @@ agentrun wizard --agent codex    # 起動用のオプションを付けると、
 | --- | --- | --- |
 | 実行中の agentrun を見る | ジョブごとの一覧と overlap の関係 | `ps` |
 | run を選んで見る | run を選び（今いるディレクトリの run と、別の場所から起動した実行中の run）、概要を見たうえで、会話の再開（セッションが終わっていて会話が保存されている run だけ。再開前に設定を表示して確認します）、ログ（末尾 200 行か追いかけ表示）、`status.json`、成果物の点検、相互監査の一覧と追いかけ表示、会話履歴の保存し直し、バッチの履歴回収（`--submit` で投入し、まだ回収が終わっていない run だけ）、設定のテンプレート登録を行う | `resume`・`logs`・`tail`・`status`・`verify-run`・`reviews`・`history`・`history --watch`・`template save --from`・`list-runs`・`open-run` |
-| 会話履歴 | 一覧（作業リポジトリで絞り込み可）、キーワード検索、会話の名前の変更（新しい順に 40 件から選び、今の名前を直す。空にするとエージェントが付けた名前に戻す）、Markdown への書き出し（書き出し先は次回の既定値になります） | `history list`・`history search`・`history rename`・`history export-md` |
+| 会話履歴 | 一覧（作業リポジトリで絞り込み可）、キーワード検索、会話の名前の変更（新しい順に 40 件から選び、今の名前を直す。空にするとエージェントが付けた名前に戻す）、Markdown への書き出し（書き出し先は次回の既定値になります）、毎日の自動書き出しの登録と解除（cron） | `history list`・`history search`・`history rename`・`history export-md`・`history schedule` |
 | テンプレートの管理 | run からの登録、中身の確認、削除（確認あり） | `template` |
 | 認証 | 状態の確認、ログイン、取り込み、保存した認証の削除（確認あり） | `auth status`・`auth login`・`auth import`・`auth reset` |
 | 起動内容だけ確認する | 起動と同じ質問に答えたあと、何も起動せずにマウントやコマンドを表示します。結果を見てから「この設定で実際に起動する」「設定を変更する」「wizard を終了する」を選べます。会話の再開は対象外です | `dry-run --show-mounts` |
@@ -973,6 +973,8 @@ agentrun history --watch RUN_ID          # 投入元ホストで終了を待ち�
 agentrun history list                    # 保存した会話の一覧（どこからでも。下記参照）
 agentrun history search 語...            # 保存した会話の全文検索
 agentrun history export-md DIR            # 1 会話 1 ファイルで書き出し（Obsidian 向け）
+agentrun history export-md DIR --live     # 実行中のセッションも今の内容で保存してから書き出し
+agentrun history schedule DIR [--at 04:00]  # 毎日の自動書き出しを cron に登録（--off で解除、引数なしで状態表示）
 ```
 
 投入元ホストの再起動などで回収プロセスが止まった場合は、元の投入元ホストで `history --watch` を実行してください。
@@ -1023,7 +1025,29 @@ agentrun history rename 20261113_120000 --clear          # エージェントが
 ```bash
 agentrun history export-md ~/vault/agent-history            # 全プロジェクトの会話
 agentrun history export-md ~/vault/agent-history --repo chem # 作業リポジトリで絞り込み
+agentrun history export-md ~/vault/agent-history --live      # 実行中のセッションも含める
 ```
+
+`--live` を付けると、書き出しの前に、まだ終わっていないセッションをその時点の内容で保存します（`agentrun history RUN` で 1 つずつ保存するのと同じです）。対象は、今いるディレクトリの run と、別の場所から起動して登録されている run のうち、Slurm のジョブが実行中のものです。Slurm に問い合わせできないときは、ジョブを投入済みで終了の記録がない run を実行中とみなします。保存されるのはその時点までの内容で、書きかけの最後の 1 行は飛ばします。セッションを終えると終了時の保存が全文で上書きし、次の書き出しで同じノートが更新されます。ウィザードの書き出しでも、書き出し前に「実行中のセッションも保存するか」を尋ねます（既定は「はい」）。
+
+#### 毎日の自動書き出し
+
+```bash
+agentrun history schedule ~/vault/agent-history            # 毎日 04:00（東京時間）に書き出す
+agentrun history schedule ~/vault/agent-history --at 05:30 # 時刻を変える（登録し直すと置き換わります）
+agentrun history schedule                                  # 登録内容と前回の結果を表示
+agentrun history schedule --off                            # 解除
+```
+
+自分の `crontab` に 1 行だけ登録し、毎日決まった時刻に `history export-md DIR --live` と同じ処理をします。実行中のセッションをその時点の内容で保存したうえで、保存済みの全会話を書き出します。変わった会話のノートだけが書き直されます。
+
+- 時刻は東京時間（`AGENTRUN_TIMEZONE` を設定していればその時間帯）で指定します。登録時にサーバーの時計の時刻に直して書き込みます。サーバーの時間帯が違えば、その時刻も表示します。
+- 登録時の `PATH` と、`AGENTRUN_HISTORY_DIR`・`AGENTRUN_TIMEZONE` を cron の行に書き込みます。cron の最小限の環境でも `squeue` や同じ履歴の保存先を使えます。
+- 自分で書いた crontab の行には触れません。agentrun の行には `# agentrun-history-export` の印が付いていて、置き換えや解除はこの印の行だけを対象にします。
+- ログは `~/.agentrun/history/auto-export.log`（大きくなったら古い半分を捨てます）、前回の結果は `~/.agentrun/history/auto-export.json` です。
+- 前回の書き出しが失敗していると、`history list` の先頭に注意を表示します。
+- 前回の書き出しがまだ続いているうちに次の時刻になった場合は、二重に動かさず前回の方に任せます。
+- ウィザードでは「その他の機能」→「会話履歴」→「毎日の自動書き出しを設定する（cron）」から登録・解除できます。
 
 - ファイル名は `2026-11-13 1200 retrained chem model.md` のように、会話を始めた日時とタイトル（一覧と同じ決め方）にします。Obsidian やファイル同期で使えない文字（`/ : # [ ]` など）は空白に置き換えます。
 - 冒頭は Obsidian のプロパティ（YAML フロントマター）で、`date`（会話を始めた日時）、`agent`、`mode`、`repo`、`title`、`run_id`（最初の run）、`archive_id`、`archived_at`、`tags: [agentrun]` を持ちます。`last_active`（最終更新）も入ります。resume した会話には、`runs`（経由した run の一覧）と `resumes`（回数）も入ります。

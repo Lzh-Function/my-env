@@ -221,13 +221,32 @@ wizard_run_template() {
 # Conversation history
 # ---------------------------------------------------------------------------
 
+wizard_history_schedule() {
+    local state choice rc=0 directory at
+    local add='登録する（登録済みなら置き換える）' off='解除する'
+    state="$(wizard_python history_schedule.py show 2>&1)" || state="（状態を読めません）"
+    choice="$(wizard_select "${state}"$'\n\n'"毎日決まった時刻に、実行中のセッションも含めて全部の会話を書き出します。" "$add" "$off")" || rc=$?
+    [ "$rc" -eq 0 ] || { [ "$rc" -eq 10 ] && return 0; return "$rc"; }
+    if [ "$choice" = "$off" ]; then
+        wizard_exec '自動書き出しの解除' wizard_python history_schedule.py remove
+        return
+    fi
+    directory="$(cat "$WIZARD_EXPORT_DIR_FILE" 2>/dev/null || true)"
+    directory="$(wizard_path_input '書き出し先のフォルダ（Obsidian の保管庫の中のフォルダなど）' "${directory:-$HOME/agent-history}")" || return $?
+    directory="$(wizard_expand_tilde "$directory")"
+    [ -n "$directory" ] || { wizard_banner 'フォルダを入力してください。'; return; }
+    at="$(wizard_input '毎日の実行時刻（東京時間、時:分）' '04:00')" || return $?
+    mkdir -p "$(dirname "$WIZARD_EXPORT_DIR_FILE")" && printf '%s\n' "$directory" > "$WIZARD_EXPORT_DIR_FILE"
+    wizard_exec '自動書き出しの登録' wizard_python history_schedule.py install "$directory" --at "${at:-04:00}"
+}
+
 wizard_history() {
     local list='一覧を見る（新しい順）' search='キーワードで検索する' export='Markdown として書き出す（Obsidian など向け）'
-    local rename='会話の名前を変える'
+    local rename='会話の名前を変える' schedule='毎日の自動書き出しを設定する（cron）'
     local choice rc filter words directory
     while :; do
         rc=0
-        choice="$(wizard_select '会話履歴 — 保存した全プロジェクトの会話が対象です' "$list" "$search" "$rename" "$export")" || rc=$?
+        choice="$(wizard_select '会話履歴 — 保存した全プロジェクトの会話が対象です' "$list" "$search" "$rename" "$export" "$schedule")" || rc=$?
         [ "$rc" -eq 0 ] || { [ "$rc" -eq 10 ] && return 0; return "$rc"; }
         case "$choice" in
             "$list")
@@ -244,6 +263,7 @@ wizard_history() {
                 if [ "${#terms[@]}" -eq 0 ]; then wizard_banner '検索する語を入力してください。' || rc=$?
                 else wizard_exec "会話履歴の検索: $words" wizard_python history_index.py search "${terms[@]}" --limit 30 || rc=$?; fi ;;
             "$rename") wizard_history_rename || rc=$? ;;
+            "$schedule") wizard_history_schedule || rc=$? ;;
             "$export")
                 directory="$(cat "$WIZARD_EXPORT_DIR_FILE" 2>/dev/null || true)"
                 directory="$(wizard_path_input '書き出し先のフォルダ（Obsidian の保管庫の中のフォルダなど）' "${directory:-$HOME/agent-history}")" || rc=$?
@@ -253,7 +273,10 @@ wizard_history() {
                 [ -n "$directory" ] || { wizard_banner 'フォルダを入力してください。' || return $?; continue; }
                 if wizard_confirm "$directory に、1 会話 1 ファイルで書き出します。2 回目以降は変わった会話だけ書き直し、このコマンドが書いていないファイルには触れません。書き出しますか？" 1; then
                     mkdir -p "$(dirname "$WIZARD_EXPORT_DIR_FILE")" && printf '%s\n' "$directory" > "$WIZARD_EXPORT_DIR_FILE"
-                    wizard_exec '会話履歴の書き出し' wizard_python history_index.py export-md "$directory" || rc=$?
+                    local live=()
+                    if wizard_confirm '実行中のセッションも、今の時点の内容で保存してから書き出しますか？（終了時の保存で、あとから全文に置き換わります）' 1; then live=(--live)
+                    else rc=$?; [ "$rc" -ne 10 ] || continue; [ "$rc" -eq 1 ] || return "$rc"; rc=0; fi
+                    wizard_exec '会話履歴の書き出し' wizard_python history_index.py export-md "$directory" "${live[@]+"${live[@]}"}" || rc=$?
                 else rc=$?; fi ;;
         esac
         wizard_menu_rc "$rc" || return $?
