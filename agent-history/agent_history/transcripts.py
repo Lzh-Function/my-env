@@ -114,41 +114,73 @@ def companion_output(value, warnings):
         return f"[Non-text companion output: {path.name}]"
 
 
-def codex_transcript(path, warnings):
-    metadata = {}; calls = {}; has_messages = False
-    for record in records(path, warnings):
+class Parser:
+    """Renders one transcript record by record and can resume later from saved state.
+
+    `feed` takes one JSON record and returns the Markdown it adds. `state()` returns
+    everything needed to continue with the records appended after it (JSON-safe), so a
+    long conversation is not parsed from the start on every turn.
+    """
+
+    def __init__(self, path, state=None):
+        self.path = Path(path)
+        state = state or {}
+        self.metadata = state.get("metadata", {})
+        self.warnings = set(state.get("warnings", []))
+        self.seen = set(state.get("seen", []))
+        self.calls = state.get("calls", {})
+        self.restore(state)
+
+    def restore(self, state):
+        pass
+
+    def state(self):
+        return {"metadata": self.metadata, "warnings": sorted(self.warnings), "seen": sorted(self.seen),
+                "calls": self.calls, **self.extra_state()}
+
+    def extra_state(self):
+        return {}
+
+    def feed(self, record):
+        raise NotImplementedError
+
+    def finish(self):
+        """Warnings that depend on the whole file so far."""
+
+
+class CodexParser(Parser):
+    def restore(self, state):
+        # Old Codex versions logged messages only as events; those are used only when the
+        # file has no response_item messages, so both forms are kept until that is known.
+        self.has_messages = state.get("has_messages", False)
+
+    def extra_state(self):
+        return {"has_messages": self.has_messages}
+
+    def feed(self, record):
         payload = record.get("payload", {})
         if not isinstance(payload, dict):
-            continue
+            return []
+        parts = []
+        typ = payload.get("type")
         if record.get("type") == "session_meta":
-            metadata = {k: payload[k] for k in (
+            self.metadata = {k: payload[k] for k in (
                 "id", "session_id", "timestamp", "cli_version", "cwd", "git", "source", "originator",
                 "history_mode", "parent_thread_id", "forked_from_id", "history_base") if k in payload}
-        if record.get("type") == "response_item":
-            if payload.get("role") in ("user", "assistant") and payload.get("type", "message") == "message":
-                has_messages = True
-            if payload.get("type") in ("function_call", "custom_tool_call"):
-                calls[payload.get("call_id")] = payload.get("name", "tool")
-    if metadata.get("history_base"):
-        warnings.add(f"{path.name}: this transcript references earlier paginated/forked history")
-    parts = []; seen = set()
-    for record in records(path, warnings):
-        payload = record.get("payload", {})
-        if not isinstance(payload, dict):
-            continue
-        typ = payload.get("type")
         if record.get("type") == "response_item":
             if typ in ("message", None) and payload.get("role") in ("user", "assistant"):
                 if payload.get("phase") == "analysis" or payload.get("channel") == "analysis":
                     text = text_content(payload.get("content", []))
                     if text.strip():
                         parts.append(thinking(record.get("timestamp", ""), text))
-                    continue
+                    return parts
+                self.has_messages = True
                 text = text_content(payload.get("content", []))
-                key = ("message", payload.get("id")) if payload.get("id") else None
-                if text.strip() and (key is None or key not in seen):
+                key = "message:" + str(payload["id"]) if payload.get("id") else None
+                if text.strip() and (key is None or key not in self.seen):
                     parts.append(f"\n### {payload['role'].title()} · {record.get('timestamp', '')}\n\n{clean(text)}\n")
-                    seen.add(key)
+                    if key:
+                        self.seen.add(key)
             elif typ == "reasoning":
                 # Codex keeps the reasoning itself encrypted; only its readable summary, if any, is kept.
                 texts = [item.get("text", "") for key in ("summary", "content")
@@ -158,15 +190,16 @@ def codex_transcript(path, warnings):
                 if text:
                     parts.append(thinking(record.get("timestamp", ""), text))
             elif typ in ("function_call", "custom_tool_call"):
-                key = ("call", payload.get("call_id"))
-                if key in seen:
-                    continue
-                seen.add(key)
+                key = "call:" + str(payload.get("call_id"))
+                if key in self.seen:
+                    return parts
+                self.seen.add(key)
+                self.calls[str(payload.get("call_id"))] = payload.get("name", "tool")
                 value = payload.get("arguments", payload.get("input", ""))
                 parts.append(detail(f"Tool call: {payload.get('name', 'tool')} · {payload.get('call_id', '')} · {record.get('timestamp', '')}",
                                     text_content(value)))
             elif typ in ("function_call_output", "custom_tool_call_output"):
-                parts.append(detail(f"Tool result: {calls.get(payload.get('call_id'), 'tool')} · {payload.get('call_id', '')} · {record.get('timestamp', '')}",
+                parts.append(detail(f"Tool result: {self.calls.get(str(payload.get('call_id')), 'tool')} · {payload.get('call_id', '')} · {record.get('timestamp', '')}",
                                     text_content(payload.get("output", ""))))
         elif record.get("type") == "event_msg":
             item = payload.get("item", {})
@@ -189,40 +222,69 @@ def codex_transcript(path, warnings):
                     parts.append(detail(f"Command execution · {item.get('id', '')}", body))
                 elif kind == "FileChange":
                     parts.append(detail("File changes", json_text({k: item[k] for k in ("changes", "status", "stdout", "stderr") if k in item}), "json"))
-            elif not has_messages and typ in ("user_message", "agent_message"):
+            elif typ in ("user_message", "agent_message"):
                 role = "User" if typ == "user_message" else "Assistant"
                 text = payload.get("message", "")
                 if isinstance(text, str) and text.strip():
-                    parts.append(f"\n### {role} · {record.get('timestamp', '')}\n\n{clean(text)}\n")
+                    parts.append(EventMessage(f"\n### {role} · {record.get('timestamp', '')}\n\n{clean(text)}\n"))
         elif record.get("type") == "compacted":
             parts.append("\n_Context compacted; original records above remain part of this archive._\n")
-    return metadata, "".join(parts)
+        return parts
+
+    def finish(self):
+        if self.metadata.get("history_base"):
+            self.warnings.add(f"{self.path.name}: this transcript references earlier paginated/forked history")
 
 
-def claude_transcript(path, warnings):
-    metadata = {}; parts = []; seen = set(); calls = {}
-    for record in records(path, warnings):
+class EventMessage(str):
+    """A Codex message logged only as an event; shown only when the file has no other messages."""
+
+
+class ClaudeParser(Parser):
+    def restore(self, state):
+        # Working directory and name ride along, so the file is read once for everything.
+        self.cwd = state.get("cwd", "")
+        self.custom_title = state.get("custom_title", "")
+        self.ai_title = state.get("ai_title", "")
+
+    def extra_state(self):
+        return {"cwd": self.cwd, "custom_title": self.custom_title, "ai_title": self.ai_title}
+
+    @property
+    def title(self):
+        # A name the person gave (/rename) wins over the newest title Claude Code generated.
+        return self.custom_title or self.ai_title
+
+    def feed(self, record):
+        if not self.cwd and isinstance(record.get("cwd"), str):
+            self.cwd = record["cwd"]
+        if record.get("type") == "custom-title" and isinstance(record.get("customTitle"), str):
+            self.custom_title = record["customTitle"]
+        elif record.get("type") == "ai-title" and isinstance(record.get("aiTitle"), str):
+            self.ai_title = record["aiTitle"]
         if record.get("type") not in ("user", "assistant"):
-            continue
+            return []
         for key in ("sessionId", "version", "cwd", "gitBranch", "agentId", "isSidechain"):
             if key in record:
-                metadata[key] = record[key]
+                self.metadata[key] = record[key]
         message = record.get("message", {})
         if not isinstance(message, dict):
-            continue
+            return []
         role = message.get("role", record["type"])
         content = message.get("content", [])
         if isinstance(content, str):
             content = [{"type": "text", "text": content}]
         if not isinstance(content, list):
-            continue
+            return []
+        parts = []
         for index, block in enumerate(content):
             if not isinstance(block, dict):
                 continue
-            key = (record.get("uuid"), index)
-            if record.get("uuid") and key in seen:
+            key = f"{record.get('uuid')}:{index}"
+            if record.get("uuid") and key in self.seen:
                 continue
-            seen.add(key)
+            if record.get("uuid"):
+                self.seen.add(key)
             typ = block.get("type")
             if typ == "text" and role in ("user", "assistant") and not record.get("isMeta"):
                 text = block.get("text", "")
@@ -231,11 +293,11 @@ def claude_transcript(path, warnings):
             elif typ == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"].strip():
                 parts.append(thinking(record.get("timestamp", ""), block["thinking"]))
             elif typ == "tool_use":
-                ident = block.get("id", "")
-                calls[ident] = block.get("name", "tool")
-                parts.append(detail(f"Tool call: {calls[ident]} · {ident} · {record.get('timestamp', '')}", json_text(block.get("input", {})), "json"))
+                ident = str(block.get("id", ""))
+                self.calls[ident] = block.get("name", "tool")
+                parts.append(detail(f"Tool call: {self.calls[ident]} · {ident} · {record.get('timestamp', '')}", json_text(block.get("input", {})), "json"))
             elif typ == "tool_result":
-                ident = block.get("tool_use_id", "")
+                ident = str(block.get("tool_use_id", ""))
                 text = text_content(block.get("content", ""))
                 result = record.get("toolUseResult")
                 body = f"is_error: {block.get('is_error', 'unknown')}\n\n{text}"
@@ -247,39 +309,46 @@ def claude_transcript(path, warnings):
                     if extra:
                         body += "\n\nStructured result:\n" + json_text(extra)
                     if result.get("outputFile"):
-                        body += "\n\nCompanion output:\n" + companion_output(result["outputFile"], warnings)
+                        body += "\n\nCompanion output:\n" + companion_output(result["outputFile"], self.warnings)
                 # Large synchronous tool results can refer to a spilled file.
                 for name in re.findall(r"(?im)^\s*(?:Full output saved to|Output saved to):\s*(/[^\r\n<]+)", text):
-                    body += "\n\nFull output:\n" + companion_output(name, warnings)
-                parts.append(detail(f"Tool result: {calls.get(ident, 'tool')} · {ident} · {record.get('timestamp', '')}", body))
-    return metadata, "".join(parts)
+                    body += "\n\nFull output:\n" + companion_output(name, self.warnings)
+                parts.append(detail(f"Tool result: {self.calls.get(ident, 'tool')} · {ident} · {record.get('timestamp', '')}", body))
+        return parts
 
 
 AGY_TIMES = re.compile(r"^(?:Created At|Completed At): .*\n?", re.MULTILINE)
 
 
-def antigravity_transcript(path, warnings):
+class AgyParser(Parser):
     """agy's transcript log: one JSON object per step, in step order.
 
-    USER_INPUT steps are what the person sent, and
-    PLANNER_RESPONSE steps are the model's reply plus the tools it called. Each tool's
-    result is a later step of its own (GENERIC, status ERROR when it failed), in the
-    order the calls were made. Thinking is not archived, like the other CLIs.
+    USER_INPUT steps are what the person sent, and PLANNER_RESPONSE steps are the model's
+    thinking, reply and the tools it called. Each tool's result is a later step of its own
+    (GENERIC, status ERROR when it failed), in the order the calls were made.
     """
-    metadata = {"conversation_id": path.parents[2].name, "transcript": path.name}
-    parts, pending = [], []
-    for record in records(path, warnings):
+
+    def restore(self, state):
+        self.pending = state.get("pending", [])
+        self.metadata.setdefault("conversation_id", self.path.parents[2].name)
+        self.metadata["transcript"] = self.path.name
+
+    def extra_state(self):
+        return {"pending": self.pending}
+
+    def feed(self, record):
         kind = str(record.get("type", "STEP"))
         stamp = record.get("created_at", "")
         step = record.get("step_index", "")
         content = record.get("content") if isinstance(record.get("content"), str) else ""
         if isinstance(record.get("model"), str):
-            metadata.setdefault("model", record["model"])
+            self.metadata.setdefault("model", record["model"])
+        parts = []
         if kind == "USER_INPUT":
             found = AGY_REQUEST.search(content)
             text = found.group(1) if found else content
             if record.get("source") not in (None, "USER_EXPLICIT"):
-                metadata.setdefault("started_by", record.get("source"))
+                self.metadata.setdefault("started_by", record.get("source"))
             if text.strip():
                 parts.append(f"\n### User · {stamp}\n\n{clean(text)}\n")
         elif kind == "PLANNER_RESPONSE":
@@ -291,11 +360,10 @@ def antigravity_transcript(path, warnings):
                 if not isinstance(call, dict):
                     continue
                 name = str(call.get("name", "tool"))
-                pending.append(name)
-                parts.append(detail(f"Tool call: {name} · {step} · {stamp}",
-                                    json_text(call.get("args", {})), "json"))
+                self.pending.append(name)
+                parts.append(detail(f"Tool call: {name} · {step} · {stamp}", json_text(call.get("args", {})), "json"))
         elif kind == "GENERIC":
-            name = pending.pop(0) if pending else "tool"
+            name = self.pending.pop(0) if self.pending else "tool"
             failed = record.get("status") == "ERROR"
             body = AGY_TIMES.sub("", content).strip()
             if failed and record.get("error") and record["error"] not in body:
@@ -307,4 +375,7 @@ def antigravity_transcript(path, warnings):
         else:
             body = {k: v for k, v in record.items() if k not in ("type", "created_at", "thinking")}
             parts.append(detail(f"Tool result: {kind.lower()} · {step} · {stamp}", json_text(body), "json"))
-    return metadata, "".join(parts)
+        return parts
+
+
+PARSERS = {"codex": CodexParser, "claude": ClaudeParser, "antigravity": AgyParser}

@@ -23,12 +23,7 @@ class Session:
     subagents: list[Path] = field(default_factory=list)
     cwd: str = ""
     title: str = ""
-    details: object = None  # fills cwd and title on demand when that needs a full read
-
-    def load(self) -> None:
-        if self.details:
-            self.details(self)
-            self.details = None
+    from_transcript: bool = False  # name and folder come from the transcript (Claude Code)
 
     @property
     def archive_id(self) -> str:
@@ -42,7 +37,7 @@ class Session:
         """What changes whenever the conversation does: each file's size and modification time,
         plus the name and working directory when they come from elsewhere (Codex, Antigravity
         write those a moment after the turn ends)."""
-        result = [] if self.details else [["title", self.title], ["cwd", self.cwd]]
+        result = [] if self.from_transcript else [["title", self.title], ["cwd", self.cwd]]
         for path in self.files:
             try:
                 stat = path.stat()
@@ -96,27 +91,13 @@ def all_records(path: Path):
 
 # --- Claude Code: <config>/projects/<project>/<session>.jsonl, subagents in <session>/subagents/
 
-def claude_details(session: Session) -> None:
-    """Working directory and title; titles can be anywhere in the file, so it is read whole."""
-    custom = ai = ""
-    for record in all_records(session.transcript):
-        if not session.cwd and isinstance(record.get("cwd"), str):
-            session.cwd = record["cwd"]
-        # A name the person gave (/rename) wins over the newest title Claude Code generated.
-        if record.get("type") == "custom-title" and isinstance(record.get("customTitle"), str):
-            custom = record["customTitle"]
-        elif record.get("type") == "ai-title" and isinstance(record.get("aiTitle"), str):
-            ai = record["aiTitle"]
-    session.title = custom or ai
-
-
 def claude_session(path: Path) -> Session | None:
     if path.suffix != ".jsonl" or path.parent.parent != claude_root() / "projects":
         return None
-    # Details are read only when the conversation is archived (see Session.load).
+    # Its name and folder are in the transcript itself; archiving reads them in the same pass.
     return Session("claude", path.stem, path,
                    subagents=sorted((path.parent / path.stem / "subagents").glob("*.jsonl")),
-                   details=claude_details)
+                   from_transcript=True)
 
 
 def claude_sessions():

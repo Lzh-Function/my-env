@@ -177,6 +177,74 @@ class AgentHistoryTests(unittest.TestCase):
             json.dumps({"/work/figures": other}))
         self.assertIn("antigravity  figures", self.cli("list", "--agent", "antigravity"))
 
+    def archive_text(self, provider, ident):
+        text = (self.home / f"agent-history/archives/{provider}/{ident}.md").read_text()
+        return "\n".join(line for line in text.splitlines() if '"archived_at"' not in line)
+
+    def assert_same_as_full_read(self):
+        """The incremental archives equal what reading every file from the start gives."""
+        incremental = {(p, i): self.archive_text(p, i) for p, i in self.ids}
+        self.cli("sync", "--force")
+        for key, text in incremental.items():
+            self.assertEqual(text, self.archive_text(*key), key)
+
+    def test_long_conversations_are_read_only_from_where_they_left_off(self):
+        legacy_id = "019a0000-0000-7000-8000-000000000002"
+        legacy = self.home / f".codex/sessions/2026/11/19/rollout-2026-11-19T10-00-00-{legacy_id}.jsonl"
+        write_jsonl(legacy, [{"type": "session_meta", "payload": {"id": legacy_id, "cwd": "/work/old"}}])
+        self.ids = [("claude", CLAUDE_ID), ("codex", CODEX_ID), ("antigravity", AGY_ID), ("codex", legacy_id)]
+        agy_log = self.home / ".gemini/antigravity-cli/brain" / AGY_ID / ".system_generated/logs/transcript_full.jsonl"
+        self.cli("sync")
+
+        def append(path, *records):
+            with path.open("a") as stream:
+                stream.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+
+        # A tool call in one read and its result in the next (Claude Code, Codex, agy).
+        append(self.claude, {"type": "assistant", "uuid": "a3", "timestamp": "2026-11-20T05:00:00Z", "message": {
+            "role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Read", "input": {"file_path": "x"}}]}})
+        append(self.codex, {"type": "response_item", "timestamp": "2026-11-20T05:00:00Z", "payload": {
+            "type": "function_call", "name": "exec_command", "call_id": "c2", "arguments": "{}"}})
+        append(agy_log, {"step_index": 2, "type": "PLANNER_RESPONSE", "created_at": "2026-11-20T05:00:00Z",
+                         "tool_calls": [{"name": "run_command", "args": {"CommandLine": "ls"}}]})
+        # An old Codex log with messages only as events, first after other output.
+        append(legacy, {"type": "response_item", "payload": {"type": "function_call", "name": "x", "call_id": "l1"}},
+               {"type": "event_msg", "timestamp": "2026-11-19T01:00:00Z", "payload": {"type": "user_message", "message": "古い形式の依頼"}})
+        self.cli("sync")
+        append(self.claude, {"type": "user", "uuid": "r3", "timestamp": "2026-11-20T05:00:05Z", "message": {
+            "role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "contents"}]}})
+        append(self.codex, {"type": "response_item", "timestamp": "2026-11-20T05:00:05Z", "payload": {
+            "type": "function_call_output", "call_id": "c2", "output": "done"}})
+        append(agy_log, {"step_index": 3, "type": "GENERIC", "created_at": "2026-11-20T05:00:05Z", "content": "listing"})
+        append(legacy, {"type": "event_msg", "timestamp": "2026-11-19T01:01:00Z", "payload": {"type": "agent_message", "message": "古い形式の返答"}})
+        # A line still being written is left for the next read.
+        with self.claude.open("a") as stream:
+            stream.write('{"type": "assistant", "uuid": "a4", "timestamp": "2026-11-20T05:01:00Z", "message": {"role": "assi')
+        self.cli("sync")
+        claude = self.archive_text("claude", CLAUDE_ID)
+        self.assertIn("Tool result: Read · t2", claude)
+        self.assertIn("Tool result: exec_command · c2", self.archive_text("codex", CODEX_ID))
+        self.assertIn("Tool result: run_command · 3", self.archive_text("antigravity", AGY_ID))
+        self.assertIn("古い形式の返答", self.archive_text("codex", legacy_id))
+        with self.claude.open("a") as stream:
+            stream.write('stant", "content": [{"type": "text", "text": "書き終わりました"}]}}\n')
+        self.cli("sync")
+        self.assertIn("書き終わりました", self.archive_text("claude", CLAUDE_ID))
+        # Each file is read only from where the last read stopped.
+        cache = self.home / "agent-history/cache" / f"claude-{CLAUDE_ID}"
+        states = [json.loads(p.read_text()) for p in cache.glob("*.json")]
+        self.assertIn(self.claude.stat().st_size, [state["offset"] for state in states])
+        self.assert_same_as_full_read()
+        # A rewritten file (agy rewrites its log when compacting) is read again from the start.
+        write_jsonl(agy_log, [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-11-20T03:00:00Z",
+             "content": "<USER_REQUEST>\n要約後の依頼\n</USER_REQUEST>"}])
+        self.cli("sync")
+        agy = self.archive_text("antigravity", AGY_ID)
+        self.assertIn("要約後の依頼", agy)
+        self.assertNotIn("listing", agy)
+        self.assert_same_as_full_read()
+
     def test_hooks_install_keeps_other_hooks_and_uninstall_removes_only_ours(self):
         other = {"type": "command", "command": "orca-hook.sh", "timeout": 10}
         claude_settings = self.home / ".claude/settings.json"
