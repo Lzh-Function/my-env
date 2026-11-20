@@ -12,7 +12,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 # Bump when the note layout changes so export-md rewrites notes it wrote earlier.
-FORMAT = 5
+FORMAT = 6
 
 TURN = re.compile(r"### (User|Assistant) · (.*)")
 SESSION = re.compile(r"## Session: (.*) \((worker|reviewer), (codex|claude|antigravity)\)")
@@ -193,6 +193,8 @@ def detail(label, fence, tz):
         if command:
             command = " ".join(command) if isinstance(command, list) else str(command)
             title += ": " + (command if len(command) <= 60 else command[:59] + "…")
+    elif parts[0] == "Thinking":
+        title, kind = "💭 思考", "abstract"
     elif parts[0] == "File changes":
         title = "📝 ファイル変更"
     elif parts[0] == "System message":
@@ -210,8 +212,8 @@ BEGIN = "%% agentrun:begin {} %%"
 END = "%% agentrun:end %%"
 # An HTML comment (hidden in Obsidian, unlike %% it may contain "%%") telling a reader how to skip them.
 GUIDE = ("<!-- agentrun: このノートの会話以外の部分（ツールの呼び出しと結果、コマンド出力、セッション情報、"
-         "自動で挿入されたメッセージ、相互監査の詳細）は、行頭の \"%% agentrun:begin <種類> %%\" の行から "
-         "\"%% agentrun:end %%\" の行までに入っています。種類は tool, session, injected, review です。"
+         "自動で挿入されたメッセージ、モデルの思考、相互監査の詳細）は、行頭の \"%% agentrun:begin <種類> %%\" の行から "
+         "\"%% agentrun:end %%\" の行までに入っています。種類は tool, thinking, session, injected, review です。"
          "会話だけを読むときは次で除けます: sed '/^%% agentrun:begin /,/^%% agentrun:end %%$/d' NOTE.md -->")
 
 
@@ -255,7 +257,9 @@ def obsidian_body(markdown, tz=None):
                 if body:
                     out.append(readable(body))
         elif kind == "detail":
-            out += folded("tool", detail(item[1], item[2], tz))
+            # Thinking has its own marker so it can be dropped separately from tool output.
+            kind = "thinking" if item[1].startswith("Thinking") else "tool"
+            out += folded(kind, detail(item[1], item[2], tz))
         elif kind == "heading":
             out.append([item[1]])
         elif kind == "compacted":

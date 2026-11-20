@@ -88,8 +88,9 @@ class HistoryTests(unittest.TestCase):
              "originator": "fixture", "cli_version": "0.test", "base_instructions": "DO NOT EXPORT POLICY"}},
             message("user", "first request"),
             message("developer", "DO NOT EXPORT POLICY"),
-            message("assistant", "DO NOT EXPORT REASONING", phase="analysis"),
-            {"type": "response_item", "payload": {"type": "reasoning", "encrypted_content": "DO NOT EXPORT REASONING"}},
+            message("assistant", "CODEX ANALYSIS THOUGHT", phase="analysis"),
+            {"type": "response_item", "payload": {"type": "reasoning", "encrypted_content": "DO NOT EXPORT REASONING",
+                                                  "summary": [{"type": "summary_text", "text": "CODEX REASONING SUMMARY"}]}},
             {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "call-1", "input": "tools.exec_command({cmd: 'printf result'})"}},
             command_event(aggregated_output="full output\n" + "x" * 300000, formatted_output="short output"),
             {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "call-1", "output": [
@@ -106,6 +107,10 @@ class HistoryTests(unittest.TestCase):
         for expected in ("first request", "full output", "x" * 300000, "separate stdout", "separate stderr",
                          "printf result", "exec-1", "Warning: truncated output", "guardian"):
             self.assertIn(expected, text)
+        # Readable thinking is kept as its own detail; encrypted reasoning never is.
+        for kept in ("CODEX ANALYSIS THOUGHT", "CODEX REASONING SUMMARY"):
+            self.assertIn(kept, text)
+        self.assertEqual(text.count("<summary>Thinking"), 2)
         for excluded in ("DO NOT EXPORT", "DO_NOT_EXPORT_IMAGE", "short output"):
             self.assertNotIn(excluded, text)
         self.assertEqual(text.count("final answer"), 1)
@@ -400,7 +405,9 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("<summary>Tool result: run_command · 3 · 2026-11-20T05:44:32Z</summary>", markdown)
         self.assertIn("is_error: True\n\ntool call denied by pre-tool hook: pip is forbidden", markdown)
         self.assertIn("<summary>System message · 4 · 2026-11-20T05:44:33Z</summary>", markdown)
-        for hidden in ("HIDDEN THOUGHT", "HIDDEN TIME", "Created At:"):
+        self.assertIn("<summary>Thinking · 2026-11-20T05:44:30Z</summary>", markdown)
+        self.assertIn("HIDDEN THOUGHT", markdown)
+        for hidden in ("HIDDEN TIME", "Created At:"):
             self.assertNotIn(hidden, markdown)
         self.assertIn('"model": "gemini-4-neon-high"', markdown)
         # Listing, filters and the Obsidian note treat agy like the other agents.
@@ -417,6 +424,13 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("> [!example]- 🔧 edit_file", note)
         self.assertIn("> [!failure]- ↩️ 結果: run_command（エラー）", note)
         self.assertIn("> [!note]- 📣 システムメッセージ", note)
+        # Thinking is folded under its own marker, so it can be dropped apart from tool output.
+        block = note[note.index("%% agentrun:begin thinking %%"):]
+        self.assertIn("> [!abstract]- 💭 思考", block[:200])
+        self.assertIn("HIDDEN THOUGHT", block[:300])
+        stripped = subprocess.run(["sed", "/^%% agentrun:begin /,/^%% agentrun:end %%$/d"], input=note,
+                                  capture_output=True, text=True).stdout
+        self.assertNotIn("HIDDEN THOUGHT", stripped)
 
     def test_antigravity_empty_interactive_start_is_hidden(self):
         import history_index
@@ -753,7 +767,8 @@ class HistoryTests(unittest.TestCase):
         write_jsonl(self.path, [
             {**base, "type": "user", "uuid": "u1", "message": {"role": "user", "content": "actual user request"}},
             {**base, "type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": [
-                {"type": "thinking", "thinking": "DO NOT EXPORT THOUGHT"},
+                {"type": "thinking", "thinking": "CLAUDE THOUGHT"},
+                {"type": "redacted_thinking", "data": "DO NOT EXPORT REDACTED"},
                 {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {"command": "run experiment", "timeout": 1000}}]}},
             {**base, "type": "user", "uuid": "r1", "toolUseResult": {"stdout": "observed stdout", "stderr": "observed stderr", "interrupted": False},
              "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tool-1", "is_error": False,
@@ -772,6 +787,8 @@ class HistoryTests(unittest.TestCase):
                       "complete spilled output", "z" * 40000, "child answer", "public answer"):
             self.assertIn(value, text)
         self.assertNotIn("DO NOT EXPORT", text)
+        self.assertIn("<summary>Thinking", text)
+        self.assertIn("CLAUDE THOUGHT", text)
         self.assertEqual(text.count("### User"), 1)
         self.assertEqual(result["transcripts"], 2)
         self.assertFalse(result["warnings"])

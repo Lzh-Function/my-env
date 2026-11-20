@@ -98,6 +98,11 @@ def detail(label, text, language="text"):
     return f"\n<details>\n<summary>{html.escape(clean(label))}</summary>\n\n{fence(text, language)}\n</details>\n"
 
 
+def thinking(stamp, text):
+    """The model's visible reasoning, kept as its own folded detail (never a conversation turn)."""
+    return detail(f"Thinking · {stamp}", text)
+
+
 def json_text(value):
     return json.dumps(value, ensure_ascii=False, indent=2)
 
@@ -160,12 +165,23 @@ def codex_transcript(path, warnings):
         if record.get("type") == "response_item":
             if typ in ("message", None) and payload.get("role") in ("user", "assistant"):
                 if payload.get("phase") == "analysis" or payload.get("channel") == "analysis":
+                    text = text_content(payload.get("content", []))
+                    if text.strip():
+                        parts.append(thinking(record.get("timestamp", ""), text))
                     continue
                 text = text_content(payload.get("content", []))
                 key = ("message", payload.get("id")) if payload.get("id") else None
                 if text.strip() and (key is None or key not in seen):
                     parts.append(f"\n### {payload['role'].title()} · {record.get('timestamp', '')}\n\n{clean(text)}\n")
                     seen.add(key)
+            elif typ == "reasoning":
+                # Codex keeps the reasoning itself encrypted; only its readable summary, if any, is kept.
+                texts = [item.get("text", "") for key in ("summary", "content")
+                         for item in payload.get(key) or [] if isinstance(item, dict)
+                         and item.get("type") in ("summary_text", "reasoning_text", "text")]
+                text = "\n\n".join(t for t in texts if isinstance(t, str) and t.strip())
+                if text:
+                    parts.append(thinking(record.get("timestamp", ""), text))
             elif typ in ("function_call", "custom_tool_call"):
                 key = ("call", payload.get("call_id"))
                 if key in seen:
@@ -237,6 +253,8 @@ def claude_transcript(path, run, store, warnings):
                 text = block.get("text", "")
                 if isinstance(text, str) and text.strip():
                     parts.append(f"\n### {role.title()} · {record.get('timestamp', '')}\n\n{clean(text)}\n")
+            elif typ == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"].strip():
+                parts.append(thinking(record.get("timestamp", ""), block["thinking"]))
             elif typ == "tool_use":
                 ident = block.get("id", "")
                 calls[ident] = block.get("name", "tool")
@@ -269,9 +287,9 @@ def antigravity_transcript(path, warnings):
     """agy's transcript log: one JSON object per step, in step order.
 
     USER_INPUT steps are what the person (or agentrun's launch prompt) sent, and
-    PLANNER_RESPONSE steps are the model's reply plus the tools it called. Each tool's
+    PLANNER_RESPONSE steps are the model's thinking, reply and the tools it called. Each tool's
     result is a later step of its own (GENERIC, status ERROR when it failed), in the
-    order the calls were made. Thinking is not archived, like the other CLIs.
+    order the calls were made.
     """
     metadata = {"conversation_id": path.parents[2].name, "transcript": path.name}
     parts, pending = [], []
@@ -290,6 +308,8 @@ def antigravity_transcript(path, warnings):
             if text.strip():
                 parts.append(f"\n### User · {stamp}\n\n{clean(text)}\n")
         elif kind == "PLANNER_RESPONSE":
+            if isinstance(record.get("thinking"), str) and record["thinking"].strip():
+                parts.append(thinking(stamp, record["thinking"]))
             if content.strip():
                 parts.append(f"\n### Assistant · {stamp}\n\n{clean(content)}\n")
             for call in record.get("tool_calls") or []:
