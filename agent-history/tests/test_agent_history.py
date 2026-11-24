@@ -148,6 +148,49 @@ class AgentHistoryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("当たる会話がありません", result.stderr)
 
+    def test_export_follows_notes_renamed_or_moved_in_obsidian(self):
+        vault = self.home / "vault"
+        self.assertIn("新規 3 件", self.cli("export-md", vault))
+        original = vault / "2026-11-20 1000 図の修正.md"
+        mine = vault / "論文/図まわりの相談メモ.md"
+        mine.parent.mkdir()
+        original.rename(mine)
+        # Obsidian drops the quotes when it saves properties.
+        mine.write_text(mine.read_text().replace(f'session_id: "{CLAUDE_ID}"', f"session_id: {CLAUDE_ID}"))
+        out = self.cli("export-md", vault)
+        self.assertIn("名前か場所が変わったノート 1 件", out)
+        self.assertFalse(original.exists())
+        # The conversation goes on: the renamed note gets the new turn under its own name.
+        with self.claude.open("a") as stream:
+            stream.write(json.dumps({"type": "user", "timestamp": "2026-11-20T01:30:00Z", "sessionId": CLAUDE_ID,
+                                     "cwd": "/work/paper", "message": {"role": "user", "content": "凡例も直して"}}) + "\n")
+        self.assertIn("更新 1 件", self.cli("export-md", vault))
+        self.assertIn("凡例も直して", mine.read_text())
+        self.assertFalse(original.exists())
+        # A new title from the CLI or rename does not undo the user's name.
+        self.cli("rename", CLAUDE_ID[:8], "論文の図")
+        self.cli("export-md", vault)
+        self.assertTrue(mine.is_file())
+        self.assertEqual([p.name for p in vault.rglob("*論文の図*.md")], [])
+        # Moved only (name kept): a later title change renames it inside the folder it was moved to.
+        agy = next(vault.glob("*README の作成.md"))
+        moved = vault / "docs" / agy.name
+        moved.parent.mkdir()
+        agy.rename(moved)
+        self.cli("export-md", vault)
+        self.assertTrue(moved.is_file())
+        self.cli("rename", AGY_ID[:8], "README の改訂")
+        self.cli("export-md", vault)
+        self.assertFalse(moved.exists())
+        self.assertEqual(len(list((vault / "docs").glob("*README の改訂.md"))), 1)
+        # Losing the state file no longer duplicates every note.
+        (vault / ".agent-history-export.json").unlink()
+        out = self.cli("export-md", vault)
+        self.assertIn("新規 0 件", out)
+        self.assertEqual(len(list(vault.rglob("*.md"))), 3)
+        self.assertEqual(list(vault.rglob("* (2).md")), [])
+        self.assertIn("凡例も直して", mine.read_text())
+
     def test_names_and_folders_written_after_the_turn_are_picked_up(self):
         self.cli("sync")
         # Codex names a thread a moment after the turn; the transcript itself does not change.

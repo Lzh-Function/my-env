@@ -297,11 +297,74 @@ def write_private(path, text):
     temporary.replace(path)
 
 
+FRONTMATTER_FIELD = re.compile(r"^(archive_id):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+
+
+def note_archive_id(path):
+    """The archive_id in a note's properties, or None for a note this command did not write."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            head = stream.read(8192)
+    except OSError:
+        return None
+    if not head.startswith("---\n") or "\n---" not in head[3:]:
+        return None
+    for _, value in FRONTMATTER_FIELD.findall(head[4:head.index("\n---", 3)]):
+        try:
+            value = json.loads(value)  # as written; Obsidian may drop the quotes when it saves properties
+        except ValueError:
+            value = value.strip("'\"")
+        return str(value) or None
+    return None
+
+
+def find_notes(directory):
+    """Every note in the export folder, keyed by the archive its properties name.
+
+    Notes renamed or moved inside Obsidian are found here by what they say, not by file name.
+    Hidden folders (.obsidian, .trash) are skipped.
+    """
+    found = {}
+    for root, folders, files in os.walk(directory):
+        folders[:] = sorted(f for f in folders if not f.startswith("."))
+        for file in files:
+            if file.endswith(".md") and not file.startswith("."):
+                path = Path(root) / file
+                ident = note_archive_id(path)
+                if ident:
+                    found.setdefault(ident, []).append(path.relative_to(directory).as_posix())
+    return found
+
+
+def ours(file, name):
+    """True when the note still has the name export-md gave it (perhaps with a clash suffix)."""
+    return Path(file).name == name or bool(re.fullmatch(re.escape(name[:-3]) + r" \(\d+\)\.md", Path(file).name))
+
+
 def export_markdown(found, directory, hidden=()):
-    """Write one Obsidian-friendly note per conversation; touch only notes this command wrote."""
+    """Write one Obsidian-friendly note per conversation; touch only notes this command wrote.
+
+    A note renamed or moved inside the export folder is found again by the archive_id in its
+    properties (any run of the conversation) and updated where it is, under the name it now has.
+    """
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_path = directory / EXPORT_STATE
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+    scanned = None
+
+    def locate(conversation):
+        nonlocal scanned
+        if scanned is None:
+            scanned = find_notes(directory)
+        idents = [conversation.key, *(row["archive_id"] for row in reversed(conversation.runs))]
+        matches = list(dict.fromkeys(file for ident in idents for file in scanned.get(ident, [])))
+        if len(matches) > 1:
+            # Several copies (a duplicated note): keep updating the one edited last.
+            matches.sort(key=lambda file: (directory / file).stat().st_mtime, reverse=True)
+            print(safe_text(f"同じ会話のノートが {len(matches)} 件あります。最後に変更した {matches[0]} を更新します"
+                            f"（ほか: {', '.join(matches[1:])}）"))
+        return matches[0] if matches else None
+
     # Earlier exports wrote one note per resumed run; those notes now belong to their conversation.
     merged = 0
     for conversation in found:
@@ -316,24 +379,42 @@ def export_markdown(found, directory, hidden=()):
     for conversation in hidden:
         for ident in {conversation.key, *(row["archive_id"] for row in conversation.runs)}:
             entry = state.pop(ident, None)
-            if entry:
+            if entry and not entry.get("renamed"):
                 (directory / entry["file"]).unlink(missing_ok=True)
                 dropped += 1
     titles = load_titles()
     taken = {entry["file"] for entry in state.values()}
     counts = {"new": 0, "updated": 0, "same": 0}
+    followed = 0
     tz = zone()
     for conversation in reversed(found):
         latest = conversation.latest
         label = conversation.label(titles) or one_line(first_request(latest["markdown"]), 60) or latest["agent"]
         name = note_name(conversation.first["run_id"], label) + ".md"
         previous = state.get(conversation.key)
-        if previous and re.fullmatch(re.escape(name[:-3]) + r" \(\d+\)\.md", previous["file"]):
-            name = previous["file"]  # keeps the suffix it got for a name clash earlier
+        if not previous or not (directory / previous["file"]).is_file():
+            # Renamed or moved in Obsidian, or the state file was lost: match by content.
+            located = locate(conversation)
+            if located:
+                if located != (previous["file"] if previous else name):
+                    followed += 1
+                if previous:
+                    taken.discard(previous["file"])
+                # Without an earlier record (no updated_at) the note is rewritten once to be sure.
+                previous = {**(previous or {}), "file": located, "renamed": not ours(located, name)}
+                taken.add(located)
         version = {"updated_at": latest["updated_at"], "source": latest["archive_id"], "format": FORMAT}
+        if previous and previous.get("renamed"):
+            name = previous["file"]  # the name the user gave it stays
+        else:
+            folder = Path(previous["file"]).parent if previous else Path(".")
+            name = (folder / name).as_posix()
+            if previous and ours(previous["file"], Path(name).name) and Path(previous["file"]).parent == folder:
+                name = previous["file"]  # keeps the suffix it got for a name clash earlier
         if previous and previous["file"] == name and all(previous.get(k) == v for k, v in version.items()) \
                 and (directory / name).is_file():
             counts["same"] += 1
+            state[conversation.key] = previous
             continue
         if not previous or previous["file"] != name:
             # Never overwrite a note this command did not write (the user's own, or another run's).
@@ -343,6 +424,7 @@ def export_markdown(found, directory, hidden=()):
         header = ARCHIVE_HEADER.match(latest["markdown"])
         if not header:
             raise ValueError(f"unexpected archive layout: {latest['archive_id']}")
+        (directory / name).parent.mkdir(parents=True, exist_ok=True)
         write_private(directory / name, frontmatter(conversation, label)
                       + "\n" + obsidian_body(latest["markdown"][header.end():], tz))
         if previous and previous["file"] != name:
@@ -350,10 +432,14 @@ def export_markdown(found, directory, hidden=()):
             taken.discard(previous["file"])
         taken.add(name)
         state[conversation.key] = {"file": name, **version}
+        if previous and previous.get("renamed"):
+            state[conversation.key]["renamed"] = True
         counts["updated" if previous else "new"] += 1
     write_private(state_path, json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
     note = f"、resume 前の重複ノートを {merged} 件まとめました" if merged else ""
     note += f"、依頼のない会話のノートを {dropped} 件削除しました" if dropped else ""
+    if followed:
+        note += f"、名前か場所が変わったノート {followed} 件を見つけました（今後もその名前と場所のまま更新します）"
     print(f"書き出しました: 新規 {counts['new']} 件、更新 {counts['updated']} 件、変更なし {counts['same']} 件{note} → {directory}")
 
 

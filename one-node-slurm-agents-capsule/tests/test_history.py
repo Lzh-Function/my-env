@@ -265,6 +265,22 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("更新 1 件", agentrun("export-md", str(vault)))
         self.assertTrue((vault / "2026-10-21 1703 fixed figures and tables.md").is_file())
         self.assertFalse((vault / "2026-10-21 1703 fixed figures.md").exists())
+        # Renamed and moved in Obsidian: found again by its archive_id and updated under the user's name.
+        mine = vault / "papers/図と表の修正メモ.md"
+        mine.parent.mkdir()
+        (vault / "2026-10-21 1703 fixed figures and tables.md").rename(mine)
+        mine.write_text(re.sub(r'archive_id: "([^"]+)"', r"archive_id: \1", mine.read_text()))  # Obsidian drops quotes
+        self.assertIn("名前か場所が変わったノート 1 件", agentrun("export-md", str(vault)))
+        # A later title change keeps the user's name.
+        (resumed / "artifacts/run_title.txt").write_text("another title\n")
+        collector.archive(resumed)
+        self.assertIn("更新 1 件", agentrun("export-md", str(vault)))
+        self.assertIn('title: "another title"', mine.read_text())
+        self.assertEqual(sorted(p.relative_to(vault).as_posix() for p in vault.rglob("*.md")), ["papers/図と表の修正メモ.md"])
+        (vault / ".agentrun-export.json").unlink()  # losing the state file no longer duplicates notes
+        self.assertIn("新規 0 件", agentrun("export-md", str(vault)))
+        self.assertEqual(sorted(p.relative_to(vault).as_posix() for p in vault.rglob("*.md")), ["papers/図と表の修正メモ.md"])
+        self.assertIn("表も直した", mine.read_text())
 
     def history_cli(self, *args, expected=0):
         result = subprocess.run([str(LAUNCHER), "history", *args], cwd=self.root,
