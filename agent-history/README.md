@@ -76,12 +76,31 @@ agent-history sync --force                      # 変わっていない会話も
 保存した会話と書き出したノートが実際にどんな形になるかは、[`examples/`](examples/) に見本があります。
 
 - ファイル名は `2026-11-20 1000 図の修正.md` のように、会話を始めた日時と名前です（Obsidian で変えた名前はそのまま残ります）。時刻は日本時間（`AGENT_HISTORY_TIMEZONE` で変更可）です。
-- 冒頭のプロパティは `date`・`last_active`・`agent`・`project`（作業ディレクトリ）・`title`・`session_id`・`archived_at`・`tags: [agent-history]` です。
+- 冒頭のプロパティは `date`・`last_active`・`agent`・`host`（どのマシンの会話か）・`project`（作業ディレクトリ）・`title`・`session_id`・`archived_at`・`tags: [agent-history, host/<マシン名>]` です。
 - 会話以外の部分（ツールの呼び出しと結果、コマンド出力、モデルの思考、セッション情報、自動で挿入されたメッセージ）は、折りたたみ表示にし、行頭の `%% agent-history:begin <種類> %%` の行から `%% agent-history:end %%` の行までに入れます。種類は `tool`・`thinking`・`session`・`injected` です。会話だけを読むときは次で除けます。
 
 ```bash
 sed '/^%% agent-history:begin /,/^%% agent-history:end %%$/d' NOTE.md
 ```
+
+## どのマシンの会話か（host）
+
+いくつかのマシンのノートを同じ Obsidian に集めても見分けられるよう、ノートにマシンの名前を `host` のプロパティと `host/<名前>` のタグで書きます。名前は、次のうち最初に見つかったものです。
+
+1. `export-md --host 名前`（その回だけ）
+2. 環境変数 `AGENT_HISTORY_HOST`
+3. `agent-history host set 名前` で登録した名前（`~/agent-history/config.json`。シェルの設定を読まない cron などからの実行でも効きます）
+4. マシンのホスト名
+
+どれもなければ、`host` のプロパティもタグも書きません（空の値は書きません）。名前は書いたとおりに使い、形は確かめません。
+
+```bash
+agent-history host set home-wsl   # このマシンの名前を登録する
+agent-history host                # 今使う名前と、どこから来たか
+agent-history host unset          # 登録を消す（ホスト名に戻る）
+```
+
+名前が変わると、次の書き出しで書き出し済みのノートも書き直します。ファイル名と、`date`・`title`・`session_id`・`agent` は変わりません。
 
 ## 自動保存（Stop フック）
 

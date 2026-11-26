@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import hooks
+from . import hooks, host
 from .archive import history_root, sync
 from .index import connect, conversations, export_markdown, rename, show
 from .sources import PROVIDERS
@@ -18,6 +18,7 @@ USAGE_EPILOG = """使い方の例:
   agent-history export-md ~/vault/agents     # Obsidian 向けに 1 会話 1 ノートで書き出す
   agent-history rename ID 新しい名前          # 会話に名前を付ける（--clear で元に戻す）
   agent-history hooks install                # Stop フックを各 CLI に登録し、返答ごとに自動保存
+  agent-history host set home-wsl            # ノートに書くこのマシンの名前を登録する
 """
 
 
@@ -44,6 +45,7 @@ def parser():
     p.add_argument("--limit", type=int, default=20)
     p = sub.add_parser("export-md", help="Obsidian 向けの Markdown に書き出す")
     p.add_argument("directory", type=Path)
+    p.add_argument("--host", help="ノートに書くマシンの名前（今回だけ。AGENT_HISTORY_HOST・host set より優先）")
     filters(p)
     p = sub.add_parser("rename", help="会話に名前を付ける")
     p.add_argument("ident", metavar="ID")
@@ -52,6 +54,9 @@ def parser():
     p = sub.add_parser("hooks", help="Stop フック（返答ごとの自動保存）の登録・解除・状態")
     p.add_argument("action", choices=("install", "uninstall", "status"))
     p.add_argument("--agent", choices=PROVIDERS, action="append", help="対象の CLI（省略時は 3 つとも）")
+    p = sub.add_parser("host", help="ノートに書くこのマシンの名前の表示・登録・解除")
+    p.add_argument("action", nargs="?", choices=("show", "set", "unset"), default="show")
+    p.add_argument("name", nargs="?")
     p = sub.add_parser("hook", help=argparse.SUPPRESS)
     p.add_argument("provider", choices=PROVIDERS)
     p = sub.add_parser("hook-worker", help=argparse.SUPPRESS)
@@ -87,6 +92,16 @@ def main(argv=None):
                 done = hooks.uninstall(provider)
                 print(f"{provider}: " + ("解除しました" if done else "登録されていません"))
         return 0
+    if options.command == "host":
+        if options.action == "set":
+            host.set_host(options.name or "")
+        elif options.name:
+            raise ValueError("名前を指定できるのは host set のときだけです")
+        elif options.action == "unset":
+            host.unset_host()
+        else:
+            host.show_host()
+        return 0
     providers = [options.agent] if getattr(options, "agent", None) else list(PROVIDERS)
     if options.command == "sync":
         report(sync(providers, force=options.force))
@@ -106,7 +121,7 @@ def main(argv=None):
         found = conversations(db, words, options.agent, options.project)
         if options.command == "export-md":
             hidden = conversations(db, (), options.agent, options.project, noise=True)
-            export_markdown(found, options.directory.expanduser().resolve(), hidden)
+            export_markdown(found, options.directory.expanduser().resolve(), hidden, host.resolve(options.host)[0])
         else:
             if options.limit < 1:
                 raise ValueError("--limit は 1 以上にしてください")

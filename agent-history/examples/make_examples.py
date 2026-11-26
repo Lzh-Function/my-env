@@ -122,7 +122,7 @@ def main(out=HERE):
             make(home)
         env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CONFIG_DIR", "CODEX_HOME")}
         env.update(HOME=str(home), PYTHONPATH=str(ROOT), AGENT_HISTORY_DIR=str(home / "agent-history"),
-                   AGENT_HISTORY_TIMEZONE="Asia/Tokyo")
+                   AGENT_HISTORY_TIMEZONE="Asia/Tokyo", AGENT_HISTORY_HOST="home-wsl")
         vault = Path(temp) / "vault"
         for args in (["sync"], ["export-md", str(vault)]):
             subprocess.run([sys.executable, "-m", "agent_history", *args], env=env, check=True,

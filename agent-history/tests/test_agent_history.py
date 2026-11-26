@@ -26,7 +26,7 @@ class AgentHistoryTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name) / "home"
         self.home.mkdir()
-        self.env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CONFIG_DIR", "CODEX_HOME")}
+        self.env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "AGENT_HISTORY_HOST")}
         self.env.update(HOME=str(self.home), PYTHONPATH=str(ROOT), AGENT_HISTORY_DIR=str(self.home / "agent-history"),
                         AGENT_HISTORY_TIMEZONE="Asia/Tokyo")
         self.claude = self.home / ".claude/projects/-work-paper" / f"{CLAUDE_ID}.jsonl"
@@ -125,7 +125,7 @@ class AgentHistoryTests(unittest.TestCase):
         note = (vault / "2026-11-20 1000 図の修正.md").read_text()
         self.assertIn('agent: "claude"', note)
         self.assertIn('project: "/work/paper"', note)
-        self.assertIn("tags: [agent-history]", note)
+        self.assertIn("tags: [agent-history, host/", note)  # this machine's host name by default
         self.assertIn("## サブエージェントのセッション（Claude）", note)
         self.assertIn("%% agent-history:begin tool %%", note)
         # Folded by default, with its own marker so it can be stripped apart from tool output.
@@ -190,6 +190,44 @@ class AgentHistoryTests(unittest.TestCase):
         self.assertEqual(len(list(vault.rglob("*.md"))), 3)
         self.assertEqual(list(vault.rglob("* (2).md")), [])
         self.assertIn("凡例も直して", mine.read_text())
+
+    def test_notes_name_the_machine_they_come_from(self):
+        vault = self.home / "vault"
+        note = lambda: (vault / "2026-11-20 1000 図の修正.md").read_text()
+        self.assertIn("このマシンの名前", self.cli("host", "set", "home-wsl"))
+        self.assertIn("home-wsl（host set）", self.cli("host"))
+        self.cli("export-md", vault)
+        self.assertIn('agent: "claude"\nhost: "home-wsl"\n', note())
+        self.assertIn("tags: [agent-history, host/home-wsl]", note())
+        self.assertIn("変更なし 3 件", self.cli("export-md", vault))
+        # The environment beats the saved name, and --host beats both; a new name rewrites the notes.
+        self.env["AGENT_HISTORY_HOST"] = "miyabi"
+        self.assertIn("更新 3 件", self.cli("export-md", vault))
+        self.assertIn("host/miyabi]", note())
+        self.assertIn("更新 3 件", self.cli("export-md", vault, "--host", "david02"))
+        self.assertIn('host: "david02"', note())
+        self.assertEqual(sorted(p.name for p in vault.glob("*.md")), ["2026-11-20 1000 図の修正.md",
+                         "2026-11-20 1100 学習の実行.md", "2026-11-20 1200 README の作成.md"])  # names stay
+        del self.env["AGENT_HISTORY_HOST"]
+        self.cli("host", "unset")
+        # Nothing names the machine: no host key and no tag at all, never an empty value.
+        sys.path.insert(0, str(ROOT))
+        try:
+            from agent_history import host
+            from unittest import mock
+            with mock.patch.dict(os.environ, {"AGENT_HISTORY_DIR": self.env["AGENT_HISTORY_DIR"]}), \
+                    mock.patch.object(host.socket, "gethostname", return_value=""):
+                os.environ.pop("AGENT_HISTORY_HOST", None)
+                self.assertEqual(host.resolve(), ("", ""))
+                self.assertEqual(host.resolve("  "), ("", ""))
+        finally:
+            sys.path.pop(0)
+        from agent_history.index import Conversation, frontmatter
+        row = {"archive_id": "claude-x", "provider": "claude", "session_id": "x", "cwd": "/w", "title": "t",
+               "markdown": "", "metadata_json": "{}", "updated_at": "now", "markdown_path": "/x"}
+        empty = frontmatter(Conversation(row), "t", "")
+        self.assertNotIn("host", empty)
+        self.assertIn("tags: [agent-history]\n", empty)
 
     def test_names_and_folders_written_after_the_turn_are_picked_up(self):
         self.cli("sync")

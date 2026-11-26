@@ -215,17 +215,22 @@ def note_name(conversation, label):
     return f"{prefix} {label}".strip()
 
 
-def frontmatter(conversation, label):
+PLAIN_TAG = re.compile(r"[A-Za-z0-9_./-]+")
+
+
+def frontmatter(conversation, label, host=""):
     row = conversation.row
     fields = {
         "date": conversation.started.strftime("%Y-%m-%dT%H:%M:%S") if conversation.started else None,
         "last_active": conversation.last_active.strftime("%Y-%m-%dT%H:%M:%S") if conversation.last_active else None,
-        "agent": row["provider"], "project": row["cwd"], "title": label, "session_id": row["session_id"],
+        "agent": row["provider"], "host": host or None, "project": row["cwd"], "title": label, "session_id": row["session_id"],
         "archived_at": row["updated_at"],
     }
     # JSON values are valid YAML flow scalars and sequences, so any text is safe here.
     lines = [f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in fields.items() if value]
-    return "---\n" + "\n".join(lines) + "\ntags: [agent-history]\n---\n"
+    tags = ["agent-history"] + ([f"host/{host}"] if host else [])
+    tags = ", ".join(tag if PLAIN_TAG.fullmatch(tag) else json.dumps(tag, ensure_ascii=False) for tag in tags)
+    return "---\n" + "\n".join(lines) + f"\ntags: [{tags}]\n---\n"
 
 
 def write_private(path, text):
@@ -282,7 +287,7 @@ def ours(file, name):
     return Path(file).name == name or bool(re.fullmatch(re.escape(stem) + r" \(\d+\)\.md", Path(file).name))
 
 
-def export_markdown(found, directory, hidden=()):
+def export_markdown(found, directory, hidden=(), host=""):
     """Write one Obsidian note per conversation; touch only notes this command wrote.
 
     A note renamed or moved inside the export folder is found again by the session_id in its
@@ -334,7 +339,8 @@ def export_markdown(found, directory, hidden=()):
                 # Without an earlier record (no updated_at) the note is rewritten once to be sure.
                 previous = {**(previous or {}), "file": located, "renamed": renamed}
                 taken.add(located)
-        version = {"updated_at": conversation.row["updated_at"], "format": FORMAT}
+        # A different machine name rewrites the notes too.
+        version = {"updated_at": conversation.row["updated_at"], "format": FORMAT, "host": host or None}
         if previous and previous.get("renamed"):
             name = previous["file"]  # the name the user gave it stays
         else:
@@ -356,7 +362,7 @@ def export_markdown(found, directory, hidden=()):
         if not header:
             raise ValueError(f"unexpected archive layout: {conversation.key}")
         (directory / name).parent.mkdir(parents=True, exist_ok=True)
-        write_private(directory / name, frontmatter(conversation, label) + "\n"
+        write_private(directory / name, frontmatter(conversation, label, host) + "\n"
                       + obsidian_body(conversation.markdown[header.end():], tz))
         if previous and previous["file"] != name:
             (directory / previous["file"]).unlink(missing_ok=True)  # the title changed
