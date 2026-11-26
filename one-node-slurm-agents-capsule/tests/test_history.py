@@ -729,6 +729,83 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(table.read_text(), "15 3 * * * echo keep me\n")
         self.assertIn("登録されていません", agentrun("schedule", "--off"))
 
+    def test_clear_starts_a_new_conversation_with_its_own_note(self):
+        self.initialize("claude")
+        project = self.store / ".claude/projects/-workspace"
+        first, second = "aaaa1111", "bbbb2222"
+
+        def turn(session, kind, text, stamp, **extra):
+            content = text if kind == "user" else [{"type": "text", "text": text}]
+            return {"sessionId": session, "cwd": "/workspace", "type": kind, "uuid": f"{session}-{stamp}",
+                    "timestamp": f"2026-11-20T{stamp}Z", "message": {"role": kind, "content": content}, **extra}
+
+        vault = self.root / "vault"
+        write_jsonl(project / f"{first}.jsonl", [turn(first, "user", "図を直して", "01:00:00"),
+                                                 turn(first, "assistant", "図を直した", "01:01:00")])
+        (self.run / "artifacts").mkdir()
+        (self.run / "artifacts/run_title.txt").write_text("fixed the figure\n")
+        collector.archive(self.run)
+        self.history_cli("export-md", str(vault))
+        next(vault.glob("*.md")).rename(vault / "図のメモ.md")  # renamed in Obsidian
+        # /clear: a new session that begins with the command, with a subagent of its own.
+        write_jsonl(project / f"{second}.jsonl", [
+            turn(second, "user", "<command-name>/clear</command-name>\n<command-message>clear</command-message>",
+                 "02:00:00"),
+            turn(second, "user", "表を作って", "02:00:10"), turn(second, "assistant", "表を作った", "02:05:00")])
+        write_jsonl(project / second / "subagents/agent-x1.jsonl", [
+            turn(second, "user", "表のデータを探して", "02:01:00", isSidechain=True),
+            turn(second, "assistant", "data.csv にあります", "02:02:00", isSidechain=True)])
+        # A cross-review during the second conversation.
+        write_jsonl(self.store / "reviewers/codex/.codex/sessions/rollout.jsonl", [
+            {"type": "session_meta", "payload": {"id": ID}},
+            {**message("user", "表の変更を監査して"), "timestamp": "2026-11-20T02:03:00Z"}])
+        collector.archive(self.run)
+
+        listing = self.history_cli("list")
+        self.assertIn("最初の依頼: 図を直して", listing)
+        self.assertIn("最初の依頼: 表を作って", listing)
+        self.assertIn(f"ID: {self.run.name}~2", listing)
+        self.assertIn("（/clear 後の 2 つ目の会話）", listing)
+        self.assertIn("新規 1 件、更新 1 件", self.history_cli("export-md", str(vault)))
+        old = (vault / "図のメモ.md").read_text()  # the note from before /clear stays the first conversation's
+        new = (vault / "2026-11-20 1100 fixed the figure.md").read_text()  # the run's title goes to its last one
+        self.assertIn("図を直した", old)
+        self.assertNotIn("表を作って", old)
+        self.assertIn('conversation_id: "aaaa1111"', old)
+        for text in ("表を作った", "data.csv にあります", "表の変更を監査して", 'conversation_id: "bbbb2222"',
+                     'date: "2026-11-20T11:00:00"'):
+            self.assertIn(text, new)
+        self.assertNotIn("図を直した", new)
+        self.history_cli("rename", f"{self.run.name}~2", "表の作成")
+        self.history_cli("export-md", str(vault))
+        self.assertTrue((vault / "2026-11-20 1100 表の作成.md").is_file())
+        self.assertTrue((vault / "図のメモ.md").is_file())
+        # Losing the state file: each note is still found by its conversation.
+        (vault / ".agentrun-export.json").unlink()
+        self.assertIn("新規 0 件", self.history_cli("export-md", str(vault)))
+        self.assertEqual(sorted(p.name for p in vault.glob("*.md")), ["2026-11-20 1100 表の作成.md", "図のメモ.md"])
+
+    def test_codex_sessions_split_by_clear_but_resume_stays_one_conversation(self):
+        self.codex([{"type": "session_meta", "payload": {"id": ID}},
+                    {**message("user", "学習して"), "timestamp": "2026-11-20T01:00:00Z"}])
+        collector.archive(self.run)
+        # Resumed: Codex keeps writing the same session; then /clear starts another one.
+        resumed = self.parent / "resumed-run"
+        resumed.mkdir()
+        sessions.init(resumed, "codex", str(self.root), "assist", self.run)
+        write_jsonl(self.path, [{"type": "session_meta", "payload": {"id": ID}},
+                                {**message("user", "学習して"), "timestamp": "2026-11-20T01:00:00Z"},
+                                {**message("user", "続きを"), "timestamp": "2026-11-21T01:00:00Z"}])
+        other = "22345678-1234-1234-1234-123456789abc"
+        write_jsonl(self.store / ".codex/sessions/2026/11/21/rollout-new.jsonl", [
+            {"type": "session_meta", "payload": {"id": other}},
+            {**message("user", "別の話"), "timestamp": "2026-11-21T02:00:00Z"}])
+        collector.archive(resumed)
+        listing = self.history_cli("list")
+        self.assertEqual(listing.count("最初の依頼:"), 2, listing)
+        self.assertIn("（resume 1 回）", listing)  # the first conversation went on in the resumed run
+        self.assertIn("ID: resumed-run~2", listing)  # the new conversation began in the resumed run
+
     def test_resumed_sessions_read_oldest_first_whatever_their_file_names(self):
         self.initialize("claude")
         project = self.store / ".claude/projects/-workspace"

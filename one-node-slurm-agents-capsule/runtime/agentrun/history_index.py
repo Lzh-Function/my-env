@@ -14,10 +14,10 @@ import re
 import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-from history_export import archive_key, chronological, history_root
+from history_export import SECTION_HEAD, archive_key, chronological, history_root
 from obsidian_note import FORMAT, obsidian_body, zone
 from sessions import safe_text
 
@@ -140,6 +140,149 @@ def snippets(markdown, words, limit=2, width=48):
     return found[:limit]
 
 
+SESSION_LINE = re.compile(r"## Session: (.*) \((worker|reviewer), (codex|claude|antigravity)\)\n")
+FIRST_FENCE = re.compile(r"\n(`{3,})json\n(.*?)\n\1\n", re.DOTALL)
+
+
+def moment(stamp):
+    try:
+        value = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value if value.tzinfo is not None else None
+
+
+def first_time(text):
+    times = [m for m in map(moment, TURN_TIME.findall(text)) if m]
+    return min(times) if times else None
+
+
+def section_metadata(text):
+    found = FIRST_FENCE.search(text)
+    try:
+        value = json.loads(found.group(2)) if found else {}
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def subagent_parent(provider, metadata):
+    """None for a session the person talks to; else the ID of the conversation that started it ("" if unknown)."""
+    if provider == "claude":
+        file = str(metadata.get("file", ""))
+        if "/subagents/" in file:
+            return Path(file).parent.parent.name
+        return "" if metadata.get("isSidechain") is True else None
+    if provider == "codex":
+        source = metadata.get("source")
+        if metadata.get("parent_thread_id") or (isinstance(source, dict) and "subagent" in source):
+            return str(metadata.get("parent_thread_id") or "")
+        return None
+    return "" if metadata.get("started_by") else None
+
+
+CLEARED = re.compile(r"<command-name>/(?:clear|new)</command-name>")
+
+
+def sections_of(markdown):
+    heads = [m.start() for m in SECTION_HEAD.finditer(markdown)]
+    if not heads:
+        return markdown, []
+    return markdown[:heads[0]], [markdown[start:(heads[i + 1] if i + 1 < len(heads) else len(markdown))]
+                                 for i, start in enumerate(heads)]
+
+
+def main_sessions(markdown):
+    """[(start time, conversation ID, provider, began with /clear)] of the sessions the person talked in."""
+    found = []
+    for text in sections_of(markdown)[1]:
+        line = SESSION_LINE.match(text)
+        if not line or line.group(2) != "worker":
+            continue
+        metadata = section_metadata(text)
+        if subagent_parent(line.group(3), metadata) is not None:
+            continue
+        ident = str(metadata.get("sessionId") or metadata.get("id") or metadata.get("conversation_id") or line.group(1))
+        turns = [turn.group(1) for turn in USER_TURN.finditer(text)][:3]
+        found.append((first_time(text), ident, line.group(3), any(CLEARED.search(turn) for turn in turns)))
+    never = datetime.max.replace(tzinfo=timezone.utc)
+    return sorted(found, key=lambda item: item[0] or never)
+
+
+def conversation_groups(markdown):
+    """The sessions of a run (and its resumes) grouped into conversations, oldest first.
+
+    /clear starts a new native session. Claude Code marks it: the new session begins with the
+    /clear command; older Claude Code also wrote a new session file on resume or compaction,
+    which continues the same conversation. Codex and Antigravity keep one session across resume
+    and compaction, so each new one of theirs (not a subagent) is a new conversation.
+    """
+    groups = []
+    for _, ident, provider, cleared in main_sessions(markdown):
+        if groups and provider == "claude" and not cleared:
+            groups[-1].append(ident)
+        else:
+            groups.append([ident])
+    return groups
+
+
+def split_conversations(markdown, groups):
+    """{conversation ID: its part of this archive} for the conversations of `groups` it holds.
+
+    Subagents go with the conversation that started them; reviewer sessions and reviews with the
+    conversation going on at the time (the one whose session started last before them).
+    """
+    header, sections = sections_of(markdown)
+    owner_of = {ident: group[0] for group in groups for ident in group}
+    starts, owners, reviewer_times = [], [None] * len(sections), {}
+    for index, text in enumerate(sections):
+        line = SESSION_LINE.match(text)
+        if not line:
+            continue
+        metadata = section_metadata(text)
+        if line.group(2) == "reviewer":
+            for key in ("sessionId", "id", "session_id", "conversation_id"):
+                if metadata.get(key):
+                    reviewer_times[str(metadata[key])] = first_time(text)
+            continue
+        parent = subagent_parent(line.group(3), metadata)
+        ident = str(metadata.get("sessionId") or metadata.get("id") or metadata.get("conversation_id") or line.group(1))
+        if parent is None and ident in owner_of:
+            owners[index] = owner_of[ident]
+            starts.append((first_time(text), owner_of[ident]))
+        elif parent and parent in owner_of:
+            owners[index] = owner_of[parent]
+    present = list(dict.fromkeys(owner for _, owner in starts))
+    if len(present) < 2:
+        return {present[0]: markdown} if present else {}
+    never = datetime.max.replace(tzinfo=timezone.utc)
+    starts.sort(key=lambda item: item[0] or never)
+
+    def active_at(when):
+        current = starts[0][1]
+        if when is None:
+            return starts[-1][1]
+        for start, owner in starts:
+            if start is not None and start <= when:
+                current = owner
+        return current
+
+    parts = {owner: [] for owner in present}
+    for index, text in enumerate(sections):
+        owner = owners[index]
+        if owner is None:
+            if text.startswith("## Archive notes"):
+                for part in parts.values():
+                    part.append(text)
+                continue
+            when = first_time(text)
+            if text.startswith("## Review: "):
+                when = reviewer_times.get(str(section_metadata(text).get("session_id")))
+            owner = active_at(when)
+        parts[owner].append(text)
+    return {owner: header + "".join(texts) for owner, texts in parts.items()}
+
+
 class Conversation:
     """All archived runs of one conversation: the original run and every resume of it.
 
@@ -147,15 +290,50 @@ class Conversation:
     the whole conversation; the older archives are earlier, shorter copies of it.
     """
 
-    def __init__(self, runs):
+    def __init__(self, runs, part=None):
         self.runs = sorted(runs, key=lambda row: row["run_id"])
         self.first, self.latest = self.runs[0], self.runs[-1]
         self.metadata = json.loads(self.latest["metadata_json"])
+        # Set on the conversations split from one run by /clear: (number, conversation ID, count).
+        self.part = part
 
     @property
     def key(self):
         # Equals the original run's archive ID, so notes exported before grouping keep their entry.
-        return archive_key(Path(self.latest["run_parent"]), self.latest["session_key"])
+        # The first conversation of a run keeps it; later ones (after /clear) add their own ID.
+        key = archive_key(Path(self.latest["run_parent"]), self.latest["session_key"])
+        return key if not self.part or self.part[0] == 1 else f"{key}~{self.part[1]}"
+
+    @property
+    def ident(self):
+        """What `history list` shows as the ID: the first run ID, plus ~N for the Nth conversation after /clear."""
+        return self.first["run_id"] if not self.part or self.part[0] == 1 else f"{self.first['run_id']}~{self.part[0]}"
+
+    @property
+    def begin(self):
+        """When a conversation started after /clear began (None: it starts with its first run)."""
+        if not self.part or self.part[0] == 1:
+            return None
+        when = first_time(self.first["markdown"])
+        return when.astimezone(zone()) if when else None
+
+    def split(self):
+        """One Conversation per conversation the person had: /clear starts a new one."""
+        groups = conversation_groups(self.latest["markdown"])
+        if len(groups) < 2:
+            return [self]
+        found = []
+        for number, group in enumerate(groups, 1):
+            rows, previous = [], None
+            for row in self.runs:
+                text = split_conversations(row["markdown"], groups).get(group[0])
+                # A run belongs to this conversation when it added to it (resume, or the run of /clear).
+                if text is not None and text != previous:
+                    rows.append({**row, "markdown": text})
+                    previous = text
+            if rows:
+                found.append(Conversation(rows, (number, group[0], len(groups))))
+        return found
 
     @property
     def resumes(self):
@@ -190,6 +368,8 @@ class Conversation:
         renamed = (titles if titles is not None else load_titles()).get(self.key, {})
         if renamed.get("title"):
             return renamed["title"]
+        if self.part and self.part[0] != self.part[2]:
+            return ""  # a run's title describes where it ended: the last conversation of the run
         for row in reversed(self.runs):
             text = title(row["run_parent"], row["run_id"], json.loads(row["metadata_json"]))
             if text:
@@ -217,7 +397,7 @@ def conversations(db, words, agent, repo, noise=False):
         # Archives saved before sessions were put in time order are reordered as they are read.
         row = {**dict(row), "markdown": chronological(row["markdown"])}
         groups.setdefault((row["run_parent"], row["session_key"]), []).append(row)
-    found = [conversation for conversation in map(Conversation, groups.values())
+    found = [conversation for group in groups.values() for conversation in Conversation(group).split()
              if conversation.noise == noise and conversation.contains(words)]
     # Run IDs start with the launch time: most recently used conversation first.
     # Most recently active first; run IDs (launch times) break ties and cover missing times.
@@ -237,7 +417,8 @@ def show(found, words, limit):
     for conversation in found[:limit]:
         latest = conversation.latest
         heading = "  ".join(part for part in (
-            started(conversation.first["run_id"]), latest["agent"], conversation.metadata.get("mode", ""),
+            f"{conversation.begin:%Y-%m-%d %H:%M}" if conversation.begin else started(conversation.first["run_id"]),
+            latest["agent"], conversation.metadata.get("mode", ""),
             Path(latest["repo"]).name or latest["repo"], one_line(conversation.label(titles), 50)) if part)
         print(safe_text(heading))
         when = conversation.last_active.strftime("%Y-%m-%d %H:%M") if conversation.last_active else "不明"
@@ -248,7 +429,8 @@ def show(found, words, limit):
             print("    最初の依頼: " + one_line(request, 70))
         for text in snippets(latest["markdown"], words):
             print("    一致: " + one_line(text, 110))
-        print("    ID: " + conversation.first["run_id"] + "    " + safe_text(short_path(latest["markdown_path"])))
+        cleared = f"（/clear 後の {conversation.part[0]} つ目の会話）" if conversation.part and conversation.part[0] > 1 else ""
+        print("    ID: " + conversation.ident + "    " + safe_text(short_path(latest["markdown_path"])) + cleared)
     if len(found) > limit:
         print(f"（ほかに {len(found) - limit} 件。--limit で増やせます）")
 
@@ -259,9 +441,9 @@ EXPORT_STATE = ".agentrun-export.json"
 ARCHIVE_HEADER = re.compile(r"# Conversation archive\n\n(`{3,})json\n.*?\n\1\n", re.DOTALL)
 
 
-def note_name(run_id, label):
+def note_name(run_id, label, begin=None):
     stamp = RUN_TIME.match(run_id)
-    prefix = "{}-{}-{} {}{}".format(*stamp.groups()[:5]) if stamp else run_id
+    prefix = f"{begin:%Y-%m-%d %H%M}" if begin else "{}-{}-{} {}{}".format(*stamp.groups()[:5]) if stamp else run_id
     label = " ".join(UNSAFE_NAME.sub(" ", safe_text(label)).split()).strip(" .")
     if len(label) > 60:
         label = label[:59].rstrip() + "…"
@@ -276,13 +458,15 @@ def iso_time(run_id):
 def frontmatter(conversation, label):
     first, latest = conversation.first, conversation.latest
     fields = {
-        "date": iso_time(first["run_id"]),
+        "date": f"{conversation.begin:%Y-%m-%dT%H:%M:%S}" if conversation.begin else iso_time(first["run_id"]),
         "last_active": conversation.last_active.strftime("%Y-%m-%dT%H:%M:%S") if conversation.last_active else None,
         "agent": latest["agent"], "mode": conversation.metadata.get("mode"), "repo": latest["repo"],
         "title": label, "run_id": first["run_id"],
         "runs": [row["run_id"] for row in conversation.runs] if conversation.resumes else None,
         "resumes": conversation.resumes or None,
         "archive_id": latest["archive_id"], "archived_at": latest["updated_at"],
+        # Only in runs split by /clear: which of the run's conversations the note holds.
+        "conversation_id": conversation.part[1] if conversation.part else None,
     }
     # JSON values are valid YAML flow scalars and sequences, so any text is safe here.
     lines = [f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in fields.items() if value]
@@ -297,11 +481,11 @@ def write_private(path, text):
     temporary.replace(path)
 
 
-FRONTMATTER_FIELD = re.compile(r"^(archive_id):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+FRONTMATTER_FIELD = re.compile(r"^(archive_id|conversation_id):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 
 
-def note_archive_id(path):
-    """The archive_id in a note's properties, or None for a note this command did not write."""
+def note_identity(path):
+    """(archive_id, conversation_id or "") from a note's properties; None for a note this command did not write."""
     try:
         with path.open(encoding="utf-8", errors="replace") as stream:
             head = stream.read(8192)
@@ -309,13 +493,14 @@ def note_archive_id(path):
         return None
     if not head.startswith("---\n") or "\n---" not in head[3:]:
         return None
-    for _, value in FRONTMATTER_FIELD.findall(head[4:head.index("\n---", 3)]):
+    fields = {}
+    for key, value in FRONTMATTER_FIELD.findall(head[4:head.index("\n---", 3)]):
         try:
             value = json.loads(value)  # as written; Obsidian may drop the quotes when it saves properties
         except ValueError:
             value = value.strip("'\"")
-        return str(value) or None
-    return None
+        fields[key] = str(value)
+    return (fields["archive_id"], fields.get("conversation_id", "")) if fields.get("archive_id") else None
 
 
 def find_notes(directory):
@@ -330,9 +515,9 @@ def find_notes(directory):
         for file in files:
             if file.endswith(".md") and not file.startswith("."):
                 path = Path(root) / file
-                ident = note_archive_id(path)
-                if ident:
-                    found.setdefault(ident, []).append(path.relative_to(directory).as_posix())
+                identity = note_identity(path)
+                if identity:
+                    found.setdefault(identity[0], []).append((identity[1], path.relative_to(directory).as_posix()))
     return found
 
 
@@ -357,7 +542,13 @@ def export_markdown(found, directory, hidden=()):
         if scanned is None:
             scanned = find_notes(directory)
         idents = [conversation.key, *(row["archive_id"] for row in reversed(conversation.runs))]
-        matches = list(dict.fromkeys(file for ident in idents for file in scanned.get(ident, [])))
+        # In a run split by /clear, conversation_id tells its notes apart; a note without one was
+        # written before the split and belongs to the first conversation.
+        wanted = {conversation.part[1]} if conversation.part else {""}
+        if not conversation.part or conversation.part[0] == 1:
+            wanted.add("")
+        matches = list(dict.fromkeys(file for ident in idents for part, file in scanned.get(ident, [])
+                                     if part in wanted))
         if len(matches) > 1:
             # Several copies (a duplicated note): keep updating the one edited last.
             matches.sort(key=lambda file: (directory / file).stat().st_mtime, reverse=True)
@@ -368,6 +559,8 @@ def export_markdown(found, directory, hidden=()):
     # Earlier exports wrote one note per resumed run; those notes now belong to their conversation.
     merged = 0
     for conversation in found:
+        if conversation.part and conversation.part[0] > 1:
+            continue  # its runs' archive IDs belong to the first conversation of the run
         for row in conversation.runs:
             entry = state.get(row["archive_id"]) if row["archive_id"] != conversation.key else None
             if entry:
@@ -377,7 +570,8 @@ def export_markdown(found, directory, hidden=()):
     # Notes this command wrote earlier for conversations that turned out to be empty starts.
     dropped = 0
     for conversation in hidden:
-        for ident in {conversation.key, *(row["archive_id"] for row in conversation.runs)}:
+        later = conversation.part and conversation.part[0] > 1  # its runs' IDs name the first conversation
+        for ident in {conversation.key} if later else {conversation.key, *(row["archive_id"] for row in conversation.runs)}:
             entry = state.pop(ident, None)
             if entry and not entry.get("renamed"):
                 (directory / entry["file"]).unlink(missing_ok=True)
@@ -390,7 +584,7 @@ def export_markdown(found, directory, hidden=()):
     for conversation in reversed(found):
         latest = conversation.latest
         label = conversation.label(titles) or one_line(first_request(latest["markdown"]), 60) or latest["agent"]
-        name = note_name(conversation.first["run_id"], label) + ".md"
+        name = note_name(conversation.first["run_id"], label, conversation.begin) + ".md"
         previous = state.get(conversation.key)
         if not previous or not (directory / previous["file"]).is_file():
             # Renamed or moved in Obsidian, or the state file was lost: match by content.
@@ -445,13 +639,17 @@ def export_markdown(found, directory, hidden=()):
 
 def find_conversation(found, ident):
     """The conversation one of whose runs has this run ID (or the only one starting with it)."""
-    exact = [c for c in found if any(row["run_id"] == ident for row in c.runs)]
-    matches = exact or [c for c in found if any(row["run_id"].startswith(ident) for row in c.runs)]
+    exact = [c for c in found if c.ident == ident]
+    # A plain run ID names the first conversation of the run, not the ones after /clear.
+    first = [c for c in found if not (c.part and c.part[0] > 1)]
+    exact = exact or [c for c in first if any(row["run_id"] == ident for row in c.runs)]
+    matches = exact or [c for c in found if c.ident.startswith(ident)] \
+        or [c for c in first if any(row["run_id"].startswith(ident) for row in c.runs)]
     if not matches:
         raise ValueError(f"{ident} に当たる会話がありません。ID は history list の「ID:」で確かめられます")
     if len(matches) > 1:
         raise ValueError(f"{ident} に当たる会話が {len(matches)} 件あります。もっと長く指定してください: "
-                         + ", ".join(c.first["run_id"] for c in matches[:5]))
+                         + ", ".join(c.ident for c in matches[:5]))
     return matches[0]
 
 
@@ -468,7 +666,7 @@ def rename(found, ident, name, clear):
     if clear:
         titles.pop(conversation.key, None)
     else:
-        titles[conversation.key] = {"title": name, "run_id": conversation.first["run_id"], "renamed_at": time.time()}
+        titles[conversation.key] = {"title": name, "run_id": conversation.ident, "renamed_at": time.time()}
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     write_private(root / TITLES, json.dumps(titles, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
     after = conversation.label(titles)
@@ -484,7 +682,8 @@ def choices(found, limit):
         label = current or one_line(first_request(conversation.latest["markdown"]), 40) or "（名前なし）"
         resumed = f"（resume {conversation.resumes} 回）" if conversation.resumes else ""
         when = f"  最終更新 {conversation.last_active:%m-%d %H:%M}" if conversation.last_active else ""
-        print(f"{conversation.first['run_id']}\t{started(conversation.first['run_id'])}  "
+        when_started = f"{conversation.begin:%Y-%m-%d %H:%M}" if conversation.begin else started(conversation.first["run_id"])
+        print(f"{conversation.ident}\t{when_started}  "
               f"{Path(conversation.latest['repo']).name}  {one_line(label, 50)}{resumed}{when}\t{current}")
 
 
