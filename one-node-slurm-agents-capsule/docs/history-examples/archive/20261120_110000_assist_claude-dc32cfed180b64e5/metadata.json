@@ -1,0 +1,24 @@
+{
+  "run_id": "20261120_110000_assist_claude",
+  "agent": "claude",
+  "repo": "/home/me/paper",
+  "mode": "assist",
+  "session_key": "20261120_110000_assist_claude",
+  "title": "図の凡例の修正",
+  "archive_id": "20261120_110000_assist_claude-dc32cfed180b64e5",
+  "run_parent": "/home/me/.agent-runs",
+  "launcher_cwd": "/home/me",
+  "archived_at": "2026-11-20T12:00:00+00:00",
+  "archive_host": "login01",
+  "transcripts": [
+    {
+      "sessionId": "5f0c2a9e-1b7d-4c3a-9e21-7a6b4d8c0f13",
+      "cwd": "/workspace",
+      "file": ".claude/projects/-workspace/5f0c2a9e-1b7d-4c3a-9e21-7a6b4d8c0f13.jsonl",
+      "provider": "claude",
+      "role": "worker"
+    }
+  ],
+  "reviews": [],
+  "warnings": []
+}

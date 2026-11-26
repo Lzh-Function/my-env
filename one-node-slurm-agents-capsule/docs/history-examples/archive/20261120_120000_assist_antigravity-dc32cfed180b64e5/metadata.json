@@ -1,0 +1,24 @@
+{
+  "run_id": "20261120_120000_assist_antigravity",
+  "agent": "antigravity",
+  "repo": "/home/me/docs",
+  "mode": "assist",
+  "session_key": "20261120_120000_assist_antigravity",
+  "title": "README の手順追加",
+  "archive_id": "20261120_120000_assist_antigravity-dc32cfed180b64e5",
+  "run_parent": "/home/me/.agent-runs",
+  "launcher_cwd": "/home/me",
+  "archived_at": "2026-11-20T12:00:00+00:00",
+  "archive_host": "login01",
+  "transcripts": [
+    {
+      "conversation_id": "8e4d1c27-6a3b-4f90-b2c5-0d9e7f6a1b38",
+      "transcript": "transcript_full.jsonl",
+      "file": ".gemini/antigravity-cli/brain/8e4d1c27-6a3b-4f90-b2c5-0d9e7f6a1b38/.system_generated/logs/transcript_full.jsonl",
+      "provider": "antigravity",
+      "role": "worker"
+    }
+  ],
+  "reviews": [],
+  "warnings": []
+}

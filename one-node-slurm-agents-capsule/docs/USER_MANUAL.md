@@ -886,6 +886,8 @@ agentrun が動いていない実行中ジョブ（--overlap の重ね先に使�
 
 会話履歴は、`agentrun` を実行した投入元ホストで Markdown と SQLite に保存します。変換にはシステム Python の標準ライブラリを使います。モデルの呼び出し、追加の Python パッケージ、イメージの再ビルドは不要です。
 
+保存した会話と、Obsidian 向けに書き出したノートが実際にどんな形になるかは、[`docs/history-examples/`](history-examples/) に見本があります。
+
 ### 保存のタイミング
 
 | 実行方法 | 終了時の処理 |

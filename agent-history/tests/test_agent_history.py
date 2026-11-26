@@ -349,5 +349,21 @@ class AgentHistoryTests(unittest.TestCase):
         self.assertEqual(self.cli("hook", "claude", stdin="not json").strip(), "{}")
 
 
+class ExampleTests(unittest.TestCase):
+    def test_examples_match_the_current_format(self):
+        sys.path.insert(0, str(ROOT / "examples"))
+        try:
+            import make_examples
+        finally:
+            sys.path.pop(0)
+        with tempfile.TemporaryDirectory() as temp:
+            fresh = make_examples.main(Path(temp))
+            self.assertEqual(fresh, sorted(p.relative_to(ROOT / "examples").as_posix()
+                                           for p in (ROOT / "examples").glob("*/*.md")))
+            for name in fresh:
+                self.assertEqual((Path(temp) / name).read_text(), (ROOT / "examples" / name).read_text(),
+                                 f"examples/{name} is stale: run python3 examples/make_examples.py")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -73,6 +73,8 @@ agent-history sync --force                      # 変わっていない会話も
 
 ## 書き出すノート
 
+保存した会話と書き出したノートが実際にどんな形になるかは、[`examples/`](examples/) に見本があります。
+
 - ファイル名は `2026-11-20 1000 図の修正.md` のように、会話を始めた日時と名前です（Obsidian で変えた名前はそのまま残ります）。時刻は日本時間（`AGENT_HISTORY_TIMEZONE` で変更可）です。
 - 冒頭のプロパティは `date`・`last_active`・`agent`・`project`（作業ディレクトリ）・`title`・`session_id`・`archived_at`・`tags: [agent-history]` です。
 - 会話以外の部分（ツールの呼び出しと結果、コマンド出力、モデルの思考、セッション情報、自動で挿入されたメッセージ）は、折りたたみ表示にし、行頭の `%% agent-history:begin <種類> %%` の行から `%% agent-history:end %%` の行までに入れます。種類は `tool`・`thinking`・`session`・`injected` です。会話だけを読むときは次で除けます。

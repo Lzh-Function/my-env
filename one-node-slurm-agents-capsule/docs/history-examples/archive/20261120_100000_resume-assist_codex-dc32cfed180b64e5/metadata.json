@@ -1,0 +1,26 @@
+{
+  "run_id": "20261120_100000_resume-assist_codex",
+  "agent": "codex",
+  "repo": "/home/me/model",
+  "mode": "assist",
+  "session_key": "20261119_180000_assist_codex",
+  "parent_run_id": "20261119_180000_assist_codex",
+  "archive_id": "20261120_100000_resume-assist_codex-dc32cfed180b64e5",
+  "run_parent": "/home/me/.agent-runs",
+  "launcher_cwd": "/home/me",
+  "archived_at": "2026-11-20T12:00:00+00:00",
+  "archive_host": "login01",
+  "transcripts": [
+    {
+      "id": "019abf00-3c2e-7a10-9b44-1d2e3f405162",
+      "cli_version": "0.162.1",
+      "cwd": "/workspace",
+      "source": "cli",
+      "file": ".codex/sessions/2026/11/19/rollout-2026-11-19T18-00-00-019abf00-3c2e-7a10-9b44-1d2e3f405162.jsonl",
+      "provider": "codex",
+      "role": "worker"
+    }
+  ],
+  "reviews": [],
+  "warnings": []
+}

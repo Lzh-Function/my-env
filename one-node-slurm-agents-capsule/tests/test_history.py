@@ -1063,5 +1063,22 @@ print('123')
             self.assertEqual(db.execute("SELECT count(*) FROM conversations").fetchone()[0], 1)
 
 
+class ExampleTests(unittest.TestCase):
+    def test_history_examples_match_the_current_format(self):
+        examples = ROOT / "docs/history-examples"
+        sys.path.insert(0, str(examples))
+        try:
+            import make_examples
+        finally:
+            sys.path.pop(0)
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ):
+            fresh = make_examples.main(Path(temp))
+            self.assertEqual(fresh, sorted(p.relative_to(examples).as_posix() for folder in ("archive", "obsidian")
+                                           for p in (examples / folder).rglob("*") if p.is_file()))
+            for name in fresh:
+                self.assertEqual((Path(temp) / name).read_text(), (examples / name).read_text(),
+                                 f"docs/history-examples/{name} is stale: run python3 docs/history-examples/make_examples.py")
+
+
 if __name__ == "__main__":
     unittest.main()
