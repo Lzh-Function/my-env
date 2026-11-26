@@ -155,6 +155,14 @@ class WizardToolTests(unittest.TestCase):
         self.assertIn("== validate ==", output)
         self.assertTrue(any((self.root / ".agent-runs").glob("*smoke-test*")))
 
+    def test_hold_menu_shows_the_hold_job_state(self):
+        # A queue with no hold jobs; tools → hold job → status → back to the menu → cancel
+        (self.root / "bin/squeue").write_text("#!/bin/sh\nexit 0\n")
+        output = self.wizard(["2", "9", "1", "", ":cancel"], expected=130)
+        self.assertIn("確保ジョブ — どうしますか？", output)
+        self.assertIn("== 確保ジョブの状態 ==", output)
+        self.assertIn("確保ジョブはありません", output)
+
     def test_rename_a_conversation_from_the_history_menu(self):
         import history
         run = self.make_run()
@@ -187,9 +195,9 @@ class WizardToolTests(unittest.TestCase):
         self.assertEqual(table.read_text(), "")
 
     def test_dry_run_previews_without_creating_a_run(self):
-        # tools → dry-run → assist / claude / interactive → repo and resources as is → no binds,
-        # no FUSE, no goal → no template → run the dry-run → stop.
-        answers = ["2", "6", "1", "1", "1", "", "", "", "", "", "", "n", "n", "n", "", "", "y", "", "3"]
+        # tools → dry-run → assist / claude / interactive → where: a job of its own → repo and resources
+        # as is → no binds, no FUSE, no goal → no template → run the dry-run → stop.
+        answers = ["2", "6", "1", "1", "1", "", "", "", "", "", "", "", "n", "n", "n", "", "", "y", "", "3"]
         output = self.wizard(answers)
         self.assertIn("実行モードを選んでください（dry-run：起動せずに確認します）", output)
         self.assertNotIn("resume（保存した会話を再開する）", output)

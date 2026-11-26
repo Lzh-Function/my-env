@@ -118,9 +118,13 @@ def watch(parent, run_id, poll_interval=5):
                 active = query_active(info["job_ref"])
                 empty_queries = 0 if active else empty_queries + 1
                 run = find_run(parent, run_id)
+                finished = (run / "live/session_finished.txt").is_file()
                 # Two absent queue entries protect against transient registration
                 # delays. A completion marker also confirms wrapper cleanup ran.
-                if not active and (empty_queries >= 2 or (run / "live/session_finished.txt").is_file()):
+                if not active and (empty_queries >= 2 or finished):
+                    break
+                # A run in a hold job ends with its step; the hold job keeps running.
+                if info.get("hold") and finished:
                     break
             except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
                 empty_queries = 0
@@ -139,12 +143,23 @@ def watch(parent, run_id, poll_interval=5):
         atomic_text(control, json_text(info) + "\n")
 
 
-def submit(run):
-    """Keep sbatch asynchronous and detach only the host-side history collector."""
+def submit(run, hold=None):
+    """Keep sbatch asynchronous and detach only the host-side history collector.
+
+    With a hold job, the run is queued in it instead (the hold job starts it as a step).
+    """
     if not shutil.which("squeue"):
         raise ValueError("squeue is required for host-side batch history collection")
     data = sessions.manifest(run)
     control = control_path(run.parent, data["run_id"])
+    if hold:
+        import hold as hold_job  # hold imports this module
+
+        hold_job.enqueue(hold, run)
+        info = {"run_id": data["run_id"], "job_ref": hold, "hold": True, "origin_host": socket.gethostname(),
+                "submitted_at": time.time(), "status": "watching"}
+        start_collector(run, data, control, info)
+        return
     try:
         result = slurm_query(["sbatch", "--parsable", "--nodes=1", "--ntasks=1", str(run / "submit.sbatch")], timeout=30)
     except subprocess.TimeoutExpired as error:
@@ -158,6 +173,12 @@ def submit(run):
         raise ValueError("sbatch returned an unexpected job ID; check the queue before retrying")
     info = {"run_id": data["run_id"], "job_ref": job_ref, "origin_host": socket.gethostname(),
             "submitted_at": time.time(), "status": "watching"}
+    print(f"バッチジョブを投入しました: job {job_ref.split(';', 1)[0]}")
+    start_collector(run, data, control, info)
+
+
+def start_collector(run, data, control, info):
+    job_ref = info["job_ref"]
     atomic_text(control, json_text(info) + "\n")
     with control.with_suffix(".log").open("a") as log:
         try:
@@ -172,7 +193,6 @@ def submit(run):
             atomic_text(control, json_text(info) + "\n")
             raise RuntimeError(f"Job {job_ref} was submitted, but its history collector could not start; "
                                f"run agentrun history --watch {run}") from error
-    print(f"バッチジョブを投入しました: job {job_ref.split(';', 1)[0]}")
     print(f"会話履歴の回収プロセスを起動しました: pid={child.pid}、状態ファイル={control}")
 
 
@@ -181,6 +201,7 @@ def main():
     parser.add_argument("action", choices=("export", "submit", "watch", "collect", "failure"))
     parser.add_argument("path", type=Path)
     parser.add_argument("run_id", nargs="?")
+    parser.add_argument("--hold", help="queue the batch run in this hold job instead of submitting a new job")
     args = parser.parse_args()
     os.umask(0o077)
     path = args.path.resolve()
@@ -193,16 +214,21 @@ def main():
             raise ValueError("watch requires the original run ID")
         watch(path, args.run_id)
     elif args.action == "submit":
-        submit(path)
+        submit(path, args.hold)
     elif args.action == "collect":
         data = sessions.manifest(path)
         control = control_path(path.parent, data["run_id"])
         if not control.is_file():
-            job_ref = (path / "live/slurm_job_id.txt").read_text().strip()
+            hold_file = path / "live/hold_job.txt"
+            hold = hold_file.read_text().strip() if hold_file.is_file() else ""
+            job_ref = (path / "live/slurm_job_id.txt").read_text().strip() or hold
             if not re.fullmatch(r"[0-9]+", job_ref):
                 raise ValueError("No submitted Slurm job ID is available for this run")
-            atomic_text(control, json_text({"run_id": data["run_id"], "job_ref": job_ref,
-                        "origin_host": socket.gethostname(), "status": "watching"}) + "\n")
+            record = {"run_id": data["run_id"], "job_ref": job_ref,
+                      "origin_host": socket.gethostname(), "status": "watching"}
+            if hold:
+                record["hold"] = True
+            atomic_text(control, json_text(record) + "\n")
         watch(path.parent, data["run_id"])
     else:
         try:

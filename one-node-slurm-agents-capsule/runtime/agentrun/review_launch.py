@@ -301,7 +301,8 @@ def main():
         shutil.rmtree(runtime, ignore_errors=True)
         if worker is not None:
             progress(f" 完了（{time.monotonic() - started:.1f} 秒）")
-            progress("  コンテナと Slurm のジョブを閉じています…")
+            progress("  コンテナと Slurm のステップを閉じています（ジョブはそのまま）…"
+                     if os.environ.get("AGENTRUN_SHARED_JOB") == "1" else "  コンテナと Slurm のジョブを閉じています…")
 
 
 if __name__ == "__main__":

@@ -124,7 +124,7 @@ class WizardTests(unittest.TestCase):
         extra = self.root / "extra mount"
         extra.mkdir()
         # mode=resume, run=1, preview=yes, defaults, add a bind, launch=yes
-        answers = f"4\n1\ny\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
+        answers = f"4\n1\ny\n\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("wizard-run  codex", output)
@@ -142,7 +142,7 @@ class WizardTests(unittest.TestCase):
     def test_bind_source_tab_completion_keeps_spaces_in_path(self):
         extra = self.root / "extra mount"
         extra.mkdir()
-        answers = "4\n1\nn\n\n\n\ny\nextr\t\n/extra:ro\n1\ny\n"
+        answers = "4\n1\nn\n\n\n\n\ny\nextr\t\n/extra:ro\n1\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("Tab=パス補完", output)
@@ -154,7 +154,7 @@ class WizardTests(unittest.TestCase):
         first.mkdir()
         second.mkdir()
         # add first, add second, remove one (first), remove all, decline adding, launch
-        answers = f"4\n1\nn\n\n\n\ny\n{first}\n/first:ro\n2\n{second}\n/second:ro\n3\n1\n4\nn\ny\n"
+        answers = f"4\n1\nn\n\n\n\n\ny\n{first}\n/first:ro\n2\n{second}\n/second:ro\n3\n1\n4\nn\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("bind を1つ除く（一覧から選択）", output)
@@ -218,7 +218,7 @@ class WizardTests(unittest.TestCase):
 
     def test_declining_resume_creates_nothing(self):
         before = (self.original / "session.json").read_text()
-        rc, output = self.execute(self.args, "4\n1\nn\n\n\n\nn\nn\n")
+        rc, output = self.execute(self.args, "4\n1\nn\n\n\n\n\nn\nn\n")
         self.assertEqual(rc, 0, output)
         self.assertIn("起動を取りやめました", output)
         self.assertFalse((self.parent / "latest").exists())
@@ -237,7 +237,7 @@ class WizardTests(unittest.TestCase):
     def test_new_assist_flow_still_dispatches_normally(self):
         # 最後の起動処理だけを stub にして既存の新規 run 導線を検証する。
         script = 'source "$1"; command_prepare() { printf "PREPARE_MODE=%s\\n" "$1"; }; command_wizard'
-        rc, output = self.execute([], "1\n1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n",
+        rc, output = self.execute([], "1\n1\n1\n1\n\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n",
                                   command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("PREPARE_MODE=assist", output)
@@ -260,7 +260,7 @@ class WizardTests(unittest.TestCase):
         self.assertFalse((self.parent / "latest/home").exists())
 
     def test_back_from_resource_keeps_editable_values(self):
-        answers = "4\n1\nn\n16000M\n:back\n12000M\n\n\nn\ny\n"
+        answers = "4\n1\nn\n\n16000M\n:back\n12000M\n\n\nn\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         self.assertIn("> 16000M", output)
@@ -268,7 +268,7 @@ class WizardTests(unittest.TestCase):
 
     def test_back_from_agent_keeps_selected_default(self):
         script = 'source "$1"; command_prepare() { printf "PREPARE_AGENT=%s\\n" "$AGENT"; }; command_wizard --agent codex'
-        answers = "1\n:back\n1\n\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n"
+        answers = "1\n:back\n1\n\n1\n\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n"
         rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("PREPARE_AGENT=codex", output)
@@ -279,7 +279,7 @@ class WizardTests(unittest.TestCase):
         state_file.write_text(json.dumps({"cwd": str(self.root), "agent": "unsupported",
                                           "agents": "claude,unsupported", "reviewers": "unsupported"}))
         script = 'source "$1"; command_prepare() { printf "SELECTED=%s ARGS=%s\\n" "$AGENT" "$*"; }; command_wizard'
-        answers = "1\n1\n1\n1\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n"
+        answers = "1\n1\n1\n1\n\n\n\n\n\n\n\nn\nn\nn\n\n\ny\n"
         rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("SELECTED=claude ARGS=assist", output)
@@ -328,7 +328,7 @@ class WizardTests(unittest.TestCase):
     def test_previous_defaults_and_bind_paths_are_restored(self):
         extra = self.root / "extra mount"
         extra.mkdir()
-        answers = f"4\n1\nn\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
+        answers = f"4\n1\nn\n\n\n\n\ny\n{extra}\n/extra:ro\n1\ny\n"
         rc, output = self.execute(self.args, answers)
         self.assertEqual(rc, 0, output)
         state_file = Path(self.env["HOME"]) / ".agentrun/wizard-last"
@@ -386,7 +386,7 @@ command_wizard "$@"
         bind = self.root / "template data"
         bind.mkdir()
         script = 'source "$1"; shift; command_prepare() { printf "PREPARE %s\\n" "$*"; }; command_wizard "$@"'
-        answers = "1\n1\n1\n\n\n\n\n\n\n1\nn\nn\n\ny\ngpu-a\ny\n"
+        answers = "1\n1\n1\n\n\n\n\n\n\n\n1\nn\nn\n\ny\ngpu-a\ny\n"
         rc, output = self.execute([], answers, command=["bash", "-c", script, "bash", str(LAUNCHER),
                                                         "--agent", "codex", "--bind", f"{bind}:/data:ro"])
         self.assertEqual(rc, 0, output)
@@ -395,7 +395,7 @@ command_wizard "$@"
         self.assertIn(f"{bind}:/data:ro", saved["args"])
         (Path(self.env["HOME"]) / ".agentrun/wizard-last").unlink()
         # First menu (launch) → mode → template (2 = gpu-a after "do not use") → keep it unchanged → launch.
-        rc, output = self.execute([], "1\n1\n2\n\ny\n", command=["bash", "-c", script, "bash", str(LAUNCHER)])
+        rc, output = self.execute([], "1\n1\n2\n\n\ny\n", command=["bash", "-c", script, "bash", str(LAUNCHER)])
         self.assertEqual(rc, 0, output)
         self.assertIn("を変更しますか？", output)
         self.assertIn("テンプレート: gpu-a（変更なし）", output)

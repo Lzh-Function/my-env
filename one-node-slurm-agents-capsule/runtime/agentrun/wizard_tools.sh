@@ -80,6 +80,7 @@ command_wizard() {
 
 wizard_tools() {
     local ps='実行中の agentrun を見る（ジョブごと、overlap 関係つき）'
+    local hold='確保ジョブ（ノードを確保して、その中でセッションを動かす：作る・状態・1 つ止める・解放）'
     local runs='run を選んで、状態・ログ・成果物・相互監査を見る'
     local history='会話履歴（一覧・検索・Obsidian などへの書き出し）'
     local templates='テンプレートの管理（run から登録・中身の確認・削除）'
@@ -90,10 +91,11 @@ wizard_tools() {
     local choice rc
     while :; do
         rc=0
-        choice="$(wizard_select 'その他の機能 — どれを使いますか？' "$ps" "$runs" "$history" "$templates" "$auth" "$dry" "$check" "$extend")" || rc=$?
+        choice="$(wizard_select 'その他の機能 — どれを使いますか？' "$ps" "$runs" "$history" "$templates" "$auth" "$dry" "$check" "$extend" "$hold")" || rc=$?
         [ "$rc" -eq 0 ] || { [ "$rc" -eq 10 ] && return 0; return "$rc"; }
         case "$choice" in
             "$ps") wizard_exec '実行中の agentrun' wizard_python active.py || rc=$? ;;
+            "$hold") wizard_hold || rc=$? ;;
             "$runs") wizard_runs || rc=$? ;;
             "$history") wizard_history || rc=$? ;;
             "$templates") wizard_template_manage || rc=$?; WIZARD_TEMPLATE_CACHE='' ;;
@@ -105,6 +107,48 @@ wizard_tools() {
                 [ "$WIZARD_DONE" -eq 0 ] || return "$rc" ;;
             "$check") wizard_checks || rc=$? ;;
             "$extend") wizard_extend || rc=$? ;;
+        esac
+        wizard_menu_rc "$rc" || return $?
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Hold job: an idle job that keeps the node; sessions run inside it as steps
+# ---------------------------------------------------------------------------
+
+wizard_hold() {
+    local status='確保ジョブの状態と、載っているセッションを見る'
+    local start='確保ジョブを作る（パーティションのノード全体を確保）'
+    local cancel='確保ジョブの中のセッションを 1 つ止める（ほかはそのまま）'
+    local stop='確保ジョブを解放する（載っているセッションも終わります）'
+    local choice rc
+    while :; do
+        rc=0
+        choice="$(wizard_select '確保ジョブ — どうしますか？（確保ジョブがある間、assist・resume・--submit はその中で起動します）' \
+            "$status" "$start" "$cancel" "$stop")" || rc=$?
+        [ "$rc" -eq 0 ] || { [ "$rc" -eq 10 ] && return 0; return "$rc"; }
+        case "$choice" in
+            "$status") wizard_exec '確保ジョブの状態' wizard_cli hold status || rc=$? ;;
+            "$start")
+                local WIZARD_NEW_HOLD_PARTITION="${AGENTRUN_SLURM_PARTITION:-}" WIZARD_NEW_HOLD_TIME='' WIZARD_NEW_HOLD_INFO=''
+                local -a hold_args=()
+                wizard_new_hold || rc=$?
+                if [ "$rc" -eq 0 ]; then
+                    hold_args=(--partition "$WIZARD_NEW_HOLD_PARTITION")
+                    [ -z "$WIZARD_NEW_HOLD_TIME" ] || hold_args+=(--time "$WIZARD_NEW_HOLD_TIME")
+                    if wizard_confirm "${WIZARD_NEW_HOLD_INFO}"$'\n'"確保する時間: ${WIZARD_NEW_HOLD_TIME:-パーティションの上限}"$'\n'"この確保ジョブを作りますか？" 1; then
+                        wizard_exec '確保ジョブを作る' wizard_cli hold start "${hold_args[@]}" || rc=$?
+                    else rc=$?; [ "$rc" -eq 1 ] && rc=0; fi
+                elif [ "$rc" -eq 11 ]; then rc=0; fi ;;
+            "$cancel")
+                local WIZARD_RUN=''
+                wizard_pick_run || rc=$?
+                [ "$rc" -ne 0 ] || [ -z "$WIZARD_RUN" ] || {
+                    if wizard_confirm "$(basename "$WIZARD_RUN") を止めますか？" 0; then
+                        wizard_exec 'セッションを止める' wizard_cli hold cancel "$WIZARD_RUN" || rc=$?
+                    else rc=$?; [ "$rc" -eq 1 ] && rc=0; fi
+                } ;;
+            "$stop") wizard_exec '確保ジョブを解放する' wizard_cli hold stop || rc=$? ;;
         esac
         wizard_menu_rc "$rc" || return $?
     done

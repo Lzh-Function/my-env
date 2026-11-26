@@ -10,6 +10,11 @@ WIZARD_TEMPLATE_KEEP=0 WIZARD_NAME='' WIZARD_FORCE=() WIZARD_TEMPLATE_CACHE=''
 declare -A WIZARD_LAST=() WIZARD_EXPLICIT=()
 WIZARD_LAST_BINDS=() WIZARD_OVERLAP_JOBS=()
 WIZARD_OVERLAP_LOADED=0 WIZARD_OVERLAP_INFO=''
+# Where the launch runs: hold:<job> (a hold job), new (create a hold job first), own (a job of its
+# own) or job:<id> (overlap another running job). Empty: not decided yet.
+WIZARD_PLACE='' WIZARD_HOLD_LINES=() WIZARD_NEW_HOLD_PARTITION='' WIZARD_NEW_HOLD_TIME=''
+WIZARD_PLACE_NEW='確保ジョブを新しく作り、その中で起動する（パーティションのノード全体を確保）'
+WIZARD_PLACE_OWN='専用の Slurm ジョブを起動する（確保ジョブを使わない）'
 
 wizard_abort() {
     trap - INT TERM
@@ -237,51 +242,114 @@ wizard_resource_default() {
     else "profile_$key" "$profile"; fi
 }
 
-# Only interactive launches can join an existing allocation. Query Slurm once,
-# and only when such a launch is selected.
+# interactive (assist, resume), batch (--submit) or nothing (files are only prepared).
+wizard_place_kind() {
+    if [ "$mode" = resume ] || { [ "$mode" = assist ] && [ "$SUBMIT" -eq 0 ]; }; then printf 'interactive\n'
+    elif [ -n "$mode" ] && [ "$SUBMIT" -eq 1 ]; then printf 'batch\n'
+    else return 1; fi
+}
+
+# Where to run is asked for every launch that starts something; Slurm is queried once.
 wizard_overlap_available() {
-    [ "$mode" = resume ] || { [ "$mode" = assist ] && [ "$SUBMIT" -eq 0 ]; } || return 1
+    local kind lines
+    kind="$(wizard_place_kind)" || return 1
     if [ "$WIZARD_OVERLAP_LOADED" -eq 0 ]; then
         WIZARD_OVERLAP_LOADED=1
-        local jobs
-        jobs="$(overlap_tool jobs "$PWD/.agent-runs")" || jobs=''
-        [ -z "$jobs" ] || mapfile -t WIZARD_OVERLAP_JOBS <<< "$jobs"
+        lines="$(hold_tool list 2>/dev/null)" || lines=''
+        [ -z "$lines" ] || mapfile -t WIZARD_HOLD_LINES <<< "$lines"
+        lines="$(overlap_tool jobs "$PWD/.agent-runs")" || lines=''
+        [ -z "$lines" ] || mapfile -t WIZARD_OVERLAP_JOBS <<< "$lines"
     fi
-    [ "${#WIZARD_OVERLAP_JOBS[@]}" -gt 0 ] || [ -n "$OVERLAP_JOB" ]
+    return 0
+}
+
+wizard_uses_job_resources() {
+    [ -n "$OVERLAP_JOB" ] || [ "$WIZARD_PLACE" = new ]
+}
+
+# The hold job to create: its partition and time limit (empty = the partition's limit).
+wizard_new_hold() {
+    local fields rc=0
+    local -a info
+    wizard_ask WIZARD_NEW_HOLD_PARTITION '確保するパーティション（空ならクラスタの既定）' "${WIZARD_NEW_HOLD_PARTITION:-$PARTITION}" || return $?
+    if fields="$(hold_tool partition --partition "$WIZARD_NEW_HOLD_PARTITION" 2>&1)"; then
+        mapfile -t info <<< "$fields"
+        WIZARD_NEW_HOLD_PARTITION="${info[0]}"
+        WIZARD_NEW_HOLD_INFO="partition ${info[0]} のノード ${info[5]} を確保します: CPU ${info[1]} / メモリ ${info[2]}MB（全部）/ GPU ${info[3]} / 上限時間 ${info[4]:-なし}"
+    else
+        wizard_banner "パーティションを確認できません: $fields" || return $?
+        return 11
+    fi
+    wizard_ask WIZARD_NEW_HOLD_TIME "${WIZARD_NEW_HOLD_INFO}。確保する時間（HH:MM:SS か D-HH:MM:SS。空ならパーティションの上限）" "$WIZARD_NEW_HOLD_TIME" wizard_valid_hold_time || rc=$?
+    return "$rc"
+}
+
+wizard_valid_hold_time() {
+    [ -n "$1" ] || { printf '\n'; return; }
+    wizard_valid_time "$1"
 }
 
 wizard_overlap() {
+    local kind line choice fields prompt current='' rc
     local -a options=() info
-    local line choice fields prompt
-    # Keep a previously chosen job first; otherwise default to a new job.
-    if [ -n "$OVERLAP_JOB" ]; then
-        for line in "${WIZARD_OVERLAP_JOBS[@]+"${WIZARD_OVERLAP_JOBS[@]}"}"; do
-            [ "${line%% *}" != "$OVERLAP_JOB" ] || options+=("$line")
-        done
-        [ "${#options[@]}" -gt 0 ] || options+=("$OVERLAP_JOB  （指定したジョブ）")
-    fi
-    options+=("$WIZARD_NO_OVERLAP")
-    for line in "${WIZARD_OVERLAP_JOBS[@]+"${WIZARD_OVERLAP_JOBS[@]}"}"; do
-        [ "${line%% *}" = "$OVERLAP_JOB" ] || options+=("$line")
+    kind="$(wizard_place_kind)" || return 0
+    local hold_prefix='確保ジョブに載せる: ' job_prefix='実行中のジョブに overlap する: '
+    for line in "${WIZARD_HOLD_LINES[@]+"${WIZARD_HOLD_LINES[@]}"}"; do
+        IFS=$'\t' read -r -a info <<< "$line"
+        # An interactive session needs the hold job running; a batch run may wait for it.
+        [ "$kind" = batch ] || [ "${info[1]}" = RUNNING ] || continue
+        options+=("$hold_prefix${info[2]}")
+        [ "$WIZARD_PLACE" != "hold:${info[0]}" ] || current="$hold_prefix${info[2]}"
     done
-    if [ "${#options[@]}" -eq 2 ]; then
-        prompt='実行中の Slurm ジョブがあります。このジョブに overlap して、同じ割り当て内でエージェントコンテナをもう一つ起動しますか？'
+    local held="${#options[@]}"
+    options+=("$WIZARD_PLACE_NEW" "$WIZARD_PLACE_OWN")
+    [ "$WIZARD_PLACE" != new ] || current="$WIZARD_PLACE_NEW"
+    [ "$WIZARD_PLACE" != own ] || current="$WIZARD_PLACE_OWN"
+    if [ "$kind" = interactive ]; then
+        for line in "${WIZARD_OVERLAP_JOBS[@]+"${WIZARD_OVERLAP_JOBS[@]}"}"; do
+            options+=("$job_prefix$line")
+            [ "$WIZARD_PLACE" != "job:${line%% *}" ] || current="$job_prefix$line"
+        done
+    fi
+    # The previous choice first; otherwise a hold job when there is one, else a job of its own.
+    if [ -z "$current" ]; then
+        if [ "$held" -gt 0 ]; then current="${options[0]}"; else current="$WIZARD_PLACE_OWN"; fi
+    fi
+    local -a ordered=("$current")
+    for line in "${options[@]}"; do [ "$line" = "$current" ] || ordered+=("$line"); done
+    if [ "$held" -gt 0 ]; then
+        prompt='どこで起動しますか？確保ジョブの中なら、ほかのセッションを閉じても止まりません（CPU・メモリ・GPU・制限時間は共有）'
     else
-        prompt="実行中の Slurm ジョブが $((${#options[@]} - 1)) 件あります。どれかに overlap して、同じ割り当て内でエージェントコンテナをもう一つ起動しますか？"
+        prompt='どこで起動しますか？確保ジョブ（ノード全体を確保する何もしないジョブ）の中で動かすと、セッションを閉じてもほかのセッションは止まりません'
     fi
     while :; do
-        choice="$(wizard_select "$prompt" "${options[@]}")" || return $?
-        if [ "$choice" = "$WIZARD_NO_OVERLAP" ]; then
-            OVERLAP_JOB='' WIZARD_OVERLAP_INFO=''
-            return 0
-        fi
-        if fields="$(overlap_tool info "${choice%% *}" 2>&1)"; then
-            mapfile -t info <<< "$fields"
-            OVERLAP_JOB="${info[0]}"
-            WIZARD_OVERLAP_INFO="job ${info[0]}${info[7]:+（${info[7]}）} / ノード: ${info[4]} / パーティション: ${info[3]} / CPU: ${info[1]} / GPU: ${info[2]} / 制限時間: ${info[5]}（経過 ${info[6]}）"
-            return 0
-        fi
-        wizard_banner "$fields" || return $?
+        choice="$(wizard_select "$prompt" "${ordered[@]}")" || return $?
+        case "$choice" in
+            "$WIZARD_PLACE_OWN") WIZARD_PLACE=own OVERLAP_JOB='' WIZARD_OVERLAP_INFO=''; return 0 ;;
+            "$WIZARD_PLACE_NEW")
+                rc=0
+                wizard_new_hold || rc=$?
+                case "$rc" in
+                    0) WIZARD_PLACE=new OVERLAP_JOB='' WIZARD_OVERLAP_INFO=''; return 0 ;;
+                    10|11) continue ;;
+                    *) return "$rc" ;;
+                esac ;;
+            "$hold_prefix"*)
+                for line in "${WIZARD_HOLD_LINES[@]}"; do
+                    IFS=$'\t' read -r -a info <<< "$line"
+                    [ "$hold_prefix${info[2]}" = "$choice" ] || continue
+                    WIZARD_PLACE="hold:${info[0]}" OVERLAP_JOB="${info[0]}" WIZARD_OVERLAP_INFO="確保ジョブ ${info[2]}"
+                    return 0
+                done ;;
+            "$job_prefix"*)
+                if fields="$(overlap_tool info "$(printf '%s' "${choice#"$job_prefix"}" | cut -d' ' -f1)" 2>&1)"; then
+                    mapfile -t info <<< "$fields"
+                    WIZARD_PLACE="job:${info[0]}" OVERLAP_JOB="${info[0]}"
+                    WIZARD_OVERLAP_INFO="job ${info[0]}${info[7]:+（${info[7]}）} / ノード: ${info[4]} / パーティション: ${info[3]} / CPU: ${info[1]} / GPU: ${info[2]} / 制限時間: ${info[5]}（経過 ${info[6]}）"
+                    return 0
+                fi
+                wizard_banner "$fields" || return $? ;;
+        esac
     done
 }
 
@@ -567,15 +635,19 @@ wizard_step() {
 
 wizard_finish() {
     local -a args
-    if [ -n "$OVERLAP_JOB" ] && [ "$mode" != resume ] && repo_lock_busy "$(readlink -f "$REPO")"; then
-        wizard_banner "$REPO では既に agentrun が動いています。overlap するときは、別のリポジトリか git worktree を選んでください" || return $?
+    if wizard_uses_job_resources && [ "$mode" != resume ] && repo_lock_busy "$(readlink -f "$REPO")"; then
+        wizard_banner "$REPO では既に agentrun が動いています。確保ジョブや実行中のジョブの中で起動するときは、別のリポジトリか git worktree を選んでください" || return $?
         return 10
     fi
     if [ "$mode" = resume ]; then args=("$source" --no-binds)
     else args=(--agent "$AGENT" --repo "$REPO"); fi
-    # An overlapping step uses the running job's resources.
+    # A session in a hold job or another running job uses that job's resources.
     if [ -n "$OVERLAP_JOB" ]; then args+=(--overlap "$OVERLAP_JOB")
-    else args+=(--mem "$MEM" --cpus "$CPUS" --time "$TIME_LIMIT" --partition "$PARTITION" --gpus "$GPUS"); fi
+    elif [ "$WIZARD_PLACE" = new ]; then :  # the hold job made at launch is chosen by itself
+    else
+        [ "$WIZARD_PLACE" != own ] || args+=(--no-hold)
+        args+=(--mem "$MEM" --cpus "$CPUS" --time "$TIME_LIMIT" --partition "$PARTITION" --gpus "$GPUS")
+    fi
     local arg
     for arg in "${EXTRA_BINDS[@]+"${EXTRA_BINDS[@]}"}"; do args+=(--bind "$arg"); done
     if [ "$GH_BROKER_DISABLED" -eq 1 ]; then args+=(--no-gh-broker); else args+=(--gh-broker); fi
@@ -593,20 +665,40 @@ wizard_finish() {
     done
     [ -z "$prefix" ] || command_line="env $prefix$command_line"
     for arg in "${args[@]}"; do command_line+=" $(wizard_shell_quote "$arg")"; done
+    local -a hold_args=()
+    if [ "$WIZARD_PLACE" = new ]; then
+        hold_args=(--partition "$WIZARD_NEW_HOLD_PARTITION")
+        [ -z "$WIZARD_NEW_HOLD_TIME" ] || hold_args+=(--time "$WIZARD_NEW_HOLD_TIME")
+        local hold_line="agentrun hold start" item
+        for item in "${hold_args[@]}"; do hold_line+=" $(wizard_shell_quote "$item")"; done
+        command_line="$hold_line"$'\n'"$command_line"
+    fi
     summary="モード: $mode / エージェント: $AGENT / プロファイル: $profile"$'\n'"作業リポジトリ: $REPO"$'\n'
     [ -z "$TEMPLATE_NAME" ] || [ "$mode" = resume ] || summary+="テンプレート: $TEMPLATE_NAME$([ "$WIZARD_TEMPLATE_KEEP" -eq 1 ] && printf '（変更なし）' || printf '（変更あり）')"$'\n'
-    if [ -n "$OVERLAP_JOB" ]; then
-        summary+="overlap 先: ${WIZARD_OVERLAP_INFO:-job $OVERLAP_JOB}"$'\n'
-        summary+="  CPU・メモリ・GPU・制限時間は元のジョブと共有し、元のジョブが終わるとこのコンテナも終了します"$'\n'
-    else summary+="メモリ / CPU / 制限時間: $MEM / $CPUS / $TIME_LIMIT"$'\n'; fi
+    case "$WIZARD_PLACE" in
+        hold:*)
+            summary+="実行先: ${WIZARD_OVERLAP_INFO}"$'\n'
+            summary+="  CPU・メモリ・GPU・制限時間は確保ジョブのものを共有します。ほかのセッションを閉じても止まりません"$'\n' ;;
+        new)
+            summary+="実行先: 確保ジョブを新しく作ります（${WIZARD_NEW_HOLD_INFO}、確保する時間: ${WIZARD_NEW_HOLD_TIME:-パーティションの上限}）"$'\n'
+            summary+="  確保ジョブはこのセッションを閉じても残ります。使い終わったら agentrun hold stop で解放してください"$'\n' ;;
+        job:*)
+            summary+="overlap 先: ${WIZARD_OVERLAP_INFO:-job $OVERLAP_JOB}"$'\n'
+            summary+="  CPU・メモリ・GPU・制限時間は元のジョブと共有し、元のジョブが終わるとこのコンテナも終了します"$'\n' ;;
+        *)
+            [ "$WIZARD_PLACE" != own ] || summary+="実行先: 専用の Slurm ジョブ"$'\n'
+            summary+="メモリ / CPU / 制限時間: $MEM / $CPUS / $TIME_LIMIT"$'\n' ;;
+    esac
     [ "$mode" != resume ] || summary+="再開対象: $selected"$'\n'"$(settings_tool describe "$source")"$'\n'
-    if [ -n "$OVERLAP_JOB" ]; then summary+="FUSE: $([ "$ALLOW_FUSE" -eq 1 ] && printf 渡す || printf 渡さない)"$'\n'
+    if wizard_uses_job_resources; then summary+="FUSE: $([ "$ALLOW_FUSE" -eq 1 ] && printf 渡す || printf 渡さない)"$'\n'
     else summary+="パーティション: ${PARTITION:-（クラスタの既定）} / GPU: $GPUS / FUSE: $([ "$ALLOW_FUSE" -eq 1 ] && printf 渡す || printf 渡さない)"$'\n'; fi
     summary+="秘密情報ファイル: ${SECRETS_FILE:-（渡さない）} / GitHub 仲介: ${GH_ENV_FILE:-（使わない）}"$'\n'
     summary+="追加の bind mount:"$'\n'
     if [ "${#EXTRA_BINDS[@]}" -eq 0 ]; then summary+="  なし"$'\n'
     else for arg in "${EXTRA_BINDS[@]}"; do summary+="  $arg"$'\n'; done; fi
-    if [ -n "$OVERLAP_JOB" ]; then summary+="起動方法: srun --jobid=$OVERLAP_JOB --overlap --pty（実行中のジョブに重ねて$([ "$mode" = resume ] && printf '対話再開' || printf '対話起動')）"$'\n'
+    if wizard_uses_job_resources && [ "$(wizard_place_kind)" = batch ]; then summary+="起動方法: 確保ジョブに投入（確保ジョブがステップとして起動します）"$'\n'
+    elif [ "$WIZARD_PLACE" = new ]; then summary+="起動方法: agentrun hold start で確保ジョブを作り、動き始めたらその中で$([ "$mode" = resume ] && printf '対話再開' || printf '対話起動')（srun --overlap --pty）"$'\n'
+    elif [ -n "$OVERLAP_JOB" ]; then summary+="起動方法: srun --jobid=$OVERLAP_JOB --overlap --pty（$([ "${WIZARD_PLACE%%:*}" = hold ] && printf '確保ジョブの中で' || printf '実行中のジョブに重ねて')$([ "$mode" = resume ] && printf '対話再開' || printf '対話起動')）"$'\n'
     elif [ "$mode" = resume ]; then summary+="起動方法: srun --pty（対話再開）"$'\n'
     else summary+="起動方法: $(if [ "$SUBMIT" -eq 1 ]; then printf 'sbatch（バッチ投入）'; elif [ "$mode" = assist ]; then printf 'srun --pty（対話）'; else printf '準備のみ（投入しない）'; fi)"$'\n'; fi
     summary+=$'\n'"wizard を使わずに同じ起動をするコマンド:"$'\n'"$command_line"$'\n'
@@ -618,6 +710,9 @@ wizard_finish() {
         finished=1 WIZARD_DONE=1
         # The wizard already displayed the complete configuration and obtained approval.
         local _AGENTRUN_RESUME_CONFIRMED=1
+        if [ "$WIZARD_PLACE" = new ]; then
+            wizard_start_hold || return $?
+        fi
         if [ "$mode" = resume ]; then command_resume "${args[@]}"
         else command_prepare "$mode" "${args[@]}"; fi
     else
@@ -692,15 +787,15 @@ wizard_launch() {
             # An unchanged template skips straight to the overlap choice and confirmation.
             [ "$WIZARD_TEMPLATE_KEEP" -eq 1 ] || steps+=(agent launch)
         fi
-        # Offer to join a running job only when one exists; resources then come from it.
+        # Where to run: a hold job, a new hold job, a job of its own or another running job.
         if wizard_overlap_available; then steps+=(overlap)
-        elif [ -n "$mode" ]; then OVERLAP_JOB='' WIZARD_OVERLAP_INFO=''; fi
+        elif [ -n "$mode" ]; then OVERLAP_JOB='' WIZARD_OVERLAP_INFO='' WIZARD_PLACE=''; fi
         if [ "$WIZARD_TEMPLATE_KEEP" -eq 1 ]; then
             if [ "$mode" != assist ] || [ "$SUBMIT" -eq 1 ]; then steps+=(prompt); else PROMPT=''; fi
             steps+=(confirm)
         else
         [ "$mode" = resume ] || steps+=(repo)
-        if [ -z "$OVERLAP_JOB" ]; then
+        if ! wizard_uses_job_resources; then
             [ "$mode" = resume ] || steps+=(partition gpus)
             steps+=(mem cpus time)
         fi
@@ -727,6 +822,28 @@ wizard_launch() {
             *) trap - INT TERM; return "$rc" ;;
         esac
     done
+}
+
+# Create the hold job chosen in the wizard; an interactive launch waits until it runs.
+wizard_start_hold() {
+    local kind rc=0 fields
+    kind="$(wizard_place_kind)"
+    if [ "$kind" = batch ]; then hold_tool start "${hold_args[@]}" --no-wait || rc=$?
+    else hold_tool start "${hold_args[@]}" || rc=$?; fi
+    if [ "$rc" -ne 0 ]; then
+        [ "$rc" -eq 1 ] && printf '確保ジョブが動き始めてから、もう一度起動してください（agentrun hold status で確認できます）\n' >&2
+        return "$rc"
+    fi
+    fields="$(hold_tool select --any --partition "$WIZARD_NEW_HOLD_PARTITION")" || return $?
+    # Options go before the prompt's "--".
+    local -a with=() item
+    local placed=0
+    for item in "${args[@]}"; do
+        if [ "$item" = -- ] && [ "$placed" -eq 0 ]; then with+=(--overlap "${fields%%$'\n'*}"); placed=1; fi
+        with+=("$item")
+    done
+    [ "$placed" -eq 1 ] || with+=(--overlap "${fields%%$'\n'*}")
+    args=("${with[@]}")
 }
 
 # Show what the launch would do (command_dry_run) and let the user launch it, change it or stop.

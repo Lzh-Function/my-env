@@ -88,6 +88,24 @@ class ActiveRunsTests(unittest.TestCase):
         self.assertIn("  job 9004  spare", out)
         self.assertIn("最終更新", out)
 
+    def test_hold_jobs_list_their_interactive_and_batch_sessions(self):
+        self.jobs.write_text(json.dumps({
+            "7001": {"cpus": 64, "workdir": str(self.root / "hold"), "name": "agentrun-hold"},
+            "7002": {"cpus": 8, "workdir": str(self.root / "hold"), "name": "agentrun-hold"},
+        }))
+        chat = self.run_dir("a", "20261126_090000_assist_claude", "claude", "7001", overlap="7001")
+        (chat / "live/slurm_step_id.txt").write_text("2\n")
+        queued = self.run_dir("b", "20261126_100000_experiment_codex", "codex", "")
+        (queued / "live/hold_job.txt").write_text("7001\n")
+        out = self.ps(cwd=self.home)
+        self.assertIn("job 7001  agentrun-hold  partition=gpu  node=node01  CPU=64  経過 1:00:00/2-00:00:00"
+                      "（確保ジョブ。agentrun hold stop で解放）", out)
+        self.assertIn("20261126_090000_assist_claude  claude assist  対話（step 2）", out)
+        self.assertIn("20261126_100000_experiment_codex  codex assist  バッチ（開始待ち）", out)
+        self.assertIn("セッションのない確保ジョブ", out)
+        self.assertIn("  job 7002  partition=gpu", out)
+        self.assertNotIn("agentrun 以外で起動したジョブ", out)
+
     def test_nothing_running(self):
         self.jobs.write_text("{}")
         self.assertIn("実行中の agentrun はありません。", self.ps())

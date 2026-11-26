@@ -38,8 +38,17 @@ print(f"JobId={job} JobName={j.get('name', 'agentrun-assist-codex')} UserId=some
 
 MOCK_SQUEUE = r'''#!/usr/bin/env python3
 import json, os, sys
-assert "--states=RUNNING" in sys.argv and f"--user" in sys.argv
-for job, j in json.loads(open(os.environ["TEST_SLURM_JOBS"]).read()).items():
+assert f"--user" in sys.argv
+jobs = json.loads(open(os.environ["TEST_SLURM_JOBS"]).read())
+if "--name" in sys.argv:  # hold jobs (hold.py)
+    states = next(a for a in sys.argv if a.startswith("--states=")).split("=", 1)[1].split(",")
+    for job, j in jobs.items():
+        if j.get("name") == sys.argv[sys.argv.index("--name") + 1] and j.get("state", "RUNNING") in states:
+            print(f"{job}|{j.get('state', 'RUNNING')}|{j.get('partition', 'gpu')}|{j.get('cpus', 8)}|gres/gpu:2|"
+                  f"2:00:00|1:50:00|10:00|{j.get('workdir', '/nowhere')}")
+    sys.exit(0)
+assert "--states=RUNNING" in sys.argv
+for job, j in jobs.items():
     if j.get("state", "RUNNING") == "RUNNING":
         print(f"{job}|gpu|node01|{j.get('cpus', 8)}|10:00|2:00:00|gres/gpu:2|{j.get('name', 'agentrun-assist-codex')}")
 '''
@@ -220,7 +229,7 @@ class OverlapLaunchTests(OverlapBase):
         for args in (["assist", "--submit", "--overlap", JOB, "task"], ["experiment", "--overlap", JOB, "task"],
                      ["dry-run", "campaign", "--overlap", JOB, "task"]):
             with self.subTest(args=args):
-                self.assertIn("対話式の assist と resume だけ", self.launcher(*args, expected=2).stderr)
+                self.assertIn("対話式の assist と resume で使えます", self.launcher(*args, expected=2).stderr)
         self.assertIn("numeric", self.launcher("assist", "--overlap", "abc", expected=2).stderr)
         self.assertFalse((self.root / ".agent-runs").exists())
 
@@ -266,10 +275,10 @@ class OverlapResumeTests(OverlapBase):
         self.assertEqual(json.loads((run / "srun-args.json").read_text())[:2], [f"--jobid={JOB}", "--overlap"])
 
     def test_wizard_resume_offers_running_job(self):
-        # mode=resume, run=1, preview=no, overlap=job, binds=no, launch=yes
-        rc, output = self.execute(["wizard"], ["1", "4", "1", "n", "2", "n", "y"])
+        # mode=resume, run=1, preview=no, where=the running job (after own job and new hold job), binds=no, launch=yes
+        rc, output = self.execute(["wizard"], ["1", "4", "1", "n", "3", "n", "y"])
         self.assertEqual(rc, 0, output)
-        self.assertIn("このジョブに overlap して", output)
+        self.assertIn("実行中のジョブに overlap する: " + JOB, output)
         self.assertIn(f"--overlap {JOB}", output)
         self.assertNotIn("メモリ（例", output)
         self.assertEqual(json.loads((self.latest() / "srun-args.json").read_text())[0], f"--jobid={JOB}")
@@ -284,9 +293,9 @@ class OverlapWizardTests(OverlapBase):
 
     def test_assist_asks_to_overlap_and_skips_resource_questions(self):
         # mode, agent, interactive, overlap=job, repo, binds, fuse, secrets, goal, save template, launch
-        rc, output = self.wizard(["1", "1", "1", "2", str(self.second), "n", "n", "n", "", "", "y"])
+        rc, output = self.wizard(["1", "1", "1", "3", str(self.second), "n", "n", "n", "", "", "y"])
         self.assertEqual(rc, 0, output)
-        self.assertIn("このジョブに overlap して、同じ割り当て内でエージェントコンテナをもう一つ起動しますか？", output)
+        self.assertIn("どこで起動しますか？", output)
         self.assertIn(f"overlap 先: job {JOB}（agentrun-assist-codex） / ノード: node01", output)
         line = next(l for l in output.replace("\r", "").splitlines() if l.startswith("PREPARE_ARGS="))
         self.assertIn(f"--overlap {JOB}", line)
@@ -300,20 +309,23 @@ class OverlapWizardTests(OverlapBase):
         self.assertNotIn("--overlap", line)
         self.assertIn("--mem", line)
 
-    def test_batch_and_jobless_launches_do_not_ask(self):
-        rc, output = self.wizard(["1", "1", "2", "", "", "", "", "", "", "n", "n", "n", "", "task", "", "y"])
+    def test_batch_and_jobless_launches_offer_only_hold_jobs(self):
+        rc, output = self.wizard(["1", "1", "2", "", "", "", "", "", "", "", "n", "n", "n", "", "task", "", "y"])
         self.assertEqual(rc, 0, output)
-        self.assertNotIn("overlap して", output)
+        self.assertNotIn("実行中のジョブに overlap する", output)  # a batch run cannot join another session's job
+        self.assertIn("確保ジョブを新しく作り", output)
+        line = next(l for l in output.replace("\r", "").splitlines() if l.startswith("PREPARE_ARGS="))
+        self.assertIn("--no-hold", line)
         self.set_jobs({})
         (Path(self.env["HOME"]) / ".agentrun/wizard-last").unlink()
-        rc, output = self.wizard(["1", "1", "1", "", "", "", "", "", "", "n", "n", "n", "", "", "y"])
+        rc, output = self.wizard(["1", "1", "1", "", "", "", "", "", "", "", "n", "n", "n", "", "", "y"])
         self.assertEqual(rc, 0, output)
-        self.assertNotIn("overlap して", output)
+        self.assertNotIn("実行中のジョブに overlap する", output)
 
     def test_overlap_repo_in_use_is_rejected_in_wizard(self):
         with (self.second / ".agentrun.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            rc, output = self.wizard(["1", "1", "1", "2", str(self.second), str(self.root), "n", "n", "n", "", "", "y"])
+            rc, output = self.wizard(["1", "1", "1", "3", str(self.second), str(self.root), "n", "n", "n", "", "", "y"])
         self.assertEqual(rc, 0, output)
         self.assertIn("別のリポジトリか git worktree を選んでください", output)
         line = next(l for l in output.replace("\r", "").splitlines() if l.startswith("PREPARE_ARGS="))
@@ -324,7 +336,7 @@ class OverlapWizardTests(OverlapBase):
                         "--bind", f"{self.root}:/data:ro", "--no-secrets"],
                        cwd=self.root, env=self.env, check=True, capture_output=True)
         # mode, template=side, keep unchanged, overlap=job, launch
-        rc, output = self.wizard(["1", "2", "", "2", "y"])
+        rc, output = self.wizard(["1", "2", "", "3", "y"])
         self.assertEqual(rc, 0, output)
         line = next(l for l in output.replace("\r", "").splitlines() if l.startswith("PREPARE_ARGS="))
         self.assertIn(f"--overlap {JOB}", line)

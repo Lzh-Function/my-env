@@ -16,6 +16,8 @@ import sessions
 from auth_sync import live, registry
 from overlap import JOB_ID, label, query
 
+HOLD_NAME = "agentrun-hold"
+
 FIELDS = ("job", "state", "partition", "nodes", "cpus", "elapsed", "limit", "tres", "workdir", "name")
 
 
@@ -47,11 +49,16 @@ def candidate_runs(jobs, scan):
     return list(unique)
 
 
-def job_of(run):
+def read(path):
     try:
-        return (run / "live/slurm_job_id.txt").read_text().strip()
+        return path.read_text().strip()
     except OSError:
         return ""
+
+
+def job_of(run):
+    # A batch run queued in a hold job has no job ID of its own until the hold job starts it.
+    return read(run / "live/slurm_job_id.txt") or read(run / "live/hold_job.txt")
 
 
 def ago(seconds):
@@ -78,6 +85,8 @@ def describe(run, now):
     return {
         "run": run, "agent": manifest["agent"], "mode": manifest["mode"], "repo": manifest["repo"],
         "overlap": bool(overlap_job), "updated": ago(now - max(updates)) if updates else "",
+        "batch": bool(read(run / "live/hold_job.txt")), "step": read(run / "live/slurm_step_id.txt"),
+        "queued": not read(run / "live/slurm_job_id.txt"),
         "task": "" if task in ("", "initialized") else task,
     }
 
@@ -101,18 +110,35 @@ def show(jobs, runs, others):
         # squeue %b prints the GPU request as gpu:8, gpu:a100:8 or gres/gpu:8 (N/A without GPUs).
         gpus = sum(int(n) for n in re.findall(r"gpu(?::[^:,]+)?:(\d+)", job["tres"]))
         resources = f"CPU={job['cpus']}" + (f" GPU={gpus}" if gpus else "")
-        owner = "" if any(not item["overlap"] for item in members) else "（agentrun 以外で起動したジョブ）"
+        held = job["name"] == HOLD_NAME
+        if held:
+            owner = "（確保ジョブ。agentrun hold stop で解放）"
+        else:
+            owner = "" if any(not item["overlap"] for item in members) else "（agentrun 以外で起動したジョブ）"
         print(text(f"job {job_id}  {job['name']}  partition={job['partition']}  node={job['nodes']}  "
                     f"{resources}  経過 {job['elapsed']}/{job['limit']}{owner}"))
         for index, item in enumerate(members):
             last = index == len(members) - 1
-            kind = "overlap" if item["overlap"] else "ジョブ本体"
+            if held:
+                kind = ("バッチ" if item["batch"] else "対話") + (
+                    "（開始待ち）" if item["queued"] else f"（step {item['step']}）" if item["step"] else "")
+            else:
+                kind = "overlap" if item["overlap"] else "ジョブ本体"
             print(text(f"{'└─' if last else '├─'} {item['run'].name}  {item['agent']} {item['mode']}  {kind}  "
                         f"repo={short_path(item['repo'])}" + (f"  最終更新 {item['updated']}" if item["updated"] else "")))
             details = [f"作業: {item['task']}"] if item["task"] else []
             details.append(short_path(str(item["run"])))
             for detail in details:
                 print(("   " if last else "│  ") + "  " + text(detail))
+    idle_holds = [job_id for job_id in others if jobs[job_id]["name"] == HOLD_NAME]
+    others = [job_id for job_id in others if job_id not in idle_holds]
+    if idle_holds:
+        print()
+        print("セッションのない確保ジョブ（agentrun assist などは自動でこの中に起動します）:")
+        for job_id in sorted(idle_holds, key=int):
+            job = jobs[job_id]
+            print(text(f"  job {job_id}  partition={job['partition']}  node={job['nodes']}  "
+                        f"CPU={job['cpus']}  経過 {job['elapsed']}/{job['limit']}"))
     if others:
         print()
         print("agentrun が動いていない実行中ジョブ（--overlap の重ね先に使えます）:")

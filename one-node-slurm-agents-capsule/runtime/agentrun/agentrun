@@ -20,6 +20,9 @@ Usage:
   agentrun assist [options] [PROMPT]        # interactive PTY session via srun --pty; PROMPT ignored if given
   agentrun assist --submit [options] PROMPT # batch via sbatch (non-interactive)
   agentrun assist --overlap JOBID [options]  # interactive, inside a running Slurm job of yours
+  agentrun hold start [--partition P] [--time T]  # hold the node: an idle job that takes the partition's whole node
+  agentrun hold status | stop [JOBID] [--yes]    # the hold job and the sessions in it; stop releases the node
+  agentrun hold cancel RUN_ID|RUN_DIR             # stop one session in the hold job (others keep running)
   agentrun experiment|campaign [options] PROMPT  # prepare, or batch with --submit
   agentrun resume [RUN_ID|RUN_DIR] [run options] [--no-binds] [--fresh-config] [--overlap JOBID]
   agentrun resume --list
@@ -65,7 +68,10 @@ Options:
   --overlap JOBID     start this capsule as an extra step of your running Slurm job
                       (srun --jobid --overlap); shares its CPUs, memory, GPUs and time
                       limit, while repo, binds and other settings stay separate.
-                      Interactive assist and resume only
+                      Interactive assist and resume; with --submit only a hold job
+                      While a hold job (agentrun hold start) exists, interactive sessions
+                      and --submit runs go into it by default
+  --no-hold           start a separate Slurm job even when a hold job exists
   --bind SRC:DST[:OPTIONS]  extra bind mount (repeatable); OPTIONS: ro|rw
   --no-binds          clear inherited extra bind mounts
   --fresh-config      resume using repository CLI settings instead of saved preferences
@@ -450,7 +456,7 @@ write_prompt() {
     local path="$1" mode="$2" agent="$3" repo="$4" prompt="$5" launch="${6:-batch}" \
         mem="${7:-}" cpus="${8:-}" gpus="${9:-}" time_limit="${10:-}" partition="${11:-}"
     local resources="mem=$mem, cpus=$cpus, time=$time_limit, gpus=$gpus, partition=${partition:-<cluster default>}"
-    if [ -n "${OVERLAP_JOB:-}" ]; then
+    if [ -n "${OVERLAP_JOB:-}${HOLD_JOB:-}" ]; then
         resources="shared with ${OVERLAP_SUMMARY:-Slurm job $OVERLAP_JOB}; other sessions in this allocation use the same CPUs, memory and GPUs"
     fi
 
@@ -676,6 +682,10 @@ overlap_tool() {
     python3 "$ROOT_DIR/runtime/agentrun/overlap.py" "$@"
 }
 
+hold_tool() {
+    python3 "$ROOT_DIR/runtime/agentrun/hold.py" "$@"
+}
+
 template_tool() {
     python3 "$ROOT_DIR/runtime/agentrun/templates.py" "$@"
 }
@@ -778,10 +788,54 @@ apply_overlap_job() {
 
 require_overlap_launch() {
     [ -n "$OVERLAP_JOB" ] || return 0
-    if [ "$1" != assist ] || [ "$SUBMIT" -eq 1 ]; then
-        printf -- '--overlap は対話式の assist と resume だけで使えます（sbatch は新しいジョブを作るため）\n' >&2
-        return 2
+    [ "$1" != assist ] || [ "$SUBMIT" -eq 1 ] || return 0
+    # A batch run can join a hold job: the hold job starts it as a step.
+    if [ "$SUBMIT" -eq 1 ] && hold_tool is-holder "$OVERLAP_JOB" 2>/dev/null; then
+        HOLD_JOB="$OVERLAP_JOB" OVERLAP_JOB=""
+        return 0
     fi
+    printf -- '--overlap は対話式の assist と resume で使えます。--submit と使えるのは確保ジョブ（agentrun hold）だけです\n' >&2
+    return 2
+}
+
+# While a hold job exists, launches go into it unless --no-hold or --overlap says otherwise.
+# kind: interactive (the hold job must be running) or batch (it may still wait for its node).
+choose_holder() {
+    local kind="$1" fields rc=0 errors
+    [ -z "$OVERLAP_JOB" ] && [ -z "$HOLD_JOB" ] && [ "$NO_HOLD" -eq 0 ] || return 0
+    command -v squeue >/dev/null 2>&1 || return 0
+    local -a args=(select)
+    [ -z "$PARTITION" ] || args+=(--partition "$PARTITION")
+    [ "$kind" = interactive ] || args+=(--any)
+    errors="$(mktemp)" || return $?
+    fields="$(hold_tool "${args[@]}" 2>"$errors")" || rc=$?
+    case "$rc" in
+        0)
+            local -a info
+            mapfile -t info <<< "$fields"
+            if [ "$kind" = interactive ]; then OVERLAP_JOB="${info[0]}"
+            else HOLD_JOB="${info[0]}"; fi
+            printf '確保ジョブ %s に載せます（専用のジョブで動かすときは --no-hold）\n' "${info[0]}" >&2 ;;
+        3) ;;
+        4) printf '確保ジョブが複数あります。--overlap JOBID で選ぶか、--no-hold で専用のジョブにしてください:\n' >&2
+           sed 's/^/  /' "$errors" >&2 ;;
+        5) printf '確保ジョブがまだ割り当て待ちです。動き始めてから起動するか（agentrun hold status）、--no-hold で専用のジョブにしてください:\n' >&2
+           sed 's/^/  /' "$errors" >&2 ;;
+        *) printf '確保ジョブを確認できませんでした（専用のジョブで起動します）: %s\n' "$(tr '\n' ' ' < "$errors")" >&2; rc=3 ;;
+    esac
+    rm -f "$errors"
+    case "$rc" in 0|3) return 0 ;; *) return 2 ;; esac
+}
+
+# A batch run in a hold job shares the hold job's resources, like an overlapping session.
+apply_hold_job() {
+    local fields
+    fields="$(hold_tool info "$HOLD_JOB")" || return $?
+    local -a info
+    mapfile -t info <<< "$fields"
+    CPUS="${info[3]}" GPUS="${info[4]}" PARTITION="${info[2]}"
+    OVERLAP_SUMMARY="hold job $HOLD_JOB: cpus=${info[3]}, gpus=${info[4]}, partition=${info[2]}, time limit=${info[5]}"
+    printf '確保ジョブ %s の中で実行します。CPU・メモリ・GPU・制限時間は確保ジョブのものを、ほかのセッションと共有します。\n' "$HOLD_JOB" >&2
 }
 
 repo_lock_busy() {
@@ -908,6 +962,8 @@ apptainer_command() {
     printf 'source %q\n' "$ROOT_DIR/runtime/agentrun/node-scratch.sh"
     printf '_agentrun_node_scratch_setup %q\n' "/scratch/$submit_user"
     printf 'printf "%%s\\n" "${SLURM_JOB_ID:-}" > %q\n' "$run_dir/live/slurm_job_id.txt"
+    # A session that is a step of a shared (hold or overlapped) job is stopped by its step ID.
+    printf 'printf "%%s\\n" "${SLURM_STEP_ID:-}" > %q\n' "$run_dir/live/slurm_step_id.txt"
     if gh_broker_enabled; then
         gh_broker_launch_lines "$run_dir" "$image"
     fi
@@ -917,6 +973,8 @@ apptainer_command() {
     printf 'export APPTAINERENV_SLURM_MEM_PER_NODE="${SLURM_MEM_PER_NODE:-}"\n'
     printf 'export APPTAINERENV_SLURM_GPUS="${SLURM_GPUS:-}"\n'
     printf 'export APPTAINERENV_SLURM_JOB_END_TIME="${SLURM_JOB_END_TIME:-}"\n'
+    # The session is one step of a job other sessions share; closing it leaves the job running.
+    [ -z "${OVERLAP_JOB:-}${HOLD_JOB:-}" ] || printf 'export APPTAINERENV_AGENTRUN_SHARED_JOB=1\n'
     printf 'apptainer exec%s --containall --cleanenv --no-mount hostfs,bind-paths,cwd --pwd /workspace --home %q:%q --bind %q:%q --bind %q:%q --bind %q:%q --bind %q:%q' \
         "$nv" \
         "$run_dir/home" "/home/sandbox" \
@@ -1029,6 +1087,7 @@ allow_fuse: $(fuse_enabled && printf 'true' || printf 'false')
 secret_keys: $(secrets_enabled && secret_keys_csv "$SECRETS_FILE")
 gh_broker: $(gh_broker_enabled && printf 'true' || printf 'false')
 overlap_job: ${OVERLAP_JOB:-}
+hold_job: ${HOLD_JOB:-}
 EOF
     apptainer_command "$mode" "$agent" "$run_dir" "$gpus" "$repo" "$launch" > "$run_dir/apptainer_exec.sh" || return $?
     sed -i '1i#!/usr/bin/env bash\nset -euo pipefail' "$run_dir/apptainer_exec.sh"
@@ -1787,6 +1846,7 @@ command_validate() {
         runtime/agentrun/review_view.py \
         runtime/agentrun/review_hook.py \
         runtime/agentrun/overlap.py \
+        runtime/agentrun/hold.py \
         runtime/agentrun/auth_sync.py \
         runtime/agentrun/agent-review \
         runtime/agentrun/agent_cli.py \
@@ -2044,6 +2104,8 @@ parse_run_args() {
     PROMPT=""
     OVERLAP_JOB=""
     OVERLAP_SUMMARY=""
+    HOLD_JOB=""
+    NO_HOLD=0
     TEMPLATE_NAME=""
     TEMPLATE_MODE=""
     EXTRA_BINDS=()
@@ -2073,6 +2135,7 @@ parse_run_args() {
             --overlap)
                 [[ "$2" =~ ^[0-9]+$ ]] || { printf -- '--overlap requires a numeric Slurm job ID: %s\n' "$2" >&2; exit 2; }
                 OVERLAP_JOB="$2"; shift 2 ;;
+            --no-hold) NO_HOLD=1; shift ;;
             --bind) EXTRA_BINDS+=("$2"); shift 2 ;;
             --no-binds) EXTRA_BINDS=(); shift ;;
             --allow-fuse) ALLOW_FUSE=1; shift ;;
@@ -2191,11 +2254,17 @@ command_dry_run() {
     local id run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
     REPO="$(cd "$REPO" && pwd)"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then choose_holder interactive || return $?
+    elif [ "$SUBMIT" -eq 1 ]; then choose_holder batch || return $?; fi
     [ -z "$OVERLAP_JOB" ] || apply_overlap_job || return $?
+    [ -z "$HOLD_JOB" ] || apply_hold_job || return $?
     id="$(run_id "$mode" "$AGENT")"
     run_dir="$PWD/.agent-runs/$id"
     printf 'run_id: %s\nselected_profile: %s\nselected_agent: %s\nrepo: %s\nhost_run_directory: %s\n' "$id" "$mode" "$AGENT" "$REPO" "$run_dir"
-    if [ "$mode" = "assist" ]; then
+    if [ -n "$HOLD_JOB" ]; then
+        printf 'launch_method: hold job %s (queued; the hold job starts it as a step with srun --overlap)\n' "$HOLD_JOB"
+        printf 'hold_job: %s\n' "$OVERLAP_SUMMARY"
+    elif [ "$mode" = "assist" ]; then
         if [ "$SUBMIT" -eq 1 ]; then
             printf 'launch_method: sbatch\n'
             printf 'sbatch_args:'
@@ -2425,10 +2494,13 @@ command_prepare() {
     fi
     local run_dir
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
+    if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then choose_holder interactive || return $?
+    elif [ "$SUBMIT" -eq 1 ]; then choose_holder batch || return $?; fi
     if [ -n "$OVERLAP_JOB" ]; then
         require_overlap_repo "$(cd "$REPO" && pwd)" || return $?
         apply_overlap_job || return $?
     fi
+    [ -z "$HOLD_JOB" ] || apply_hold_job || return $?
     run_dir="$(allocate_run_dir "$mode" "$AGENT")" || return $?
     local launch="batch"
     if [ "$mode" = "assist" ] && [ "$SUBMIT" -eq 0 ]; then
@@ -2447,7 +2519,8 @@ command_prepare() {
     printf '投入用スクリプト: %s\n' "$run_dir/submit.sbatch"
     if [ "$SUBMIT" -eq 1 ]; then
         copy_auth_credentials "$run_dir" "$AGENT"
-        history_tool submit "$run_dir"
+        if [ -n "$HOLD_JOB" ]; then history_tool submit "$run_dir" --hold "$HOLD_JOB"
+        else history_tool submit "$run_dir"; fi
     elif is_supported_agent "$AGENT"; then
         printf '認証情報はまだ配置していません。--submit を付けて実行すると、sbatch の前に配置します\n'
     fi
@@ -2608,7 +2681,7 @@ resume_summary() {
         [ -z "${!key:-}" ] || printf '  %s=%q\n' "$key" "${!key}" >&2
     done
     if [ -n "$OVERLAP_JOB" ]; then
-        printf '  実行中の Slurm job %s に overlap して対話再開します。元のジョブが終わるとこの再開も終了します。\n' "$OVERLAP_JOB" >&2
+        printf '  実行中の Slurm job %s に overlap して対話再開します。そのジョブが終わるとこの再開も終了します。\n' "$OVERLAP_JOB" >&2
     else
         printf '  新しい Slurm ジョブで対話再開します。/node-scratch は割当先ノードで再確認します。\n' >&2
     fi
@@ -2630,7 +2703,7 @@ command_resume() {
             --time|--mem|--cpus|--bind|--partition|--gpus|--repo|--goal|--secrets-file|--overlap)
                 [ "$#" -ge 2 ] || { printf '%s には値が必要です\n' "$1" >&2; return 2; }
                 overrides+=("$1" "$2"); shift 2 ;;
-            --no-binds|--allow-fuse|--no-allow-fuse|--no-secrets|--no-gh-broker|--gh-broker)
+            --no-binds|--allow-fuse|--no-allow-fuse|--no-secrets|--no-gh-broker|--gh-broker|--no-hold)
                 overrides+=("$1"); shift ;;
             --*) printf 'resume に知らないオプションです: %s\n' "$1" >&2; return 2 ;;
             *) [ -z "$target" ] || { printf '指定できる run は1件です\n' >&2; return 2; }
@@ -2656,6 +2729,7 @@ command_resume() {
     AGENT="${values[0]}"
     [ -d "$REPO" ] || { printf '再開先の repo がありません: %s\n' "$REPO" >&2; return 2; }
     [ -n "$TIME_LIMIT" ] || TIME_LIMIT="$(profile_time "$mode")"
+    choose_holder interactive || return $?
     if [ -n "$OVERLAP_JOB" ]; then
         require_overlap_repo "$(cd "$REPO" && pwd)" || return $?
         apply_overlap_job || return $?
@@ -2974,6 +3048,21 @@ command_auth() {
     esac
 }
 
+command_hold() {
+    local action="${1:-status}"
+    shift || true
+    case "$action" in
+        start|status|stop) hold_tool "$action" "$@" ;;
+        cancel)
+            [ "$#" -eq 1 ] || { printf 'hold cancel には止める run を 1 つ指定してください（RUN_ID か run ディレクトリ）\n' >&2; return 2; }
+            local run="$1"
+            [ -d "$run" ] || run="$(session_tool resolve "$PWD/.agent-runs" "$1")" || return $?
+            hold_tool cancel "$run" ;;
+        -h|--help) usage ;;
+        *) printf 'hold に知らないサブコマンドです: %s（start・status・stop・cancel）\n' "$action" >&2; return 2 ;;
+    esac
+}
+
 main() {
     local command="${1:-}"
     [ -n "$command" ] || { usage; exit 2; }
@@ -2992,6 +3081,7 @@ main() {
             ;;
         assist|experiment|campaign) command_prepare "$command" "$@" ;;
         resume) command_resume "$@" ;;
+        hold) command_hold "$@" ;;
         history) command_history "$@" ;;
         ps) python3 "$ROOT_DIR/runtime/agentrun/active.py" "$@" ;;
         reviews) command_reviews "$@" ;;

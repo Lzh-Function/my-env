@@ -143,6 +143,8 @@ def stop_client(process):
 
 
 def supervise(run_dir, command):
+    # A step of a shared job (a hold job, or another session's job) ends without the job ending.
+    unit = 'ステップ' if '--overlap' in command else 'ジョブ'
     stopped = 0
 
     def stop(signum, _frame):
@@ -174,7 +176,7 @@ def supervise(run_dir, command):
         if code is not None:
             if closing_since is not None:
                 waited = time.monotonic() - closing_since
-                print(f'  Slurm のジョブが閉じました（エージェント終了から {waited:.0f} 秒）', file=sys.stderr)
+                print(f'  Slurm の{unit}が閉じました（エージェント終了から {waited:.0f} 秒）', file=sys.stderr)
             return code if code >= 0 else 128 - code
         if closing_since is None and exited_marker.exists():
             # コンテナ内でエージェントが終わった。ここから先はsrun/Slurm側の後片付け。
@@ -185,7 +187,7 @@ def supervise(run_dir, command):
             waited = time.monotonic() - closing_since
             # overlap先のjobはRUNNINGのままなので、それ以外の状態だけ添える。
             detail = f'、job の状態: {monitor.last}' if monitor.last and monitor.last != 'RUNNING' else ''
-            print(f'  …Slurm のジョブが閉じるのを待っています（{waited:.0f} 秒経過{detail}）', file=sys.stderr)
+            print(f'  …Slurm の{unit}が閉じるのを待っています（{waited:.0f} 秒経過{detail}）', file=sys.stderr)
             next_notice += WAIT_NOTICE
         if stopped:
             stop_client(process)

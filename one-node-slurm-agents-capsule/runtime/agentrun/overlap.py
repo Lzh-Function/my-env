@@ -62,6 +62,8 @@ def jobs(parent):
         if len(fields) != 8 or not JOB_ID.fullmatch(fields[0]):
             continue
         job, partition, nodes, cpus, elapsed, limit, gres, name = map(label, fields)
+        if name == "agentrun-hold":
+            continue  # hold jobs are offered on their own (agentrun hold)
         parts = [job, name or "-", f"partition={partition}", f"node={nodes}", f"CPU={cpus}"]
         if gres and gres != "N/A" and not re.search(r"gpu(?::[^:,]+)?:0$", gres):
             parts.append(f"gres={gres}")

@@ -84,7 +84,16 @@ agentrun dry-run assist --agent codex --partition <partition> --show-mounts
 
 `--partition` は環境変数 `AGENTRUN_SLURM_PARTITION` でも指定できます。
 
-実行中の自分のジョブに重ねて、別設定のエージェントコンテナをもう一つ起動することもできます。新しいジョブは作りません。資源は共有し、リポジトリや追加マウントなどは別に指定します。wizard でも、実行中のジョブがあれば overlap するかを尋ねます。詳細は[マニュアル](docs/USER_MANUAL.md#実行中のジョブに重ねて起動する)を参照してください。
+ノードを占有して使うときは、先に確保ジョブ（ノード全体を取って何もしないジョブ）を作ります。確保ジョブがある間、対話の起動も `--submit` のバッチも、その中で動きます。どのセッションを閉じても、ほかのセッションは止まりません。wizard でも、起動先として確保ジョブを選んだり、その場で作ったりできます。詳細は[マニュアル](docs/USER_MANUAL.md#hold)を参照してください。
+
+```bash
+agentrun hold start --partition <partition> --time 3-00:00:00   # ノードを確保（時間を省くとパーティションの上限）
+agentrun assist --agent codex --repo .                          # 確保ジョブの中で起動
+agentrun hold status                                            # 載っているセッションと残り時間
+agentrun hold stop                                              # 解放
+```
+
+実行中の自分のジョブに重ねて、別設定のエージェントコンテナをもう一つ起動することもできます。新しいジョブは作りません。資源は共有し、リポジトリや追加マウントなどは別に指定します。この場合は、元のジョブが終わると重ねたコンテナも終わります。詳細は[マニュアル](docs/USER_MANUAL.md#実行中のジョブに重ねて起動する)を参照してください。
 
 ```bash
 agentrun assist --overlap <JOBID> --agent codex --repo ../worktree --bind ~/data:/data:ro

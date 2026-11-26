@@ -1134,6 +1134,74 @@ os.execv('/usr/bin/python3',['/usr/bin/python3',*sys.argv[1:]])
         self.assertNotEqual(first.finish(), 0)
         self.ended(first)
 
+    def test_hold_job_keeps_sessions_independent_and_runs_batch_inside(self):
+        import re
+
+        first_repo = self.repo("hold-first")
+        started = self.cli(first_repo, "hold", "start", "--time", "00:08:00")
+        self.assertIn("が動き始めました", started.stdout)
+        holds = command(["squeue", "-h", "--name", "agentrun-hold", "-o", "%A"]).stdout.split()
+        self.assertEqual(len(holds), 1, holds)
+        hold = holds[0]
+
+        def release():
+            command(["scancel", hold])
+            self.wait(lambda: not command(["squeue", "-h", "-j", hold, "-o", "%T"]).stdout.strip(), 60)
+
+        self.addCleanup(release)
+        record = command(["scontrol", "show", "job", hold]).stdout
+        self.assertIn("NumCPUs=4", record)  # the whole node
+        self.assertIn("TimeLimit=00:08:00", record)
+        # Sessions go into the hold job without --overlap.
+        self.options(first_repo, hold=True, cpus=4)  # sessions share the whole node
+        first = self.session(first_repo, ["assist", "--agent", "codex", "--repo", str(first_repo), "--no-gh-broker"])
+        first_run = first.until(b"AGENT_READY:codex:")
+        self.assertIn(f"確保ジョブ {hold} に載せます".encode(), first.output)
+        self.assertEqual((first_run / "live/slurm_job_id.txt").read_text().strip(), hold)
+        self.assertTrue((first_run / "live/slurm_step_id.txt").read_text().strip().isdigit())
+        second_repo = self.repo("hold-second")
+        self.options(second_repo, cpus=4)
+        second = self.session(second_repo, ["assist", "--agent", "claude", "--repo", str(second_repo), "--no-gh-broker"])
+        second_run = second.until(b"AGENT_READY:claude:")
+        self.assertEqual(second.finish(), 0, second.output)
+        self.assertIn("Slurm のステップが閉じ".encode(), second.output)
+        self.ended(second)
+        self.archived(second_run)
+        self.assertEqual((second_run / "live/slurm_job_id.txt").read_text().strip(), hold)
+        # Closing one session leaves the hold job and the other session running.
+        self.assertIsNone(first.process.poll(), first.output)
+        self.assertIn("RUNNING", command(["squeue", "-h", "-j", hold, "-o", "%T"]).stdout)
+        # A batch run is queued in the hold job and started there as a step.
+        batch_repo = self.repo("hold-batch")
+        self.options(batch_repo, cpus=4)
+        result = self.cli(batch_repo, "experiment", "--agent", "codex", "--repo", batch_repo, "--no-gh-broker",
+                          "--submit", "offline fixture")
+        self.assertIn(f"確保ジョブ {hold} に投入しました", result.stdout)
+        self.assertIsNone(re.search(r"バッチジョブを投入しました: job", result.stdout))
+        def finished():
+            # A finished batch run is renamed after its title; follow latest each time.
+            run = (batch_repo / ".agent-runs/latest").resolve()
+            return run if (run / "live/session_finished.txt").is_file() else None
+
+        batch_run = self.wait(finished, 150)
+        diagnostic = (batch_run / "live/slurm.err").read_text() + (batch_run / "live/stderr.log").read_text()
+        self.assertEqual(int((batch_run / "live/exit_code.txt").read_text()), 0, diagnostic)
+        self.assertEqual((batch_run / "live/slurm_job_id.txt").read_text().strip(), hold)
+        self.archived(batch_run)
+        self.unlocked(batch_repo)
+        status = self.cli(first_repo, "hold", "status").stdout
+        self.assertIn(f"job {hold}", status)
+        self.assertIn(first_run.name, status)
+        ps = self.cli(first_repo, "ps").stdout
+        self.assertIn("確保ジョブ。agentrun hold stop で解放", ps)
+        # Stopping one session is its step only.
+        self.assertIn("確保ジョブとほかのセッションはそのまま", self.cli(first_repo, "hold", "cancel", first_run.name).stdout)
+        self.assertNotEqual(first.finish(), 0)
+        self.ended(first)
+        self.assertIn("RUNNING", command(["squeue", "-h", "-j", hold, "-o", "%T"]).stdout)
+        self.assertIn("解放しました", self.cli(first_repo, "hold", "stop", "--yes").stdout)
+        self.wait(lambda: not command(["squeue", "-h", "-j", hold, "-o", "%T"]).stdout.strip(), 60)
+
     def test_validate_doctor_goal_dry_run_smoke_and_run_commands(self):
         repo = self.repo("commands")
         for args in [("validate",), ("doctor", "--all"), ("agents",), ("init-goal",)]:
