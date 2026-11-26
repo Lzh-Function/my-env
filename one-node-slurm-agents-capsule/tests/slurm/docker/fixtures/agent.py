@@ -331,9 +331,11 @@ assert Path("/workspace").is_dir() and os.getuid() == 1000
 assert os.environ.get("AGENTRUN_ROLE") == "worker"
 assert os.environ["SLURMD_NODENAME"] == "compute"
 # Runs ask for 1 CPU; a session in a hold job shares the whole node (the scenario says how many).
+# The node's 4 CPUs are Slurm's view; the machine running the test may have fewer to bind.
 _scenario = Path("/workspace/.capsule-test.json")
 _cpus = json.loads(_scenario.read_text()).get("cpus", 1) if _scenario.exists() else 1
-assert len(os.sched_getaffinity(0)) == int(os.environ["SLURM_CPUS_PER_TASK"]) == _cpus
+assert int(os.environ["SLURM_CPUS_PER_TASK"]) == _cpus
+assert 1 <= len(os.sched_getaffinity(0)) <= _cpus
 assert not any(key in os.environ for key in ("GH_TOKEN", "GITHUB_TOKEN"))
 assert CREDENTIAL.is_file(), CREDENTIAL
 assert "nameserver" in Path("/etc/resolv.conf").read_text()
