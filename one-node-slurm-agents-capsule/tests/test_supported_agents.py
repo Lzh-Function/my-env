@@ -400,7 +400,8 @@ class SupportedAgentTests(unittest.TestCase):
             answer = json.loads(result.stdout)
             self.assertEqual(answer["decision"], "block")
             self.assertRegex(answer["reason"], r"/runs/live/session_log\.md .*`- \d{4}-\d{2}-\d{2} \d{2}:\d{2} <")
-            self.assertLess(len(answer["reason"]), 200)  # a short instruction keeps the extra turn cheap
+            self.assertLess(len(answer["reason"]), 320)  # a short instruction keeps the extra turn cheap
+            self.assertIn("exactly `.`", answer["reason"])  # a fixed final message, not a repeated answer
             # Once the agent wrote the line and stops again, it is let go.
             result = self.run_hook("session_log", dict(payload, stop_hook_active=True))
             self.assertEqual((result.returncode, result.stdout), (0, ""))

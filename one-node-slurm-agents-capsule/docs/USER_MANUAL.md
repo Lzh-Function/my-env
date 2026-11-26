@@ -1882,7 +1882,7 @@ agentrun validate
 | フック | 役割 |
 | ---- | ---- |
 | `stop_notify.py` | Slack Incoming Webhook で完了通知を送ります。スクリプト内の `SLACK_WEBHOOK_URL` に実際の URL を設定してください。未設定のままでもフックは失敗せず、通知をスキップします。エージェント種別（Claude / Codex / Antigravity）を受信データから自動検出し、最後の応答の冒頭を要約として載せます。1 回の返答につき、最初に止まったときだけ送ります。 |
-| `session_log.py` | 止まるたびに一度だけ止まるのを保留し、「`live/session_log.md` に `- 2026-11-20 16:40 <この返答でしたこと（15 語以内）>` を 1 行追記して、返答せずに止まる」ようエージェントに短く指示します。時刻はフックが日本時間（`AGENTRUN_TIMEZONE` で変更可）で埋めるため、エージェントは時刻を調べずに済み、使うのは短い書き込み 1 回分です。書き込んで再び止まったときは保留しません（Claude Code / Codex の `stop_hook_active`、Antigravity の `continuationActive`）。Antigravity では、中断・エラー・上限で止まったときも保留しません。 |
+| `session_log.py` | 止まるたびに一度だけ止まるのを保留し、「`live/session_log.md` に `- 2026-11-20 16:40 <この返答でしたこと（15 語以内）>` を 1 行追記し、そのあとの返答は `.` の 1 文字だけにする」ようエージェントに短く指示します（「返答しない」と指示しても、モデルは書き込んだことを報告したり答えを繰り返したりするため、返答の中身を決めています）。時刻はフックが日本時間（`AGENTRUN_TIMEZONE` で変更可）で埋めるため、エージェントは時刻を調べずに済み、使うのは短い書き込み 1 回分です。書き込んで再び止まったときは保留しません（Claude Code / Codex の `stop_hook_active`、Antigravity の `continuationActive`）。Antigravity では、中断・エラー・上限で止まったときも保留しません。 |
 
 <a id="install--uninstall"></a>
 

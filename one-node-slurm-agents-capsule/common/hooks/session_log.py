@@ -54,8 +54,12 @@ def main() -> int:
         ASKED.parent.mkdir(parents=True, exist_ok=True)
         ASKED.write_text(turn)
     line = f"- {local_now()} "
-    reason = (f"agentrun: append exactly one line to {LOG} and stop without replying: "
-              f"`{line}<what this turn did, max 15 words>`")
+    # Told to end with no text, models still confirm the write or repeat their answer (a
+    # final message seems required); a fixed one-character final message is what they follow.
+    reason = (f"Before you stop, append one line to {LOG} with a single shell command: "
+              f"`{line}<what this turn did, max 15 words>`. "
+              f"Your final message after that command must be exactly `.` (one period) and nothing else"
+              f" - your answer above already reached the user.")
     print(json.dumps({"decision": "block", "reason": reason}))
     return 0
 
