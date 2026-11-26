@@ -44,6 +44,8 @@ COPY common /opt/capsule/common
 COPY profiles /opt/capsule/profiles
 COPY templates /opt/capsule/templates
 COPY tests /opt/capsule/tests
+# test_history.py checks that the history examples match the current format.
+COPY docs/history-examples /opt/capsule/docs/history-examples
 COPY install.sh uninstall.sh /opt/capsule/
 COPY secrets/.env.example secrets/gh.env.example /opt/capsule/secrets/
 COPY tests/slurm/docker /opt/cluster-test
