@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from history_export import SECTION_HEAD, archive_key, chronological, history_root
-from obsidian_note import FORMAT, obsidian_body, zone
+from obsidian_note import FORMAT, GUIDE, obsidian_body, zone
 from sessions import safe_text
 
 RUN_TIME = re.compile(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})")
@@ -150,6 +150,14 @@ def moment(stamp):
     except ValueError:
         return None
     return value if value.tzinfo is not None else None
+
+
+def log_time(text):
+    """A session log time ("2026-11-20 16:40", AGENTRUN_TIMEZONE) as an aware datetime, or None."""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=zone()) if text else None
+    except ValueError:
+        return None
 
 
 def first_time(text):
@@ -296,6 +304,8 @@ class Conversation:
         self.metadata = json.loads(self.latest["metadata_json"])
         # Set on the conversations split from one run by /clear: (number, conversation ID, count).
         self.part = part
+        # The time span of a conversation split by /clear, for its session log lines: (from, until).
+        self.window = (None, None)
 
     @property
     def key(self):
@@ -333,7 +343,41 @@ class Conversation:
                     previous = text
             if rows:
                 found.append(Conversation(rows, (number, group[0], len(groups))))
+        # Session log lines go by their time: from a conversation's start (to the minute, as the
+        # lines are written) until the next one starts.
+        starts = [None if c.begin is None else c.begin.replace(second=0, microsecond=0) for c in found]
+        for index, conversation in enumerate(found):
+            conversation.window = (starts[index], starts[index + 1] if index + 1 < len(found) else None)
         return found
+
+    @property
+    def session_log(self):
+        """The agent's one-line summaries of its turns, oldest first: [(time or None, text)]."""
+        if not hasattr(self, "_session_log"):
+            lines, seen = [], set()
+            for row in self.runs:
+                for line in json.loads(row["metadata_json"]).get("session_log") or []:
+                    item = (line.get("time"), str(line.get("text") or "").strip())
+                    if item[1] and item not in seen:
+                        seen.add(item)
+                        lines.append(item)
+            start, end = self.window
+            kept = []
+            for when, text in lines:
+                when_ = log_time(when)
+                if when_ and ((start and when_ < start) or (end and when_ >= end)):
+                    continue
+                kept.append((when, text))
+            # Resumed runs each keep their own log: put the lines in time order. A line without a time
+            # cannot be placed, so then the runs' order (oldest run first) is kept as it is.
+            if all(when for when, _ in kept):
+                kept.sort(key=lambda item: item[0])
+            self._session_log = kept
+        return self._session_log
+
+    @property
+    def session_log_text(self):
+        return "\n".join(f"- {when} {text}" if when else f"- {text}" for when, text in self.session_log)
 
     @property
     def resumes(self):
@@ -377,7 +421,9 @@ class Conversation:
         return ""
 
     def contains(self, words):
-        return all(any(word.lower() in row["markdown"].lower() for row in self.runs) for word in words)
+        log = self.session_log_text.lower()
+        return all(word.lower() in log or any(word.lower() in row["markdown"].lower() for row in self.runs)
+                   for word in words)
 
 
 def conversations(db, words, agent, repo, noise=False):
@@ -427,7 +473,13 @@ def show(found, words, limit):
         request = first_request(latest["markdown"])
         if request:
             print("    最初の依頼: " + one_line(request, 70))
-        for text in snippets(latest["markdown"], words):
+        if conversation.session_log:
+            when, text = conversation.session_log[-1]
+            print("    最後の作業: " + one_line(f"{when} {text}" if when else text, 70))
+        # Matching session log lines first (they say what was done), then the conversation around the words.
+        logged = [line for line in conversation.session_log_text.splitlines()
+                  if words and any(word.lower() in line.lower() for word in words)][:2]
+        for text in logged + snippets(latest["markdown"], words)[:2 - len(logged)]:
             print("    一致: " + one_line(text, 110))
         cleared = f"（/clear 後の {conversation.part[0]} つ目の会話）" if conversation.part and conversation.part[0] > 1 else ""
         print("    ID: " + conversation.ident + "    " + safe_text(short_path(latest["markdown_path"])) + cleared)
@@ -620,7 +672,7 @@ def export_markdown(found, directory, hidden=()):
             raise ValueError(f"unexpected archive layout: {latest['archive_id']}")
         (directory / name).parent.mkdir(parents=True, exist_ok=True)
         write_private(directory / name, frontmatter(conversation, label)
-                      + "\n" + obsidian_body(latest["markdown"][header.end():], tz))
+                      + "\n" + with_session_log(obsidian_body(latest["markdown"][header.end():], tz), conversation))
         if previous and previous["file"] != name:
             (directory / previous["file"]).unlink(missing_ok=True)  # the title changed
             taken.discard(previous["file"])
@@ -635,6 +687,17 @@ def export_markdown(found, directory, hidden=()):
     if followed:
         note += f"、名前か場所が変わったノート {followed} 件を見つけました（今後もその名前と場所のまま更新します）"
     print(f"書き出しました: 新規 {counts['new']} 件、更新 {counts['updated']} 件、変更なし {counts['same']} 件{note} → {directory}")
+
+
+def with_session_log(body, conversation):
+    """The note body with the agent's session log as its first section, right after the guide comment."""
+    if not conversation.session_log:
+        return body
+    lines = [f"- {when} {text}" if when else f"- {text}" for when, text in conversation.session_log]
+    section = "## セッションログ\n\n" + "\n".join(" ".join(line.split()) for line in lines)
+    if body.startswith(GUIDE + "\n\n"):
+        return GUIDE + "\n\n" + section + "\n\n" + body[len(GUIDE) + 2:]
+    return section + "\n\n" + body
 
 
 def find_conversation(found, ident):

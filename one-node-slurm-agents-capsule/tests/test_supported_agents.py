@@ -49,6 +49,16 @@ class SupportedAgentTests(unittest.TestCase):
         self.assertIn("selected_agent: claude", result.stdout)
         self.assertFalse((self.root / ".agent-runs").exists())
 
+    def test_session_log_settings_reach_the_container(self):
+        # The hooks run inside the container, which starts from a clean environment.
+        script = ('AGENTRUN_SESSION_LOG_INTERVAL=5 AGENTRUN_TIMEZONE=UTC; export AGENTRUN_SESSION_LOG_INTERVAL AGENTRUN_TIMEZONE; '
+                  'parse_run_args --no-secrets; write_plan assist claude "$PWD" "" 0 00:10:00 task "$1" "" batch')
+        result = self.source(script, self.root / "with_log_settings")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        command = shlex.split((self.root / "with_log_settings/apptainer_exec.sh").read_text().splitlines()[-1])
+        self.assertIn("AGENTRUN_SESSION_LOG_INTERVAL=5", command)
+        self.assertIn("AGENTRUN_TIMEZONE=UTC", command)
+
     def test_every_agent_prepares_every_profile_with_shared_assets(self):
         for agent in AGENTS:
             for mode in ("assist", "experiment", "campaign"):
@@ -393,6 +403,70 @@ class SupportedAgentTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (0, ""))
         self.assertFalse((runs / "live/events.jsonl").exists())
 
+    def test_session_log_asks_for_progress_lines_in_long_turns_only(self):
+        runs = self.root / "runs"
+        clock, log = runs / "live/.session_log_clock.json", runs / "live/session_log.md"
+        env = dict(AGENTRUN_DIR=str(runs), AGENTRUN_TIMEZONE="Asia/Tokyo")
+
+        def claude_tool(**extra):  # Claude Code and Codex: update_run_status.py after a command
+            payload = {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}, **extra}
+            result = self.run_hook("update_run_status", payload, **{**env, **extra.pop("env", {})})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] if result.stdout else None
+
+        def agy(event, payload):
+            result = subprocess.run(["python3", str(ROOT / "common/hooks/worker_hook.py"), "--antigravity", event,
+                                     str(ROOT / f"common/hooks/{'session_log' if event != 'PostToolUse' else 'update_run_status'}.py")],
+                                    input=json.dumps(payload), env=dict(self.env, **env), capture_output=True,
+                                    text=True, timeout=10)
+            return json.loads(result.stdout)
+
+        def long_ago(minutes=25):
+            when = time.time() - minutes * 60
+            data = json.loads(clock.read_text())
+            clock.write_text(json.dumps({**data, "anchor": when}))
+            if log.exists():
+                os.utime(log, (when, when))
+
+        # The first tool call of a turn starts the clock; a short turn is never asked.
+        self.assertIsNone(claude_tool())
+        self.assertIsNone(claude_tool())
+        long_ago()
+        reason = claude_tool()
+        self.assertIn("（途中）", reason)
+        self.assertIn("日本語", reason)
+        self.assertRegex(reason, r"session_log\.md .*`- \d{4}-\d{2}-\d{2} \d{2}:\d{2} （途中）")
+        self.assertIn("continue your work", reason)
+        self.assertIsNone(claude_tool())  # asked once per interval, written or not
+        # A line written recently (by either hook) restarts the count.
+        long_ago()
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("- 2026-11-27 10:00 作業した\n")
+        self.assertIsNone(claude_tool())
+        # After a stop, the long idle time before the next request does not count.
+        long_ago(60)
+        self.run_hook("session_log", {"hook_event_name": "Stop", "stop_hook_active": True}, **env)
+        self.assertIsNone(claude_tool())
+        long_ago()
+        self.assertIsNotNone(claude_tool())
+        # Subagents leave the log to their parent; an interval of 0 turns the check off.
+        long_ago()
+        self.assertIsNone(claude_tool(agent_id="sub"))
+        self.assertIsNone(claude_tool(env={"AGENTRUN_SESSION_LOG_INTERVAL": "0"}))
+        # agy: its PostToolUse cannot answer and leaves the clock alone; PreInvocation injects a system message.
+        long_ago()
+        call = {"hookEventName": "PostToolUse", "toolCall": {"name": "run_command", "args": {"CommandLine": "ls"}}}
+        self.assertEqual(agy("PostToolUse", call), {})
+        answer = agy("PreInvocation", {"hookEventName": "PreInvocation", "invocationNum": 3})
+        self.assertIn("（途中）", answer["injectSteps"][0]["systemMessage"]["systemMessage"])
+        self.assertEqual(agy("PreInvocation", {"hookEventName": "PreInvocation", "invocationNum": 4}), {})
+        # Reviewers keep no log.
+        long_ago()
+        result = subprocess.run(["python3", str(ROOT / "common/hooks/worker_hook.py"), "--antigravity", "PreInvocation",
+                                 str(ROOT / "common/hooks/session_log.py")], input="{}",
+                                env=dict(self.env, AGENTRUN_ROLE="reviewer", **env), capture_output=True, text=True)
+        self.assertEqual(json.loads(result.stdout), {})
+
     def test_session_log_asks_for_one_line_per_stop_and_notifies_once(self):
         for payload in ({"hook_event_name": "Stop", "session_id": "s", "stop_hook_active": False},  # Claude Code
                         {"hook_event_name": "Stop", "turn_id": "t", "model": "m", "stop_hook_active": False}):  # Codex
@@ -477,7 +551,11 @@ class SupportedAgentTests(unittest.TestCase):
         # Shell commands can edit files too (sed -i, redirects), so the recorder runs after them as well.
         self.assertIn("record_file_changes.py", scripts("PostToolUse", "run_command"))
         generated = json.loads((ROOT / "agents/antigravity/hooks.json").read_text())["agentrun"]
-        self.assertEqual(sorted(generated), ["PostToolUse", "PreToolUse", "Stop"])
+        self.assertEqual(sorted(generated), ["PostToolUse", "PreInvocation", "PreToolUse", "Stop"])
+        # agy's PostToolUse cannot answer, so the session log's mid-turn check runs before model calls.
+        self.assertEqual(scripts("PreInvocation", ""), ["session_log.py"])
+        self.assertTrue(all("worker_hook.py --antigravity PreInvocation " in h["command"]
+                            for h in generated["PreInvocation"]))
         self.assertTrue(all("worker_hook.py --antigravity Stop " in h["command"] for h in generated["Stop"]))
 
     def test_command_events_exclude_tool_results_and_stop_summaries_keep_every_agent(self):

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Append a command event and update live status for an agent run."""
+"""Append a command event and update live status for an agent run.
+
+It also runs the session log's mid-turn check (session_log.progress), so a long turn is asked for
+a progress line without starting another hook process for every command.
+"""
 
 from __future__ import annotations
 
@@ -38,6 +42,10 @@ def main() -> int:
     live_dir.mkdir(parents=True, exist_ok=True)
 
     raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
     event = {
         "ts": utc_now(),
         "event": "command",
@@ -57,6 +65,15 @@ def main() -> int:
         encoding="utf-8",
     )
     (live_dir / "heartbeat.txt").write_text(utc_now() + "\n", encoding="utf-8")
+    # Antigravity's PostToolUse cannot answer; it runs the check before each model call instead.
+    if isinstance(payload, dict) and payload.get("agent") != "antigravity":
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import session_log
+
+        reason = session_log.progress(payload)
+        if reason:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": reason}},
+                             ensure_ascii=False))
     return 0
 
 

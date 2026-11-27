@@ -116,6 +116,11 @@ def build(temp):
         sessions.init(run, agent, str(temp / repo), "assist", source)
         return run, sessions.state_dir(run, sessions.manifest(run))
 
+    def log(run, *lines):
+        # What the session log hooks have the agent write (Japan time).
+        (run / "live").mkdir(exist_ok=True)
+        (run / "live/session_log.md").write_text("".join(f"- {line}\n" for line in lines))
+
     def title(run, text):
         (run / "artifacts").mkdir(exist_ok=True)
         (run / "artifacts/run_title.txt").write_text(text + "\n")
@@ -124,21 +129,26 @@ def build(temp):
     rollout = store / f".codex/sessions/2026/11/19/rollout-2026-11-19T18-00-00-{CODEX_ID}.jsonl"
     write_jsonl(rollout, codex_records(resumed=False))
     title(first, "学習率を下げた再学習")
+    log(first, "2026-11-19 18:20 （途中）lr を 1e-4 に変えて再学習を始めた",
+        "2026-11-19 18:40 lr 1e-4 で再学習し val_loss 0.31 を確認した")
     collector.archive(first)
     # `agentrun --resume`: a new run that continues the same Codex conversation.
     resumed, _ = start("20261120_100000_resume-assist_codex", "codex", "model", first)
     write_jsonl(rollout, codex_records(resumed=True))
+    log(resumed, "2026-11-20 10:01 前回の学習結果を表にまとめた")
     collector.archive(resumed)
 
     run, store = start("20261120_110000_assist_claude", "claude", "paper")
     write_jsonl(store / ".claude/projects/-workspace" / f"{CLAUDE_ID}.jsonl", claude_records())
     title(run, "図の凡例の修正")
+    log(run, "2026-11-20 11:01 図2の凡例を枠の外に移して再描画した")
     collector.archive(run)
 
     run, store = start("20261120_120000_assist_antigravity", "antigravity", "docs")
     write_jsonl(store / ".gemini/antigravity-cli/brain" / AGY_ID / ".system_generated/logs/transcript_full.jsonl",
                 agy_records())
     title(run, "README の手順追加")
+    log(run, "2026-11-20 12:01 README にインストール手順を追記した")
     collector.archive(run)
     return parent
 
@@ -172,7 +182,7 @@ def main(out=HERE):
             shutil.rmtree(out / folder, ignore_errors=True)
             (out / folder).mkdir(parents=True)
         for path in sorted((temp / "history/runs").glob("*/*")):
-            if path.name in ("conversation.md", "metadata.json"):
+            if path.name in ("conversation.md", "metadata.json", "session_log.md"):
                 target = out / "archive" / path.parent.name.replace(real, shown) / path.name
                 target.parent.mkdir(exist_ok=True)
                 target.write_text(clean(path.read_text()))

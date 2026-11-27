@@ -64,6 +64,15 @@
       ]
     },
     {
+      "event": "PreInvocation",
+      "matcher": "",
+      "entries": [
+        {
+          "script": "session_log.py"
+        }
+      ]
+    },
+    {
       "event": "Stop",
       "matcher": "",
       "entries": [

@@ -90,6 +90,12 @@ def check_features(agent, options):
                     for hook in group["hooks"]
                 ]
                 assert (decision in answers) if decision == "deny" else set(answers) == {"allow"}, answers
+            # Before each model call agy runs the session log's mid-turn check; a fresh turn only starts its clock.
+            for hook in groups["PreInvocation"]:
+                answer = json.loads(execute(["sh", "-c", hook["command"]],
+                                            input=json.dumps({"hookEventName": "PreInvocation", "invocationNum": 1})).stdout)
+                assert answer == {}, answer
+            assert Path("/runs/live/.session_log_clock.json").is_file()
     if options.get("gh"):
         assert os.access("/usr/local/bin/git-remote-agentrun", os.X_OK)
         assert Path("/opt/gh-broker/git.sock").is_socket()

@@ -23,6 +23,27 @@ SESSION_ROLE = re.compile(r"## Session: .* \((worker|reviewer), (?:codex|claude|
 AGY_REQUEST = re.compile(r"<USER_REQUEST>\n?(.*?)\n?</USER_REQUEST>", re.DOTALL)
 AGY_LOGS = ".gemini/antigravity-cli/brain/*/.system_generated/logs"
 TURN_STAMP = re.compile(r"^### (?:User|Assistant) · (\S+)$", re.MULTILINE)
+# A session log line: "- 2026-11-20 16:40 <what the turn did>" (the time in AGENTRUN_TIMEZONE).
+LOG_LINE = re.compile(r"^-\s*(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})\s+(.+?)\s*$")
+
+
+def session_log(run):
+    """The run's live/session_log.md as [{"time", "text"}]; a line without a time keeps time None."""
+    try:
+        text = (run / "live/session_log.md").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = []
+    for line in ANSI.sub("", text).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = LOG_LINE.match(line)
+        if match:
+            lines.append({"time": match.group(1).replace("T", " "), "text": match.group(2)})
+        elif line.startswith(("- ", "* ")):
+            lines.append({"time": None, "text": line[2:].strip()})
+    return lines
 
 
 def history_root():
@@ -457,7 +478,12 @@ def export_run(run, data, store):
                     launcher_cwd=data.get("launcher_cwd"),
                     archived_at=datetime.now(timezone.utc).isoformat(), archive_host=socket.gethostname(),
                     transcripts=transcript_metadata, reviews=reviews, warnings=sorted(warnings))
-        markdown = "# Conversation archive\n\n" + fence(json_text({k: v for k, v in info.items() if k != "transcripts"}), "json")
+        # The agent's own one-line summaries of its turns (written for the session log hook).
+        log = session_log(run)
+        if log:
+            info["session_log"] = log
+            atomic_text(target / "session_log.md", (run / "live/session_log.md").read_text(encoding="utf-8", errors="replace"))
+        markdown = "# Conversation archive\n\n" + fence(json_text({k: v for k, v in info.items() if k not in ("transcripts", "session_log")}), "json")
         markdown += "".join(parts) if parts else "\nNo persisted conversation records were found.\n"
         markdown = chronological(markdown)
         if warnings:

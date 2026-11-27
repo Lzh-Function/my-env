@@ -84,6 +84,13 @@
         ]
       }
     ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "/home/sandbox/ai-agent-config/common/hooks/worker_hook.py --antigravity PreInvocation /home/sandbox/ai-agent-config/common/hooks/session_log.py",
+        "timeout": 30
+      }
+    ],
     "Stop": [
       {
         "type": "command",

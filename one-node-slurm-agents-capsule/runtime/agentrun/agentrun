@@ -1002,7 +1002,8 @@ apptainer_command() {
     printf ' --bind %q:/opt/agentrun:ro' "$ROOT_DIR/runtime/agentrun"
     local review_key
     for review_key in AGENT_REVIEW_CODEX_MODEL AGENT_REVIEW_CODEX_EFFORT \
-        AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ANTIGRAVITY_MODEL AGENT_REVIEW_ANTIGRAVITY_EFFORT AGENT_REVIEW_ACTIVE_TIMEOUT; do
+        AGENT_REVIEW_CLAUDE_MODEL AGENT_REVIEW_CLAUDE_EFFORT AGENT_REVIEW_ANTIGRAVITY_MODEL AGENT_REVIEW_ANTIGRAVITY_EFFORT AGENT_REVIEW_ACTIVE_TIMEOUT \
+        AGENTRUN_TIMEZONE AGENTRUN_SESSION_LOG_INTERVAL; do
         if [ -n "${!review_key:-}" ]; then
             printf ' --env %q' "$review_key=${!review_key}"
         fi

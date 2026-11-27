@@ -785,6 +785,84 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("新規 0 件", self.history_cli("export-md", str(vault)))
         self.assertEqual(sorted(p.name for p in vault.glob("*.md")), ["2026-11-20 1100 表の作成.md", "図のメモ.md"])
 
+    def test_session_log_goes_into_list_search_and_notes_by_conversation(self):
+        self.initialize("claude")
+        project = self.store / ".claude/projects/-workspace"
+
+        def turn(session, kind, text, stamp):
+            content = text if kind == "user" else [{"type": "text", "text": text}]
+            return {"sessionId": session, "cwd": "/workspace", "type": kind, "uuid": f"{session}-{stamp}",
+                    "timestamp": f"2026-11-20T{stamp}Z", "message": {"role": kind, "content": content}}
+
+        write_jsonl(project / "aaaa1111.jsonl", [turn("aaaa1111", "user", "図を直して", "01:00:00"),
+                                                  turn("aaaa1111", "assistant", "図を直した", "01:30:00")])
+        write_jsonl(project / "bbbb2222.jsonl", [
+            turn("bbbb2222", "user", "<command-name>/clear</command-name>\n<command-message>clear</command-message>",
+                 "02:00:30"),
+            turn("bbbb2222", "user", "表を作って", "02:01:00"), turn("bbbb2222", "assistant", "表を作った", "02:40:00")])
+        (self.run / "live").mkdir(exist_ok=True)
+        # Times are Japan time (AGENTRUN_TIMEZONE's default); 11:00 is the /clear minute.
+        (self.run / "live/session_log.md").write_text(
+            "- 2026-11-20 10:20 （途中）凡例の位置を調べた\n- 2026-11-20 10:30 図2の凡例を枠の外に移した\n"
+            "- 2026-11-20 11:00 表の列を決めた\n- 2026-11-20 11:40 表1をCSVから作成した\n")
+        collector.archive(self.run)
+        archive = next((self.history_root / "runs").glob(f"{self.run.name}-*"))
+        self.assertIn("表1をCSVから作成した", (archive / "session_log.md").read_text())
+        self.assertNotIn("session_log", (archive / "conversation.md").read_text())
+
+        listing = self.history_cli("list")
+        self.assertIn("最後の作業: 2026-11-20 10:30 図2の凡例を枠の外に移した", listing)
+        self.assertIn("最後の作業: 2026-11-20 11:40 表1をCSVから作成した", listing)
+        # Search finds a conversation by its log alone and shows the line.
+        found = self.history_cli("search", "枠の外")
+        self.assertIn("一致: - 2026-11-20 10:30 図2の凡例を枠の外に移した", found)
+        self.assertIn("最初の依頼: 図を直して", found)
+        self.assertNotIn("表を作って", found)
+
+        vault = self.root / "vault"
+        self.history_cli("export-md", str(vault))
+        notes = {p.read_text().count("表を作った"): p.read_text() for p in vault.glob("*.md")}
+        first, second = notes[0], notes[1]
+        self.assertIn("## セッションログ\n\n- 2026-11-20 10:20 （途中）凡例の位置を調べた\n"
+                      "- 2026-11-20 10:30 図2の凡例を枠の外に移した\n\n## 作業担当のセッション", first)
+        self.assertNotIn("表の列", first)
+        self.assertIn("## セッションログ\n\n- 2026-11-20 11:00 表の列を決めた\n- 2026-11-20 11:40 表1をCSVから作成した", second)
+        self.assertLess(second.index("## セッションログ"), second.index("## 作業担当のセッション"))
+        self.assertTrue(second.split("---\n", 2)[2].lstrip().startswith("<!-- agentrun:"))
+
+    def test_session_log_of_resumed_runs_is_one_list_in_time_order(self):
+        first = self.parent / "20261110_100000_assist_codex"
+        first.mkdir()
+        sessions.init(first, "codex", str(self.root), "assist")
+        rollout = sessions.state_dir(first, sessions.manifest(first)) / ".codex/sessions/rollout.jsonl"
+        meta = {"type": "session_meta", "payload": {"id": ID}}
+        write_jsonl(rollout, [meta, message("user", "学習して"), message("assistant", "始めた")])
+        (first / "live").mkdir()
+        (first / "live/session_log.md").write_text("- 2026-11-10 10:30 学習を始めた\n- 2026-11-10 10:50 lossを確認した\n")
+        collector.archive(first)
+        resumed = self.parent / "20261111_090000_resume-assist_codex_X"
+        resumed.mkdir()
+        sessions.init(resumed, "codex", str(self.root), "assist", first)
+        write_jsonl(rollout, [meta, message("user", "学習して"), message("assistant", "始めた"),
+                              message("user", "続けて"), message("assistant", "続けた")])
+        (resumed / "live").mkdir()
+        # A resumed run starts its own log; a line copied over is listed once.
+        (resumed / "live/session_log.md").write_text("- 2026-11-10 10:50 lossを確認した\n- 2026-11-11 09:10 学習率を下げて再開した\n")
+        collector.archive(resumed)
+        self.assertIn("最後の作業: 2026-11-11 09:10 学習率を下げて再開した", self.history_cli("list"))
+        vault = self.root / "vault"
+        self.history_cli("export-md", str(vault))
+        note = next(vault.glob("*.md")).read_text()
+        self.assertIn("## セッションログ\n\n- 2026-11-10 10:30 学習を始めた\n- 2026-11-10 10:50 lossを確認した\n"
+                      "- 2026-11-11 09:10 学習率を下げて再開した\n\n", note)
+        # Runs without a log (older runs) get no line and no section.
+        other = self.archived_run("20261112_100000_assist_codex", [message("user", "図を直して"), message("assistant", "直した")])
+        listing = self.history_cli("list")
+        self.assertEqual(listing.count("最後の作業"), 1)
+        self.history_cli("export-md", str(vault))
+        self.assertNotIn("セッションログ", next(p for p in vault.glob("*.md") if "図を直して" in p.read_text()).read_text())
+        self.assertTrue(other.is_dir())
+
     def test_codex_sessions_split_by_clear_but_resume_stays_one_conversation(self):
         self.codex([{"type": "session_meta", "payload": {"id": ID}},
                     {**message("user", "学習して"), "timestamp": "2026-11-20T01:00:00Z"}])

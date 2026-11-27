@@ -19,7 +19,7 @@ COMMAND_TOOLS = {"run_command"}
 # Hooks see read_file / write_file / edit_file with "Path"; other spellings are kept for older CLIs.
 PATH_KEYS = ("Path", "TargetFile", "AbsolutePath", "FilePath", "file_path", "path", "DirectoryPath",
              "SearchPath", "SearchDirectory")
-EVENTS = ("PreToolUse", "PostToolUse", "Stop")
+EVENTS = ("PreToolUse", "PostToolUse", "PreInvocation", "Stop")
 
 
 def managed(path):
@@ -121,6 +121,14 @@ def antigravity(event, target):
         held = next((a for a in answers if a.get("decision") == "block"), None)
         print(json.dumps({"decision": "continue", "reason": str(held.get("reason") or "")}, ensure_ascii=False)
               if held else "{}")
+        return 0
+    if event == "PreInvocation":
+        # Context a shared hook adds for the model (Claude Code's additionalContext) becomes a
+        # system message agy puts before its next model call.
+        added = [str(a["hookSpecificOutput"]["additionalContext"]) for a in answers
+                 if isinstance(a.get("hookSpecificOutput"), dict) and a["hookSpecificOutput"].get("additionalContext")]
+        print(json.dumps({"injectSteps": [{"systemMessage": {"systemMessage": text}} for text in added]},
+                         ensure_ascii=False) if added else "{}")
         return 0
     if event != "PreToolUse":
         print("{}")  # PostToolUse only observes

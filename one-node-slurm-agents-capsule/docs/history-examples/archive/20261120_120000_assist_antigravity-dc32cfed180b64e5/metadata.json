@@ -20,5 +20,11 @@
     }
   ],
   "reviews": [],
-  "warnings": []
+  "warnings": [],
+  "session_log": [
+    {
+      "time": "2026-11-20 12:01",
+      "text": "README にインストール手順を追記した"
+    }
+  ]
 }

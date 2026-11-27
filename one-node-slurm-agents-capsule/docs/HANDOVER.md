@@ -41,6 +41,7 @@
 
 - `/clear` のあとの会話を別ノートに分ける処理（`history_index.py`）。
 - 3 つのエージェントによる相互監査（cross-review）。
+- セッションログの返答の途中の行（`common/hooks/session_log.py`）。Claude Code は実際に起動して確かめました。Codex（PostToolUse の `additionalContext`）と Antigravity（PreInvocation の `injectSteps`）は、単体テストと CLI の仕様の確認だけです。`AGENTRUN_SESSION_LOG_INTERVAL=1`（1 分）で起動し、数分かかる作業を頼んで、`/runs/live/session_log.md` に「（途中）」の行が増えるかを確かめてください。開発担当が Codex か Antigravity なら、自分のセッションのログでも確かめられます。
 
 ## agentrun のセッションの中で開発するときの注意
 

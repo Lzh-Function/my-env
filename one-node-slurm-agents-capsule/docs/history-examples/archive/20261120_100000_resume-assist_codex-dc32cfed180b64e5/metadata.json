@@ -22,5 +22,11 @@
     }
   ],
   "reviews": [],
-  "warnings": []
+  "warnings": [],
+  "session_log": [
+    {
+      "time": "2026-11-20 10:01",
+      "text": "前回の学習結果を表にまとめた"
+    }
+  ]
 }

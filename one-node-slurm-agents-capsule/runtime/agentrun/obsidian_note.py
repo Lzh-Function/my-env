@@ -12,7 +12,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 # Bump when the note layout changes so export-md rewrites notes it wrote earlier.
-FORMAT = 6
+FORMAT = 7
 
 TURN = re.compile(r"### (User|Assistant) · (.*)")
 SESSION = re.compile(r"## Session: (.*) \((worker|reviewer), (codex|claude|antigravity)\)")
