@@ -4,6 +4,8 @@ Claude Code / Codex / Antigravity を Slurm compute node 上の Apptainer sandbo
 
 詳細な利用手順は **[docs/USER_MANUAL.md](docs/USER_MANUAL.md)** を参照してください。
 
+開発を引き継ぐ場合は、先に [docs/HANDOVER.md](docs/HANDOVER.md) を読んでください。
+
 ## ディレクトリ構成
 
 ```text
