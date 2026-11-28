@@ -287,10 +287,11 @@ wizard_history_schedule() {
 wizard_history() {
     local list='一覧を見る（新しい順）' search='キーワードで検索する' export='Markdown として書き出す（Obsidian など向け）'
     local rename='会話の名前を変える' schedule='毎日の自動書き出しを設定する（cron）'
+    local host='書き出すノートに入れるマシンの名前（host）'
     local choice rc filter words directory
     while :; do
         rc=0
-        choice="$(wizard_select '会話履歴 — 保存した全プロジェクトの会話が対象です' "$list" "$search" "$rename" "$export" "$schedule")" || rc=$?
+        choice="$(wizard_select '会話履歴 — 保存した全プロジェクトの会話が対象です' "$list" "$search" "$rename" "$export" "$schedule" "$host")" || rc=$?
         [ "$rc" -eq 0 ] || { [ "$rc" -eq 10 ] && return 0; return "$rc"; }
         case "$choice" in
             "$list")
@@ -308,6 +309,7 @@ wizard_history() {
                 else wizard_exec "会話履歴の検索: $words" wizard_python history_index.py search "${terms[@]}" --limit 30 || rc=$?; fi ;;
             "$rename") wizard_history_rename || rc=$? ;;
             "$schedule") wizard_history_schedule || rc=$? ;;
+            "$host") wizard_history_host || rc=$? ;;
             "$export")
                 directory="$(cat "$WIZARD_EXPORT_DIR_FILE" 2>/dev/null || true)"
                 directory="$(wizard_path_input '書き出し先のフォルダ（Obsidian の保管庫の中のフォルダなど）' "${directory:-$HOME/agent-history}")" || rc=$?
@@ -325,6 +327,21 @@ wizard_history() {
         esac
         wizard_menu_rc "$rc" || return $?
     done
+}
+
+wizard_history_host() {
+    local current name rc=0
+    current="$(wizard_python history_index.py host get 2>/dev/null || true)"
+    name="$(wizard_input 'このマシンの名前（ノートの host と host/名前 のタグ。例: david02。空にすると書きません）' "$current")" || rc=$?
+    [ "$rc" -ne 10 ] || return 0
+    [ "$rc" -eq 0 ] || return "$rc"
+    if [ -n "${name//[[:space:]]/}" ]; then
+        wizard_exec 'マシンの名前の登録' wizard_python history_index.py host set "$name"
+    elif [ -n "$current" ]; then
+        wizard_exec 'マシンの名前の解除' wizard_python history_index.py host unset
+    else
+        wizard_banner '名前は登録されていません。ノートに host は書きません。'
+    fi
 }
 
 wizard_history_rename() {

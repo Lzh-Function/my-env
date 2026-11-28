@@ -218,6 +218,7 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("登録されていません", self.history_cli("host"))
         self.assertIn("david02", self.history_cli("host", "set", "david02"))
         self.assertEqual(self.history_cli("host").strip(), "david02")
+        self.assertEqual(self.history_cli("host", "get"), "david02\n")
         self.assertIn("新規 0 件、更新 2 件、変更なし 0 件", export())
         note = (vault / "2026-11-13 1200 retrained again.md").read_text()
         self.assertIn('agent: "codex"\nhost: "david02"\nmode: "assist"\n', note)

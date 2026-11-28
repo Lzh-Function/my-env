@@ -194,6 +194,14 @@ class WizardToolTests(unittest.TestCase):
         self.assertIn("毎日の自動書き出しを解除しました。", output)
         self.assertEqual(table.read_text(), "")
 
+    def test_machine_name_for_notes_is_set_and_removed_from_the_history_menu(self):
+        config = self.root / "central-history/config.json"
+        # tools → history → host → name → back; then host → clear the prefilled name → back → cancel.
+        output = self.wizard(["2", "3", "6", "david02", "", "6", "\x15", "", ":cancel"], expected=130)
+        self.assertIn("このマシンの名前を david02 にしました", output)
+        self.assertIn("登録した名前を消しました", output)
+        self.assertNotIn("host", json.loads(config.read_text()))
+
     def test_dry_run_previews_without_creating_a_run(self):
         # tools → dry-run → assist / claude / interactive → where: a job of its own → repo and resources
         # as is → no binds, no FUSE, no goal → no template → run the dry-run → stop.

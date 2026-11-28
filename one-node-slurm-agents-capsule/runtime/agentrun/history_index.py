@@ -532,6 +532,9 @@ def host_command(words):
         name = saved_host()
         print(name if name else "名前は登録されていません（ノートに host は書きません）。")
         return
+    if words == ["get"]:  # for the wizard: the bare name, or nothing
+        print(saved_host())
+        return
     if words[0] == "set" and len(words) == 2 and " ".join(words[1].split()):
         config["host"] = " ".join(words[1].split())
         message = (f"このマシンの名前を {config['host']} にしました（書き出すノートの host と host/{config['host']} のタグ）。\n"

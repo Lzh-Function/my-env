@@ -600,7 +600,7 @@ agentrun wizard --agent codex    # 起動用のオプションを付けると、
 | 実行中の agentrun を見る | ジョブごとの一覧と overlap の関係 | `ps` |
 | 確保ジョブ | 状態と載っているセッションの確認、作る（パーティションと時間を尋ね、確保するノードの資源を表示して確認）、セッションを 1 つ止める、解放する | `hold status`・`hold start`・`hold cancel`・`hold stop` |
 | run を選んで見る | run を選び（今いるディレクトリの run と、別の場所から起動した実行中の run）、概要を見たうえで、会話の再開（セッションが終わっていて会話が保存されている run だけ。再開前に設定を表示して確認します）、ログ（末尾 200 行か追いかけ表示）、`status.json`、成果物の点検、相互監査の一覧と追いかけ表示、会話履歴の保存し直し、バッチの履歴回収（`--submit` で投入し、まだ回収が終わっていない run だけ）、設定のテンプレート登録を行う | `resume`・`logs`・`tail`・`status`・`verify-run`・`reviews`・`history`・`history --watch`・`template save --from`・`list-runs`・`open-run` |
-| 会話履歴 | 一覧（作業リポジトリで絞り込み可）、キーワード検索、会話の名前の変更（新しい順に 40 件から選び、今の名前を直す。空にするとエージェントが付けた名前に戻す）、Markdown への書き出し（書き出し先は次回の既定値になります）、毎日の自動書き出しの登録と解除（cron） | `history list`・`history search`・`history rename`・`history export-md`・`history schedule` |
+| 会話履歴 | 一覧（作業リポジトリで絞り込み可）、キーワード検索、会話の名前の変更（新しい順に 40 件から選び、今の名前を直す。空にするとエージェントが付けた名前に戻す）、Markdown への書き出し（書き出し先は次回の既定値になります）、毎日の自動書き出しの登録と解除（cron）、書き出すノートに入れるマシンの名前（host）の登録と解除 | `history list`・`history search`・`history rename`・`history export-md`・`history schedule`・`history host` |
 | テンプレートの管理 | run からの登録、中身の確認、削除（確認あり） | `template` |
 | 認証 | 状態の確認、ログイン、取り込み、保存した認証の削除（確認あり） | `auth status`・`auth login`・`auth import`・`auth reset` |
 | 起動内容だけ確認する | 起動と同じ質問に答えたあと、何も起動せずにマウントやコマンドを表示します。結果を見てから「この設定で実際に起動する」「設定を変更する」「wizard を終了する」を選べます。会話の再開は対象外です | `dry-run --show-mounts` |
