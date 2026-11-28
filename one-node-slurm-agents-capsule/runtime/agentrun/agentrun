@@ -473,6 +473,8 @@ Compute-node SSD: /node-scratch, only when AGENTRUN_NODE_SCRATCH=/node-scratch; 
 Resources: $resources
 Host repo: $repo
 
+This is an interactive session: answer each request; the batch-run outputs in the shared rules apply only when the user asks for them.
+
 Wait for the user's first instruction. Do not read files, explore the repository, or run any commands until the user tells you what to do.
 EOF
         append_gh_broker_note "$path"
@@ -938,6 +940,9 @@ apptainer_command() {
     cmd="$(agent_command "$agent" "$mode" "$launch")"
     if [ -f "$run_dir/session.json" ] && [ -n "${RESUME_SOURCE:-}" ]; then
         cmd="$(session_tool command "$run_dir")" || return $?
+    elif [ "$mode" = assist ] && [ "$launch" = interactive ]; then
+        # The start prompt only asks the agent to wait; session_log.py skips that reply's log line.
+        cmd=": > /runs/live/.session_log_waiting && $cmd"
     fi
     if [ "$agent" = codex ]; then
         # Codex deletes arg0 helpers while their lock file is open. On NFS this

@@ -29,6 +29,9 @@ LOG = RUN / "live/session_log.md"
 ASKED = RUN / "live/.session_log_turn"
 # {"anchor": when the mid-turn clock last started, "idle": the agent has stopped since}.
 CLOCK = RUN / "live/.session_log_clock.json"
+# Put there by agentrun when an interactive session starts: its first turn only answers the
+# start prompt ("wait for the user's first instruction"), so it gets no line and no command.
+WAITING = RUN / "live/.session_log_waiting"
 MID_TURN = ("PostToolUse", "PreInvocation")
 
 
@@ -108,6 +111,11 @@ def stop(payload: dict) -> str | None:
             pass
         ASKED.parent.mkdir(parents=True, exist_ok=True)
         ASKED.write_text(turn)
+    try:
+        WAITING.unlink()
+        return None  # the reply to the start prompt: nothing was done yet
+    except FileNotFoundError:
+        pass
     # Told to end with no text, models still confirm the write or repeat their answer (a
     # final message seems required); a fixed one-character final message is what they follow.
     return (f"Before you stop, append one line to {LOG} with a single shell command: "

@@ -42,6 +42,7 @@
 - `/clear` のあとの会話を別ノートに分ける処理（`history_index.py`）。
 - 3 つのエージェントによる相互監査（cross-review）。
 - セッションログの返答の途中の行（`common/hooks/session_log.py`）。Claude Code は実際に起動して確かめました。Codex（PostToolUse の `additionalContext`）と Antigravity（PreInvocation の `injectSteps`）は、単体テストと CLI の仕様の確認だけです。`AGENTRUN_SESSION_LOG_INTERVAL=1`（1 分）で起動し、数分かかる作業を頼んで、`/runs/live/session_log.md` に「（途中）」の行が増えるかを確かめてください。開発担当が Codex か Antigravity なら、自分のセッションのログでも確かめられます。
+- 対話セッションの最初の返答（指示待ちの返事）にログの行を書かせない処理（`live/.session_log_waiting`）。単体テストだけです。3 種のエージェントで対話セッションを起動し、最初の返事のあとに `session_log.md` が空のままで、次の依頼から行が書かれるかを確かめてください。
 
 ## agentrun のセッションの中で開発するときの注意
 
@@ -84,7 +85,7 @@
 このディレクトリ（`install.sh` があるディレクトリ）で実行します。
 
 ```bash
-uv run --no-project python -m unittest discover -s tests -p 'test_*.py'   # ユニットテスト（引き継ぎ時点で 342 件）。コンテナの中で実行できる
+uv run --no-project python -m unittest discover -s tests -p 'test_*.py'   # ユニットテスト（引き継ぎ時点で 347 件）。コンテナの中で実行できる
 tests/slurm/docker/run.sh                                 # Docker の疑似クラスタ（Slurm + Apptainer）と、全ユニットテスト。Docker が必要
 tests/slurm/docker/run.sh ClusterTests.test_hold_job_keeps_sessions_independent_and_runs_batch_inside   # 1 件だけ
 ```
@@ -112,6 +113,8 @@ tests/slurm/docker/run.sh ClusterTests.test_hold_job_keeps_sessions_independent_
 
 | コミット | 内容 |
 | --- | --- |
+| `6c67f75` の次 | 共通ルール（`common/AGENTS.md`）とスキル `agentrun-contract` を整理。`/runs/live` は agentrun とフックが書くのでエージェントは書かない。必須の出力は一括実行だけで、対話セッションでは頼まれたときだけ書く。対話の開始プロンプトにもその旨を 1 文足し、最初の指示待ちの返答にはセッションログを書かせない。 |
+| `6c67f75` | **セッションログ**：返答の終わりに加え、長い返答の途中でも 20 分ごとに「（途中）」の行を書かせる（`AGENTRUN_SESSION_LOG_INTERVAL`）。履歴に取り込み、一覧・検索・ノート（「## セッションログ」節、FORMAT=7）で使う。[USER_MANUAL.md のセッションログの節](USER_MANUAL.md#セッションログ) |
 | `9f51bc0`、`a9477fa` | **確保ジョブ**（`agentrun hold start/status/cancel/stop`）。`sbatch` でノード全体を確保し、対話のセッションは `--overlap` のステップとして、バッチは確保ジョブのキュー（`queue/*.json`）からステップとして起動する。確保ジョブがなければ今までどおり専用のジョブで動く（`--no-hold` を付けると、確保ジョブがあっても専用のジョブ）。ウィザードの「どこで起動しますか？」と、その他の機能の「確保ジョブ」から使える。[USER_MANUAL.md の確保ジョブの節](USER_MANUAL.md#hold) |
 | `06760b5` | agent-history のノートに、どのマシンの会話かを示す `host` を書く（FORMAT=3）。 |
 | `f113b41` | agentrun の履歴で、`/clear` のあとの会話を別の会話（`RUN~2` など）として一覧にし、別ノートに書き出す。サブエージェントの会話は元の会話に付け、相互監査の会話は時間が重なる会話に付ける。 |

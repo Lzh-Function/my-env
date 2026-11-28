@@ -1,12 +1,16 @@
 ---
 name: agentrun-contract
 description:
-  Required output files, formats, and update timing for agentrun runs. Use this
-  whenever you are running inside an agentrun capsule and need to know what files
-  to write, where, and in what format.
+  Required output files, formats, and update timing for agentrun batch runs. Use
+  this when a batch run's start prompt lists "Required outputs", or when the user
+  of an interactive session asks for a report or the run outputs.
 ---
 
 # agentrun output contract
+
+This contract is for batch runs (the start prompt has a user goal and a
+"Required outputs" list). In an interactive session, write these files only when
+the user asks.
 
 You are running inside an agentrun capsule. The host uses `agentrun verify-run`
 to check your outputs after the job finishes. Failing to write required files, or
@@ -38,23 +42,22 @@ the variable is empty and this mount is omitted. This is separate from `/scratch
 SSD contents stay on that node, are shared by that user's runs on the same node,
 and are neither archived nor removed by agentrun. Keep final outputs under `/runs`.
 
-## Files required by every run
+## Files required by every batch run
 
-These must exist when the job exits regardless of mode.
+agentrun creates every file below before the agent starts, and agentrun and its
+hooks keep the `live/` ones; only the files marked **you** are yours to write.
 
-| path | format | notes |
-| ---- | ------ | ----- |
-| `live/status.json` | JSON | see format below |
-| `live/heartbeat.txt` | ISO-8601 timestamp | update periodically while working |
-| `live/stdout.log` | plain text | append agent output; may be empty |
-| `live/stderr.log` | plain text | may be empty |
-| `live/command_log.jsonl` | JSONL | one JSON object per line |
-| `live/events.jsonl` | JSONL | one JSON object per line; may be empty |
-| `live/current_task.md` | markdown | one-liner of what you are doing right now |
-| `artifacts/report.md` | markdown | **must be non-empty** |
-| `artifacts/git_diff.patch` | patch | `git diff` output; empty if no changes |
-| `artifacts/metrics.json` | JSON | summary metrics; `{}` is acceptable |
-| `artifacts/run_title.txt` | plain text | **must be non-empty**; one lowercase line, about five words |
+| path | written by | notes |
+| ---- | ---------- | ----- |
+| `live/status.json` | agentrun | `running` while hooks see commands; `success`/`failed` from the exit code |
+| `live/heartbeat.txt` | hooks | refreshed on every command |
+| `live/stdout.log`, `live/stderr.log` | agentrun | |
+| `live/command_log.jsonl`, `live/events.jsonl` | hooks | |
+| `live/current_task.md` | **you** (optional) | one line of what you are doing now |
+| `artifacts/report.md` | **you** | **must be non-empty** |
+| `artifacts/git_diff.patch` | **you** | `git diff` output; empty if no changes |
+| `artifacts/metrics.json` | **you** | summary metrics; `{}` is acceptable |
+| `artifacts/run_title.txt` | **you** | **must be non-empty**; one lowercase line, about five words |
 
 ## Additional files per mode
 
@@ -68,29 +71,9 @@ job runner writes `live/exit_code.txt` and `live/slurm_job_id.txt`.
 `verify-run` checks these runtime records as well as the agent outputs above.
 Prepare-only or unfinished runs may not pass verification yet.
 
-## `live/status.json` format
-
-Write this file last, after all other outputs are complete.
-
-```json
-{"status": "success", "agent": "<agent>", "mode": "<mode>", "job_id": "<SLURM_JOB_ID>"}
-```
-
-The `status` field must be one of: `success`, `failed`, `cancelled`, `timeout`.
-Use `success` only when all required outputs are written without error.
-On failure, write `failed` and include `"exit_code"` if available.
-
-## `live/heartbeat.txt`
-
-Update this file periodically (every few minutes) to signal the job is alive.
-
-```bash
-date -Iseconds > /runs/live/heartbeat.txt
-```
-
 ## `live/current_task.md`
 
-Keep this updated to describe what you are doing right now. One line is enough.
+Optional: one line on what you are doing right now, for someone watching the run.
 
 ```
 Refactoring dataset loader to support streaming mode.
@@ -146,7 +129,7 @@ the finished run directory. `verify-run` rejects a missing or empty title.
 ## Common mistakes
 
 - Writing outputs to `/workspace` instead of `/runs` — verify-run only checks `/runs`
-- Leaving `live/status.json` as `{}` — must have a `status` field
 - Leaving `artifacts/report.md` empty — verify-run explicitly checks non-empty
 - Leaving `artifacts/run_title.txt` empty — verify-run explicitly checks non-empty
-- Writing invalid JSON/JSONL — verify-run runs `jq` on status.json, metrics.json, and command_log.jsonl
+- Writing invalid JSON — verify-run runs `jq` on metrics.json
+- Writing `live/status.json` or `live/heartbeat.txt` yourself — agentrun and its hooks own them

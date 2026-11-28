@@ -29,15 +29,13 @@ These rules apply to Claude Code, Codex and Antigravity launched through `agentr
 - Do not read SSH keys, API tokens, `.env` files, OAuth tokens, or agent auth files.
 - Do not store authentication state in this repository.
 
-## Observability
+## Run Outputs
 
-- Write live state under `/runs/live`.
-- Write final outputs under `/runs/artifacts`.
-- Required live outputs: `status.json`, `heartbeat.txt`, `stdout.log`, `stderr.log`, `command_log.jsonl`, `events.jsonl`, `current_task.md`.
-- Required final outputs: `report.md`, `git_diff.patch`, `metrics.json`, `run_title.txt`.
-- `run_title.txt`: write a ~5-word summary of what you accomplished (single line, lowercase, e.g. `trained cifar baseline model`).
-- `report.md` and `run_title.txt` must be non-empty. Additional outputs depend on the run mode; see the `agentrun-contract` skill.
-- The `status` field in `status.json` must be one of: `"success"`, `"failed"`, `"cancelled"`, `"timeout"`. Use `"success"` when all required outputs are written without error.
+- `/runs/live` is kept by agentrun and its hooks (`status.json`, `heartbeat.txt`, the command and event logs, `session_log.md`). Do not write these yourself; when a hook asks for a `session_log.md` line, append it as told.
+- The start prompt says which kind of session this is:
+  - **Batch run** (the prompt has a user goal and a "Required outputs" list): before finishing, write `/runs/artifacts/report.md` (non-empty), `run_title.txt` (one lowercase line of about five words, e.g. `trained cifar baseline model`), `metrics.json` (`{}` is fine) and `git_diff.patch`, plus the mode's extra files. See the `agentrun-contract` skill for formats.
+  - **Interactive session** (the prompt says to wait for the user): answer each request; write the batch outputs only when the user asks.
+- Keep anything meant to outlast the session under `/runs/artifacts`, not in `/scratch` or `/node-scratch`.
 
 # BASE GUIDELINES
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.

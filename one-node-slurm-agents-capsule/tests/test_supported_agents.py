@@ -59,6 +59,18 @@ class SupportedAgentTests(unittest.TestCase):
         self.assertIn("AGENTRUN_SESSION_LOG_INTERVAL=5", command)
         self.assertIn("AGENTRUN_TIMEZONE=UTC", command)
 
+    def test_interactive_start_marks_its_waiting_reply_and_explains_the_session(self):
+        for launch, marked in (("interactive", True), ("batch", False)):
+            with self.subTest(launch=launch):
+                run = self.root / f"start_{launch}"
+                result = self.source('parse_run_args --no-secrets; write_plan assist claude "$PWD" "" 0 00:10:00 task "$1" "" "$2"',
+                                     run, launch)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                command = shlex.split((run / "apptainer_exec.sh").read_text().splitlines()[-1])[-1]
+                self.assertEqual(".session_log_waiting" in command, marked)
+                prompt = (run / "prompt.txt").read_text()
+                self.assertEqual("This is an interactive session" in prompt, marked)
+
     def test_every_agent_prepares_every_profile_with_shared_assets(self):
         for agent in AGENTS:
             for mode in ("assist", "experiment", "campaign"):
@@ -479,6 +491,19 @@ class SupportedAgentTests(unittest.TestCase):
             # Once the agent wrote the line and stops again, it is let go.
             result = self.run_hook("session_log", dict(payload, stop_hook_active=True))
             self.assertEqual((result.returncode, result.stdout), (0, ""))
+        # The reply to an interactive session's start prompt gets no line; the next turn does.
+        runs = self.root / "runs"
+        waiting = runs / "live/.session_log_waiting"
+        waiting.parent.mkdir(parents=True, exist_ok=True)
+        for first, second in (({}, {}), ({"turn_key": "c0:1"}, {"turn_key": "c0:2"})):  # Claude Code/Codex, agy
+            waiting.touch()
+            result = self.run_hook("session_log", {"hook_event_name": "Stop", **first}, AGENTRUN_DIR=str(runs))
+            self.assertEqual((result.returncode, result.stdout, waiting.exists()), (0, "", False))
+            if first:  # agy stopped again in that same turn: still nothing
+                self.assertEqual(self.run_hook("session_log", {"hook_event_name": "Stop", **first},
+                                               AGENTRUN_DIR=str(runs)).stdout, "")
+            result = self.run_hook("session_log", {"hook_event_name": "Stop", **second}, AGENTRUN_DIR=str(runs))
+            self.assertEqual(json.loads(result.stdout)["decision"], "block")
         # agy: one line per user turn, even when another Stop hook stops it again in that turn.
         runs = self.root / "runs"
         transcript = self.root / "agy-transcript.jsonl"
