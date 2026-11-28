@@ -34,6 +34,7 @@ Usage:
   agentrun history export-md DIR --live  # save running sessions first, then write their notes too
   agentrun history schedule [DIR [--at 04:00] | --off]  # run export-md DIR --live every day from crontab (Tokyo time)
   agentrun history rename RUN_ID NEW NAME | RUN_ID --clear  # name a conversation (ID from history list)
+  agentrun history host [set NAME | unset]  # machine name for exported notes (host, host/NAME tag)
   agentrun reviews [RUN_ID|RUN_DIR] [NO] [--follow] [--reviewer NAME]  # read cross-review dialogues
   agentrun wizard [options] [PROMPT]         # menus for launching and for every other feature; options skip to launching
   agentrun template list|show NAME|delete NAME [--yes]
@@ -891,7 +892,7 @@ command_history_schedule() {
 command_history() {
     local target="" watch=0 run_dir
     case "${1:-}" in
-        list|search|export-md|rename) python3 "$ROOT_DIR/runtime/agentrun/history_index.py" "$@"; return $? ;;
+        list|search|export-md|rename|host) python3 "$ROOT_DIR/runtime/agentrun/history_index.py" "$@"; return $? ;;
         schedule) shift; command_history_schedule "$@"; return $? ;;
     esac
     while [ "$#" -gt 0 ]; do

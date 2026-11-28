@@ -1043,6 +1043,7 @@ agentrun history list                    # 保存した会話の一覧（どこ�
 agentrun history search 語...            # 保存した会話の全文検索
 agentrun history export-md DIR            # 1 会話 1 ファイルで書き出し（Obsidian 向け）
 agentrun history export-md DIR --live     # 実行中のセッションも今の内容で保存してから書き出し
+agentrun history host set david02          # 書き出すノートに host を入れる（host で表示、host unset で解除）
 agentrun history schedule DIR [--at 04:00]  # 毎日の自動書き出しを cron に登録（--off で解除、引数なしで状態表示）
 ```
 
@@ -1129,7 +1130,7 @@ agentrun history schedule --off                            # 解除
 - ウィザードでは「その他の機能」→「会話履歴」→「毎日の自動書き出しを設定する（cron）」から登録・解除できます。
 
 - ファイル名は `2026-11-13 1200 retrained chem model.md` のように、会話を始めた日時とタイトル（一覧と同じ決め方）にします。Obsidian やファイル同期で使えない文字（`/ : # [ ]` など）は空白に置き換えます。
-- 冒頭は Obsidian のプロパティ（YAML フロントマター）で、`date`（会話を始めた日時）、`agent`、`mode`、`repo`、`title`、`run_id`（最初の run）、`archive_id`、`archived_at`、`tags: [agentrun]` を持ちます。`last_active`（最終更新）も入ります。resume した会話には、`runs`（経由した run の一覧）と `resumes`（回数）も入ります。
+- 冒頭は Obsidian のプロパティ（YAML フロントマター）で、`date`（会話を始めた日時）、`agent`、`mode`、`repo`、`title`、`run_id`（最初の run）、`archive_id`、`archived_at`、`tags: [agentrun]` を持ちます。`last_active`（最終更新）も入ります。`agentrun history host set NAME` でマシンの名前を登録してあれば、`host: NAME` と `host/NAME` のタグも入ります（登録していなければ、どちらも書きません。ログインノードのホスト名は使いません）。resume した会話には、`runs`（経由した run の一覧）と `resumes`（回数）も入ります。
 - resume しても同じノートを更新します。ファイル名の日時は会話を始めた日時のままです。以前の版が resume ごとに書き出した重複ノートは、次の書き出しで削除して 1 つにまとめます。
 - 依頼のない会話（上記）のノートを以前に書き出していた場合は、次の書き出しで削除します。名前を変えた会話は、次の書き出しでノートの名前も変わります。
 - 本文の最初の節は「## セッションログ」で、その会話のセッションログの行を古い順に並べます（開いたままの箇条書き）。ログのない会話（以前の版の run など）には、この節を書きません。

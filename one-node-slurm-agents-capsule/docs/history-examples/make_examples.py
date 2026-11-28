@@ -165,6 +165,8 @@ def main(out=HERE):
         finally:
             os.chdir(here)
         vault = temp / "vault"
+        subprocess.run([str(LAUNCHER), "history", "host", "set", "david02"], cwd=temp, env=env, check=True,
+                       capture_output=True, text=True)
         subprocess.run([str(LAUNCHER), "history", "export-md", str(vault)], cwd=temp, env=env, check=True,
                        capture_output=True, text=True)
 

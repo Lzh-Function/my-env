@@ -507,12 +507,54 @@ def iso_time(run_id):
     return "{}-{}-{}T{}:{}:{}".format(*stamp.groups()) if stamp else None
 
 
-def frontmatter(conversation, label):
+# Notes carry the machine name saved with `history host set`, and nothing when none is saved: the
+# login node's own host name is not a name the Vault knows.
+CONFIG = "config.json"
+PLAIN_TAG = re.compile(r"[A-Za-z0-9_./-]+")
+
+
+def load_config():
+    try:
+        value = json.loads((history_root() / CONFIG).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def saved_host():
+    value = load_config().get("host")
+    return " ".join(value.split()) if isinstance(value, str) else ""
+
+
+def host_command(words):
+    config = load_config()
+    if not words:
+        name = saved_host()
+        print(name if name else "名前は登録されていません（ノートに host は書きません）。")
+        return
+    if words[0] == "set" and len(words) == 2 and " ".join(words[1].split()):
+        config["host"] = " ".join(words[1].split())
+        message = (f"このマシンの名前を {config['host']} にしました（書き出すノートの host と host/{config['host']} のタグ）。\n"
+                   "次に export-md を実行すると、書き出し済みのノートにも入ります。")
+    elif words == ["unset"]:
+        if config.pop("host", None) is None:
+            print("名前は登録されていません。")
+            return
+        message = "登録した名前を消しました。ノートには host を書きません。"
+    else:
+        raise ValueError("使い方: agentrun history host [set NAME | unset]")
+    root = history_root()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    write_private(root / CONFIG, json.dumps(config, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
+    print(message)
+
+
+def frontmatter(conversation, label, host=""):
     first, latest = conversation.first, conversation.latest
     fields = {
         "date": f"{conversation.begin:%Y-%m-%dT%H:%M:%S}" if conversation.begin else iso_time(first["run_id"]),
         "last_active": conversation.last_active.strftime("%Y-%m-%dT%H:%M:%S") if conversation.last_active else None,
-        "agent": latest["agent"], "mode": conversation.metadata.get("mode"), "repo": latest["repo"],
+        "agent": latest["agent"], "host": host or None, "mode": conversation.metadata.get("mode"), "repo": latest["repo"],
         "title": label, "run_id": first["run_id"],
         "runs": [row["run_id"] for row in conversation.runs] if conversation.resumes else None,
         "resumes": conversation.resumes or None,
@@ -522,7 +564,9 @@ def frontmatter(conversation, label):
     }
     # JSON values are valid YAML flow scalars and sequences, so any text is safe here.
     lines = [f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in fields.items() if value]
-    return "---\n" + "\n".join(lines) + "\ntags: [agentrun]\n---\n"
+    tags = ["agentrun"] + ([f"host/{host}"] if host else [])
+    tags = ", ".join(tag if PLAIN_TAG.fullmatch(tag) else json.dumps(tag, ensure_ascii=False) for tag in tags)
+    return "---\n" + "\n".join(lines) + f"\ntags: [{tags}]\n---\n"
 
 
 def write_private(path, text):
@@ -588,6 +632,7 @@ def export_markdown(found, directory, hidden=()):
     state_path = directory / EXPORT_STATE
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
     scanned = None
+    host = saved_host()
 
     def locate(conversation):
         nonlocal scanned
@@ -649,7 +694,8 @@ def export_markdown(found, directory, hidden=()):
                 # Without an earlier record (no updated_at) the note is rewritten once to be sure.
                 previous = {**(previous or {}), "file": located, "renamed": not ours(located, name)}
                 taken.add(located)
-        version = {"updated_at": latest["updated_at"], "source": latest["archive_id"], "format": FORMAT}
+        version = {"updated_at": latest["updated_at"], "source": latest["archive_id"], "format": FORMAT,
+                   "host": host or None}
         if previous and previous.get("renamed"):
             name = previous["file"]  # the name the user gave it stays
         else:
@@ -671,7 +717,7 @@ def export_markdown(found, directory, hidden=()):
         if not header:
             raise ValueError(f"unexpected archive layout: {latest['archive_id']}")
         (directory / name).parent.mkdir(parents=True, exist_ok=True)
-        write_private(directory / name, frontmatter(conversation, label)
+        write_private(directory / name, frontmatter(conversation, label, host)
                       + "\n" + with_session_log(obsidian_body(latest["markdown"][header.end():], tz), conversation))
         if previous and previous["file"] != name:
             (directory / previous["file"]).unlink(missing_ok=True)  # the title changed
@@ -783,9 +829,10 @@ def save_running(parent):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("list", "search", "export-md", "rename", "choices"))
+    parser.add_argument("action", choices=("list", "search", "export-md", "rename", "choices", "host"))
     parser.add_argument("words", nargs="*",
-                        help="search words, the target directory for export-md, or RUN_ID NEW NAME for rename")
+                        help="search words, the target directory for export-md, RUN_ID NEW NAME for rename, "
+                             "or [set NAME | unset] for host")
     parser.add_argument("--clear", action="store_true", help="rename: go back to the title the agent wrote")
     parser.add_argument("--agent", choices=("claude", "codex", "antigravity"))
     parser.add_argument("--repo", default="", help="only conversations whose repository path contains this text")
@@ -805,6 +852,9 @@ def main():
         parser.error("--live is only for export-md")
     if options.limit < 1:
         parser.error("--limit must be positive")
+    if options.action == "host":
+        host_command(options.words)
+        return 0
     if options.live:
         save_running(Path.cwd() / ".agent-runs")
     db = connect()

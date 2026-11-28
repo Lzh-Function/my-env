@@ -101,8 +101,9 @@ tests/slurm/docker/run.sh ClusterTests.test_hold_job_keeps_sessions_independent_
 
 - frontmatter のキーを足したり名前を変えたりするときは、リリースの前にユーザー経由で Vault 側に知らせる。
 - ノートを書き直すときも、`date`、`title`、`session_id`、`agent`、`project` の値と、ファイル名は変えない。
-- ノートの形式を変えて FORMAT の番号を上げたら、push の知らせに新しい番号を書く（agent-history は現在 FORMAT=3）。
+- ノートの形式を変えて FORMAT の番号を上げたら、push の知らせに新しい番号を書く（agent-history は現在 FORMAT=3、agentrun は FORMAT=8）。
 - `host` が決まらないときは、キーもタグも書かない（空の値や `unknown` は書かない）。ホスト ID は `david02`、`miyabi`、`home-wsl`、`mizuno-lab-wsl` の 4 つ。`david02` は agentrun のノートにだけ使う。
+- agentrun のノートの `host` は、`agentrun history host set david02` で登録した名前だけを使う（`~/.agentrun/history/config.json`）。クラスタで書き出す前に 1 回登録しておく。ログインノードのホスト名は使わない。
 - 書き出し先は Vault の外に置く。Vault はフォルダの直下だけを読む（サブフォルダは読まない）ので、サブフォルダに分ける設定を足すなら既定はオフにする。
 - agentrun のノートに `archive_host` を出すときは、先に Vault 側に知らせる。
 - 書き出したノートは、内容で照合して更新する（agent-history は `session_id` と `agent`、agentrun は `archive_id`、`/clear` で分けたノートは加えて `conversation_id`）。Obsidian 側で名前を変えたり移動したりしたノートも、そのまま更新される。
@@ -113,6 +114,7 @@ tests/slurm/docker/run.sh ClusterTests.test_hold_job_keeps_sessions_independent_
 
 | コミット | 内容 |
 | --- | --- |
+| `976ee62` の次 | agentrun のノートに `host` と `host/<ID>` のタグを書く（FORMAT=8）。名前は `agentrun history host set david02` で登録したものだけを使い、登録がなければ何も書かない。 |
 | `6c67f75` の次 | 共通ルール（`common/AGENTS.md`）とスキル `agentrun-contract` を整理。`/runs/live` は agentrun とフックが書くのでエージェントは書かない。必須の出力は一括実行だけで、対話セッションでは頼まれたときだけ書く。対話の開始プロンプトにもその旨を 1 文足し、最初の指示待ちの返答にはセッションログを書かせない。 |
 | `6c67f75` | **セッションログ**：返答の終わりに加え、長い返答の途中でも 20 分ごとに「（途中）」の行を書かせる（`AGENTRUN_SESSION_LOG_INTERVAL`）。履歴に取り込み、一覧・検索・ノート（「## セッションログ」節、FORMAT=7）で使う。[USER_MANUAL.md のセッションログの節](USER_MANUAL.md#セッションログ) |
 | `9f51bc0`、`a9477fa` | **確保ジョブ**（`agentrun hold start/status/cancel/stop`）。`sbatch` でノード全体を確保し、対話のセッションは `--overlap` のステップとして、バッチは確保ジョブのキュー（`queue/*.json`）からステップとして起動する。確保ジョブがなければ今までどおり専用のジョブで動く（`--no-hold` を付けると、確保ジョブがあっても専用のジョブ）。ウィザードの「どこで起動しますか？」と、その他の機能の「確保ジョブ」から使える。[USER_MANUAL.md の確保ジョブの節](USER_MANUAL.md#hold) |
